@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openagent-tts"
+version = "0.1.0"
+description = "TTS extension for OpenAgent."
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "edge-tts>=6.1.0",
+    "openagent-core",
+]
+
+[project.entry-points."openagent.extensions"]
+tts = "tts.plugin:TTSExtension"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
