@@ -10,6 +10,7 @@ from typing import List
 from .interfaces import AsyncExtension
 
 ENTRYPOINT_GROUP = "openagent.extensions"
+_LOADED_EXTENSIONS: dict[str, AsyncExtension] = {}
 
 
 @dataclass
@@ -43,6 +44,7 @@ async def load_extensions() -> List[LoadedExtension]:
         extension_class = entry.load()
         instance = _ensure_async_extension_contract(extension_class(), entry.name)
         await instance.initialize()
+        _LOADED_EXTENSIONS[entry.name] = instance
         loaded.append(LoadedExtension(name=entry.name, instance=instance))
         print(f"Loading First-Class Extension: {entry.name}")
 
@@ -50,6 +52,11 @@ async def load_extensions() -> List[LoadedExtension]:
         print(f"No extensions found in group '{ENTRYPOINT_GROUP}'.")
 
     return loaded
+
+
+def get_extension(name: str) -> AsyncExtension | None:
+    """Return a loaded extension instance by entry-point name."""
+    return _LOADED_EXTENSIONS.get(name)
 
 
 # Backward-compatible alias; prefer `load_extensions`.
