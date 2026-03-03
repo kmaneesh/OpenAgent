@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openagent-stt"
+version = "0.1.0"
+description = "STT extension for OpenAgent."
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9.0",
+    "deepgram-sdk>=3.5.0",
+    "faster-whisper>=1.0.0",
+    "openagent-core",
+]
+
+[project.entry-points."openagent.extensions"]
+stt = "stt.plugin:STTExtension"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
