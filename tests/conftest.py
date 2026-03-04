@@ -7,7 +7,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-for rel in ("src", "extensions/whatsapp/src", "extensions/discord/src"):
-    path = str(ROOT / rel)
+for path in [
+    str(ROOT),                               # openagent/ package at root
+    str(ROOT / "app"),                       # app/ package
+    str(ROOT / "extensions/whatsapp/src"),
+    str(ROOT / "extensions/discord/src"),
+]:
     if path not in sys.path:
         sys.path.insert(0, path)
