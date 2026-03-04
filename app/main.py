@@ -13,6 +13,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider
+from openagent.heartbeat import (
+    HeartbeatService,
+    heartbeat_enabled_from_env,
+    heartbeat_interval_from_env,
+)
 from openagent.observability import configure_logging
 from openagent.observability.metrics import render_metrics
 from openagent.providers import load_provider_config, get_provider
@@ -59,8 +64,13 @@ _handler.setFormatter(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging()
+    # force=True ensures root level is set even if uvicorn already configured logging
+    configure_logging(force=True)
+    # SSE handler captures records into the browser log stream
     logging.getLogger().addHandler(_handler)
+    # Also capture uvicorn's own loggers (they have propagate=False by default)
+    for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_uvi).addHandler(_handler)
     logging.getLogger("openagent").info("Web UI started")
     app.state.log_buffer = LOG_BUFFER
     app.state.log_clients = LOG_CLIENTS
@@ -68,8 +78,19 @@ async def lifespan(app: FastAPI):
     provider_cfg = load_provider_config(ROOT / "config" / "openagent.yaml")
     app.state.provider_config = provider_cfg
     app.state.active_provider = get_provider(provider_cfg)
+    heartbeat = HeartbeatService(
+        root=ROOT,
+        enabled=heartbeat_enabled_from_env(),
+        interval_s=heartbeat_interval_from_env(),
+        provider_config_path=ROOT / "config" / "openagent.yaml",
+    )
+    app.state.heartbeat = heartbeat
+    await heartbeat.start()
     yield
+    await heartbeat.stop()
     logging.getLogger().removeHandler(_handler)
+    for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_uvi).removeHandler(_handler)
 
 
 # ---------------------------------------------------------------------------

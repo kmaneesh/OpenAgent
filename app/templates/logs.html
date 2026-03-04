@@ -12,8 +12,8 @@
       {% for level in ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] %}
       <button @click="filter = '{{ level }}'"
               :class="filter === '{{ level }}'
-                ? 'bg-teal-500/20 border-teal-500 text-teal-400'
-                : 'border-slate-700 text-slate-400 hover:border-slate-500'"
+                ? 'bg-[#FF9933]/10 border-[#FF9933] text-[#FF9933]'
+                : 'border-stone-700 text-stone-400 hover:border-stone-500'"
               class="border rounded-lg px-3 py-1 text-xs font-medium transition-colors">
         {{ level }}
       </button>
@@ -24,7 +24,7 @@
 
     <!-- Auto-scroll toggle -->
     <button @click="autoScroll = !autoScroll"
-            :class="autoScroll ? 'text-teal-400' : 'text-slate-500'"
+            :class="autoScroll ? 'text-[#FF9933]' : 'text-stone-500'"
             class="text-xs flex items-center gap-1.5">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -34,7 +34,7 @@
     </button>
 
     <!-- Clear -->
-    <button @click="lines = []" class="text-xs text-slate-500 hover:text-slate-300">Clear</button>
+    <button @click="lines = []" class="text-xs text-red-400 hover:text-red-300">Clear</button>
 
     <!-- SSE indicator -->
     <span class="inline-flex items-center gap-1.5 text-xs"
@@ -46,13 +46,13 @@
   </div>
 
   <!-- Log output -->
-  <div class="flex-1 overflow-y-auto bg-slate-950 border border-slate-700 rounded-xl p-4 font-mono text-xs leading-5 min-h-0"
+  <div class="flex-1 overflow-y-auto bg-stone-950 border border-stone-800 rounded-xl p-4 font-mono text-xs leading-5 min-h-0"
        x-ref="logbox"
        @scroll="checkScroll()">
     <template x-for="(line, i) in filteredLines" :key="i">
       <div :class="levelClass(line)" x-text="line"></div>
     </template>
-    <div x-show="filteredLines.length === 0" class="text-slate-600 text-center py-8">
+    <div x-show="filteredLines.length === 0" class="text-stone-600 text-center py-8">
       Waiting for log entries…
     </div>
   </div>
@@ -99,8 +99,8 @@ function logsApp() {
     levelClass(line) {
       if (line.includes(" ERROR "))   return "text-red-400";
       if (line.includes(" WARNING ")) return "text-yellow-400";
-      if (line.includes(" INFO ") || line.includes(" INFO  ")) return "text-slate-300";
-      return "text-slate-500";
+      if (line.includes(" INFO ") || line.includes(" INFO  ")) return "text-stone-300";
+      return "text-stone-500";
     }
   }
 }

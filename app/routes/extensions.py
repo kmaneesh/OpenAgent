@@ -23,9 +23,12 @@ def _get_extensions() -> list[dict]:
         except Exception:
             version = "?"
             dist_name = pkg_name
+        # UI should show canonical extension id (entry-point name), not module filenames.
+        display_name = ep.name
         result.append({
             "name": ep.name,
-            "package": dist_name,
+            "package": display_name,
+            "distribution": dist_name,
             "version": version,
             "entry_point": ep.value,
             "status": "registered",
