@@ -21,6 +21,7 @@ from openagent.heartbeat import (
 from openagent.observability import configure_logging
 from openagent.observability.metrics import render_metrics
 from openagent.providers import load_provider_config, get_provider
+from openagent.services.manager import ServiceManager
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -86,7 +87,11 @@ async def lifespan(app: FastAPI):
     )
     app.state.heartbeat = heartbeat
     await heartbeat.start()
+    service_manager = ServiceManager(root=ROOT)
+    app.state.service_manager = service_manager
+    await service_manager.start()
     yield
+    await service_manager.stop()
     await heartbeat.stop()
     logging.getLogger().removeHandler(_handler)
     for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):

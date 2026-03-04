@@ -1,5 +1,12 @@
 """Service-plane contracts and helpers."""
 
+from .manager import (
+    HealthConfig,
+    ManagedService,
+    ServiceManifest,
+    ServiceManager,
+    ServiceStatus,
+)
 from .protocol import (
     EventFrame,
     FrameModel,
@@ -15,6 +22,13 @@ from .protocol import (
 )
 
 __all__ = [
+    # manager
+    "HealthConfig",
+    "ManagedService",
+    "ServiceManifest",
+    "ServiceManager",
+    "ServiceStatus",
+    # protocol
     "EventFrame",
     "FrameModel",
     "ProtocolErrorFrame",
