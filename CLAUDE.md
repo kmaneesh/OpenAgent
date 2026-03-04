@@ -11,9 +11,9 @@ The two planes communicate via a **MCP-lite wire protocol** (tagged JSON frames 
 
 Primary deployment target: **Raspberry Pi / low-power hardware** (Go compiles to arm64; Python core stays lean).
 
-## Agentic Layer (Agno)
+## Agentic Layer
 
-OpenAgent uses **Agno** as the agentic layer for reusable memory, knowledge, and session primitives. This repo focuses on deterministic orchestration, extension/service composition, MCP-lite contracts, and low-power deployment behavior rather than rebuilding generic agent memory internals.
+OpenAgent uses a **custom ReAct loop** and thin httpx-based provider layer — no framework dependency. This gives full control over tool schema format, retry logic, and iteration limits for sub-30B models. Session/memory uses a `SessionBackend` protocol (SQLite now; Go/Rust service later). See `roadmap.md` for rationale and build order.
 
 ## Reference Implementations
 
@@ -60,16 +60,19 @@ cd services/my-service && GOOS=linux GOARCH=amd64 go build -o bin/my-service-lin
 ## Repository Layout
 
 ```
-openagent/              # Core Python — orchestration, discovery, interfaces ONLY
+openagent/              # Core Python — orchestration, discovery, interfaces
   __init__.py
   interfaces.py             # AsyncExtension protocol + BaseAsyncExtension ABC
   manager.py                # Extension discovery via entry points
   channels/                 # MCP-lite channel/service adapters (discord, telegram, ...)
   main.py                   # Entry point: asyncio.run(load_extensions())
-  agent/                    # (to build) Agent loop, context, session, memory
-  providers/                # (to build) LLM provider registry
-  services/                 # (to build) ServiceManager — Go service lifecycle
-  bus/                      # (to build) Message bus (channel → agent → response)
+  agent/                    # Agent loop (ReAct), tool registry
+  providers/                # LLM provider registry (Anthropic, OpenAI, OpenAI-compat)
+  services/                 # ServiceManager — Go daemon lifecycle
+  bus/                      # Message bus (InboundMessage, OutboundMessage)
+  session/                  # SessionManager, SessionBackend, SQLite impl
+  heartbeat/                # Periodic health/summary polling
+  observability/            # Logging, metrics, context
   tests/                    # Core tests (including channels/)
 
 extensions/                 # Python channel integrations (independently installable)
@@ -412,18 +415,23 @@ app/
 
 ### Built
 - Core: extension discovery, lifecycle, async interfaces
+- **ServiceManager** — spawn/monitor/restart Go daemons, MCP-lite health loop
+- **Message bus** — `InboundMessage`, `OutboundMessage`, `SenderInfo`, per-session fanout
+- **Agent loop** — custom ReAct loop (no framework), tool iteration, 40 max iters, 500-char truncation
+- **Session manager** — `SessionBackend` protocol, SQLite impl, optional summarisation
+- **Tool registry** — dispatches to Go services via MCP-lite
+- **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx)
 - Extensions: discord, whatsapp, tts (edge + minimax), stt (faster-whisper + deepgram)
+- Go services: hello, filesystem, shell, discord, telegram, slack, whatsapp
 
 ### Next (in order)
-1. **Config system** — `config/openagent.yaml` + Pydantic schema + env var overrides
-2. **Provider layer** — OpenAI-compat async LLM client (aiohttp), `ProviderRegistry`
-3. **Agent loop** — LLM ↔ tool execution loop (follow `inspire/nanobot/nanobot/agent/loop.py`)
-4. **Session/memory** — SQLite history + LanceDB semantic store
-5. **ServiceManager** — spawn/monitor/restart Go daemons, MCP-lite client, tool registration
-6. **First Go service** — simple compute tool to establish the full pattern end-to-end
-7. **Agent registry** — multi-agent management (follow `inspire/picoclaw/pkg/agent/registry.go`)
-8. **Message bus** — route channel extension events → agent loop → response
-9. **WhatsApp → Go service migration** — once ServiceManager is proven
+1. **Config schema** — extend `openagent.yaml` with agents, bindings, session, tools
+2. **Chat path wiring** — agent loop ↔ channel events ↔ web UI end-to-end
+3. **Agent registry** — optional multi-agent (follow `inspire/picoclaw/pkg/agent/registry.go`)
+4. **Channel manager** — config-driven init, outbound dispatch
+5. **Optional** — memory consolidation, cron, slash commands, rate limiting
+
+See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 
 ## Deployment Notes
 
@@ -445,6 +453,7 @@ app/
 - `service.json` is the only contract — core must not depend on service internals
 - Borrow MCP vocabulary in the wire protocol but do not implement full MCP
 - When deviating from OpenClaw/Nanobot patterns, document why in comments
+- Keep `roadmap.md` updated when build order or status changes
 
 ## Observability Contract
 

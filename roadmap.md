@@ -2,9 +2,13 @@
 
 Consolidated comparison of **Nanobot** and **Picoclaw** with **OpenAgent**. Assumes channels and providers stay at current count (Discord, WhatsApp, Telegram, MCP-lite; openai_compat, anthropic, openai).
 
+**Status:** OpenAgent has implemented many core components (message bus, session manager, agent loop, ServiceManager, tool registry). The tables below describe conceptual gaps from the reference implementations; the **Summary** and **Build Order** sections reflect current status.
+
 ---
 
 ## Picoclaw vs OpenAgent — What's There, What's Not
+
+*Note: Conceptual comparison. OpenAgent has since implemented message bus, session, agent loop, ServiceManager, tool registry — see Summary section.*
 
 ### 1. Message Bus & Event Types
 
@@ -147,12 +151,37 @@ Consolidated comparison of **Nanobot** and **Picoclaw** with **OpenAgent**. Assu
 
 ---
 
-## Architecture Principle: Python Brain, Go Muscles
+## Architecture Principle: Python Brain, Go/Rust Muscles
 
 **Python** = thin control plane only: LLM calls, orchestration decisions, routing logic, config.
-**Go** = all heavy lifting: channel I/O, session storage, tool execution, web search, file ops.
-**Migration** = incremental — start in Python, promote to Go service when load justifies it.
-**Agno** = selective borrow only (agent loop patterns, OpenAILike wiring). No wholesale adoption.
+**Go** = heavy lifting today: channel I/O, session storage, tool execution, web search, file ops.
+**Rust** = performance-critical services, migrated from Go incrementally (per-service, no big bang).
+**Migration** = incremental — Python first → Go → Rust where load justifies it.
+**No framework dependency** — Agno is inspiration only; we do not use it. Own thin httpx-based provider layer + custom ReAct loop.
+
+### Why not Agno
+Agno is used as inspiration (see `.claude/agno_cheatsheet.md`), not as a dependency. By owning the loop we control:
+- Exact tool schema format (models differ in what they were fine-tuned on)
+- Retry logic for malformed tool call responses
+- Per-model XML-style fallback if OpenAI function calling is not supported
+- Iteration limit (40) and tool output truncation (500 chars) without monkey-patching
+
+### Go → Rust migration strategy (incremental, socket-transparent)
+The MCP-lite protocol is language-agnostic. Swapping a Go binary for a Rust binary is transparent
+to Python — update `binary` field in `service.json` and recompile. No Python changes required.
+
+**Priority order for Rust** (highest Pi ROI first):
+1. Session store — `rusqlite` + `tokio` outperforms Go's `mattn/go-sqlite3` on arm64
+2. Web search / HTTP fetch — `reqwest` + `tokio` is extremely memory-efficient
+3. Discord channel — `serenity` is mature, GC-free, fits Pi 5 RAM
+4. Telegram channel — `teloxide` is idiomatic and well-maintained
+5. Filesystem tool — trivial port, big RSS savings
+
+**Keep in Go**: anything already working or with no compelling Rust library. Don't port for
+the sake of it — port when a specific service is the measured bottleneck.
+
+**Python stays forever**: the control plane is already asyncio-thin. LLM latency (100ms+)
+dwarfs Python overhead. Nothing to gain from porting the orchestration layer.
 
 ---
 
@@ -169,8 +198,8 @@ Assuming channels (Discord, WhatsApp, Telegram, MCP-lite) and providers (openai_
 | **ServiceManager** | Python | N/A | N/A | ❌ | **Next**: spawn/watch Go binaries, manage sockets, health-check, restart. Wires `McpLiteClient` per service. |
 | **Message bus** | Python | `asyncio.Queue` | `chan` + `Close()` | ❌ | `InboundMessage`, `OutboundMessage` dataclasses + asyncio queues. Python owns routing only. |
 | **Event types** | Python | `session_key`, `metadata`, `media` | `SenderInfo`, `Peer`, `SessionKey` | ❌ | `session_key`, `SenderInfo`, `metadata`. Keep thin — Go services own their own events. |
-| **Agent loop** | Python | `_process_message`, tool iteration | `Process`, fallback chain | ❌ | Thin loop: `InboundMessage` → LLM → tool dispatch via McpLiteClient → `OutboundMessage`. Borrow Nanobot shape selectively. |
-| **Session manager** | Python→Go | JSONL, `get_history` | `GetHistory`, `Summary` | ❌ | Start Python/SQLite. Designed as Go migration target (Go service behind MCP-lite socket). |
+| **Agent loop** | Python | `_process_message`, tool iteration | `Process`, fallback chain | ❌ | Custom ReAct loop (no framework). `InboundMessage` → `provider.chat(tools=[...])` → McpLiteClient → `OutboundMessage`. Max 40 iters, 500-char truncation. |
+| **Session manager** | Python→Go→Rust | JSONL, `get_history` | `GetHistory`, `Summary` | ❌ | `SessionBackend` Protocol frozen day 1. SQLite now (`aiosqlite`), Go or Rust service later — one constructor line to swap. |
 | **Tool registry** | Python (thin) | `ToolRegistry`, `execute` | Per-agent registry | ❌ | Python names/dispatches tools. Go services execute them. No Python tool implementations for heavy ops. |
 
 ---
@@ -220,10 +249,14 @@ Assuming channels (Discord, WhatsApp, Telegram, MCP-lite) and providers (openai_
 | Component | Lang | Where |
 |-----------|------|-------|
 | MCP-lite Go SDK | Go | `services/sdk-go/mcplite/` |
-| Hello service (reference) | Go | `services/hello/` |
+| Hello, filesystem, shell services | Go | `services/hello/`, `filesystem/`, `shell/` |
 | Channel service stubs | Go | `services/discord/`, `telegram/`, `whatsapp/`, `slack/` |
 | MCP-lite Python client | Python | `openagent/channels/mcplite.py` |
-| Provider layer | Python | `openagent/providers/` |
+| Provider layer (httpx) | Python | `openagent/providers/` — Anthropic, OpenAI, OpenAI-compat |
+| ServiceManager + watchdog | Python | `openagent/services/manager.py` |
+| Message bus + event types | Python | `openagent/bus/` — InboundMessage, OutboundMessage, SenderInfo |
+| Session manager | Python | `openagent/session/` — SessionBackend protocol, SQLite impl |
+| Agent loop + ToolRegistry | Python | `openagent/agent/loop.py`, `openagent/agent/tools.py` |
 | Extension manager | Python | `openagent/manager.py` |
 | Heartbeat/health | Python | `openagent/heartbeat/` |
 | Observability | Python + Go | `openagent/observability/`, `services/sdk-go/mcplite/observe.go` |
@@ -231,31 +264,30 @@ Assuming channels (Discord, WhatsApp, Telegram, MCP-lite) and providers (openai_
 
 ### ❌ Missing (by layer)
 
-| Layer | Missing |
-|-------|---------|
-| **Glue** | ServiceManager (spawns + watches Go binaries) |
-| **Bus** | `InboundMessage`, `OutboundMessage`, asyncio queues |
-| **Agent** | Agent loop, tool dispatch |
-| **Session** | Session manager, history, `session_key` |
-| **Tools** | Filesystem, shell, web Go services |
-| **Channels** | Go channel services fleshed out (stubs only) |
-| **Routing** | Agent registry, route resolver, bindings |
-| **Config** | agents, bindings, session, tools sections |
+| Layer | Missing | Notes |
+|-------|---------|-------|
+| **Provider** | `chat(tools=[...])` returning `tool_calls` | Extend existing httpx providers if not done |
+| **Tools** | Filesystem, shell, web Go services | MCP-lite Go services (filesystem, shell exist) |
+| **Channels** | Go channel services fully fleshed | Stubs exist; Discord/Telegram/Slack/WhatsApp in progress |
+| **Routing** | Agent registry, route resolver, bindings | Tier 4 — optional |
+| **Config** | agents, bindings, session, tools sections | Extend `openagent.yaml` |
+| **Chat path** | End-to-end wiring | Agent loop ↔ channel events ↔ web UI |
 
 ---
 
-## Recommended Build Order (Go-Heavy, Incremental)
+## Recommended Build Order (Go/Rust-heavy, Incremental)
 
-1. **ServiceManager** (Python) — spawn/watch Go binaries via subprocess, manage Unix sockets, restart on crash. This unblocks everything.
-2. **Message bus** (Python) — `InboundMessage`, `OutboundMessage` dataclasses + asyncio queues
-3. **Agent loop** (Python) — thin: `InboundMessage` → LLM → McpLiteClient tool calls → `OutboundMessage`
-4. **Session manager** (Python/SQLite) — designed as Go migration target from day one
-5. **Discord service** (Go) — flesh out `services/discord/`, prove Python channel extension → Go migration
-6. **Tool services** (Go) — filesystem, shell, web search as Go services behind MCP-lite
-7. **Config schema** (Python) — extend `openagent.yaml`: agents, session, tools, bindings
-8. **Remaining channels** (Go) — Telegram, Slack, WhatsApp in order of complexity
-9. **Session → Go** (Go) — promote SQLite session to Go service when Python version is stable
+1. ~~**ServiceManager**~~ (Python) ✅ DONE
+2. ~~**Message bus + Event types**~~ (Python) ✅ DONE
+3. ~~**Provider layer**~~ (Python) ✅ DONE — httpx-based
+4. ~~**Session manager**~~ (Python) ✅ DONE — `SessionBackend` Protocol, SQLite impl
+5. ~~**Agent loop**~~ (Python) ✅ DONE — custom ReAct, tool dispatch via MCP-lite
+6. ~~**Tool services**~~ (Go) ✅ DONE — filesystem, shell
+7. **Chat path wiring** — agent loop ↔ channel events ↔ web UI end-to-end
+8. **Discord/Telegram/Slack/WhatsApp** (Go) — flesh out channel services
+9. **Config schema** (Python) — extend `openagent.yaml`: agents, session, tools, bindings
 10. **Optional** — multi-agent, bindings, memory consolidation, cron, state, media
+11. **Go → Rust** (per-service) — when each is the measured bottleneck
 
 ---
 

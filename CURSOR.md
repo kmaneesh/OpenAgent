@@ -8,7 +8,7 @@ The architecture has two planes:
 - **Python Control Plane (Brain)** — LLM interfacing, multi-agent orchestration, channel integrations, stateless async core loop.
 - **Go Services (Hands)** — Long-lived daemon processes for CPU/IO-intensive work. Python spawns, monitors, and manages them. They communicate via MCP-lite (tagged JSON over Unix sockets).
 
-OpenAgent uses **Agno** as the agentic layer for reusable memory, knowledge, and session capabilities. OpenAgent remains responsible for extension/service orchestration, MCP-lite lifecycle, and deployment constraints for low-power hardware.
+OpenAgent uses a **custom ReAct loop** and thin provider layer (no framework dependency). Session/memory uses a `SessionBackend` protocol. OpenAgent remains responsible for extension/service orchestration, MCP-lite lifecycle, and deployment constraints for low-power hardware. See `roadmap.md` for rationale.
 
 ## Design Principles
 
@@ -53,14 +53,17 @@ inspire/            # Reference implementations (gitignored)
 
 | Component | Location | Language | Pattern |
 |---|---|---|---|
-| Agent loop, orchestration | `openagent/agent/` | Python | Nanobot loop.py |
-| LLM provider registry | `openagent/providers/` | Python | Nanobot ProviderRegistry |
-| Service lifecycle manager | `openagent/services/` | Python | ServiceManager |
+| Agent loop, tool registry | `openagent/agent/` | Python | Custom ReAct loop (no framework) |
+| LLM provider registry | `openagent/providers/` | Python | httpx-based, Anthropic/OpenAI/OpenAI-compat |
+| Service lifecycle manager | `openagent/services/` | Python | ServiceManager — spawn, health-check, restart |
+| Session manager | `openagent/session/` | Python | SessionBackend protocol, SQLite impl |
+| Message bus | `openagent/bus/` | Python | InboundMessage, OutboundMessage, SenderInfo |
 | Service channel adapters (MCP-lite clients) | `openagent/channels/` | Python | Shared `mcplite.py` + per-service adapter |
-| Message bus | `openagent/bus/` | Python | Nanobot bus pattern |
 | Channel integrations | `extensions/` | Python | AsyncExtension + entry points |
 | Media (TTS, STT) | `extensions/` | Python | Provider pattern |
 | Compute/data tools | `services/` | Go | MCP-lite daemon + service.json |
+
+See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and build order.
 
 ## Extension Contract
 

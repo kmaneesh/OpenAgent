@@ -8,16 +8,17 @@ Build OpenAgent as a deterministic, extension-first Python + Go hybrid agent pla
 
 ## Agentic Layer
 
-- Use **Agno** as the agentic layer for reusable memory, knowledge, and session primitives.
-- Keep OpenAgent-specific orchestration and service integration in this repository; avoid re-implementing generic memory/knowledge internals when Agno already provides them.
+- **No framework dependency** — custom ReAct loop and thin httpx-based provider layer. This gives full control over tool schema format, retry logic, and iteration limits for sub-30B models (14B Llama, Qwen, Mistral).
+- **Session/memory** — `SessionBackend` protocol (SQLite now; Go/Rust service later). Optional summarisation hooks. Agno is inspiration only — we do not use it as a dependency.
 
 ## Source Of Truth
 
 - Full development guide: [`CLAUDE.md`](./CLAUDE.md)
 - Project context and intent: [`CURSOR.md`](./CURSOR.md)
+- Build order and gaps: [`roadmap.md`](./roadmap.md)
 - Reference implementations: `inspire/openclaw/` (TypeScript), `inspire/nanobot/` (Python), `inspire/picoclaw/` (Go)
 
-When in doubt: `CLAUDE.md` > `CURSOR.md` > reference implementations.
+When in doubt: `CLAUDE.md` > `CURSOR.md` > `roadmap.md` > reference implementations.
 
 ## Two-Plane Architecture
 
@@ -181,10 +182,11 @@ inspire/            # Reference implementations (gitignored)
 ## Agent Workflow
 
 1. Read `CLAUDE.md` first, then `CURSOR.md` before substantial changes.
-2. Determine: is this a channel/media concern (Python extension) or a compute concern (Go service)?
-3. Keep core changes minimal; push feature logic to extensions or services.
-4. Update/add tests in the appropriate `tests/` tree (Python) or `services/<name>/` (Go).
-5. Keep docs in sync: `README.md`, `CLAUDE.md`, `CURSOR.md`, extension/service metadata.
+2. Consult `roadmap.md` for consolidated Nanobot/Picoclaw comparison and build order.
+3. Determine: is this a channel/media concern (Python extension) or a compute concern (Go service)?
+4. Keep core changes minimal; push feature logic to extensions or services.
+5. Update/add tests in the appropriate `tests/` tree (Python) or `services/<name>/` (Go).
+6. Keep docs in sync: `README.md`, `CLAUDE.md`, `CURSOR.md`, `roadmap.md`, extension/service metadata.
 
 ## Observability Standards
 

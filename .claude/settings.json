@@ -4,7 +4,9 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:docs.agno.com)",
       "WebFetch(domain:www.digitalocean.com)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(pytest openagent/tests/ -v)"
     ]
   }
 }

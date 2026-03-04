@@ -1,22 +1,41 @@
 # OpenAgent
 
-A deterministic, open-claw-style agent platform with a **Python + Go hybrid architecture**. The Python control plane orchestrates multi-agent pipelines via a local LLM. Go services handle compute-intensive work as managed daemons. Built to run on **Raspberry Pi** and other low-power hardware with offline 14B-parameter models.
+A deterministic Python + Go hybrid agent platform for low-power/offline deployments (including Raspberry Pi).  
+Python is the control plane (extensions, orchestration, routing). Go services are the data plane (long-lived tools and integrations) over MCP-lite on Unix sockets.
+
+## Current Status
+
+**Implemented:**
+- **ServiceManager** — spawns, health-checks, restarts Go daemons (`openagent/services/manager.py`)
+- **Message bus** — `InboundMessage`, `OutboundMessage`, `SenderInfo`, per-session fanout (`openagent/bus/`)
+- **Agent loop** — custom ReAct loop, no framework dependency (`openagent/agent/loop.py`)
+- **Session manager** — `SessionBackend` protocol, SQLite impl, optional summarisation (`openagent/session/`)
+- **Tool registry** — dispatches to Go services via MCP-lite (`openagent/agent/tools.py`)
+- **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx-based, no SDK)
+- **MCP-lite** — Python client + Go SDK (`openagent/channels/mcplite.py`, `services/sdk-go/mcplite/`)
+- **Heartbeat** — periodic health/summary polling (`openagent/heartbeat/`)
+- **Channel adapters** — Discord, Telegram, WhatsApp, Slack (Python MCP-lite clients)
+- **Go services** — `hello`, `filesystem`, `shell`, `discord`, `telegram`, `slack`, `whatsapp`
+- **Web UI** — FastAPI + HTMX (dashboard, chat, logs, extensions, services, config)
+
+**In progress:**
+- Full chat path wiring (agent loop ↔ channel events ↔ web UI)
+- Config schema extension (agents, bindings, session, tools)
 
 ## Architecture
 
 ```
 Python Control Plane (Brain)          Go Services (Hands)
 ─────────────────────────────         ───────────────────
- Channel extensions                    Long-lived daemons
-  WhatsApp, Discord        ──JSON──►   Heavy compute/data
- Agent loop + LLM calls    ◄──UDS──    Managed by Python
- Session + memory
+ Channel/media extensions              Long-lived daemons
+ Provider calls + orchestration ──JSON──► Compute/data integrations
+ Message bus + health/heartbeat ◄─UDS──  Managed by ServiceManager
 ```
 
 Two clear planes, one socket each, no REST overhead:
-- **Python extensions** → channels and media (WhatsApp, Discord, TTS, STT)
-- **Go services** → compute and data-intensive tools
-- **MCP-lite protocol** → tagged JSON frames over Unix Domain Sockets
+- **Python extensions** for channel/media integration
+- **Go services** for compute/data-heavy and long-lived connectors
+- **MCP-lite** newline-delimited JSON frames over Unix Domain Sockets
 
 ## Requirements
 
@@ -81,17 +100,24 @@ memory:
   lancedb_path: data/memory/
 ```
 
+Provider kinds currently supported in core:
+- `openai_compat`
+- `openai`
+- `anthropic`
+
 ## Project Structure
 
 ```
 OpenAgent/
-├── openagent/          # Core: orchestration, discovery, interfaces
+├── openagent/          # Core runtime
 │   ├── interfaces.py       # AsyncExtension protocol
 │   ├── manager.py          # Extension discovery (entry points)
-│   ├── agent/              # Agent loop, context, session, memory
 │   ├── providers/          # LLM provider registry
 │   ├── services/           # ServiceManager — Go daemon lifecycle
-│   └── bus/                # Message bus (channel → agent → response)
+│   ├── bus/                # Message bus (channel → agent → response)
+│   ├── heartbeat/          # Periodic health/summary polling
+│   ├── observability/      # Logging, metrics helpers, context
+│   └── tests/              # Core Python tests
 │
 ├── extensions/             # Python channel/media integrations
 │   ├── whatsapp/           # WhatsApp (Neonize)
@@ -100,21 +126,25 @@ OpenAgent/
 │   └── stt/                # Speech-to-text (faster-whisper, Deepgram)
 │
 ├── services/               # Go service daemons
-│   └── <name>/             # Self-contained Go module
-│       ├── main.go         # UDS server + MCP-lite handler
-│       ├── service.json    # Service manifest (tool schemas, binary paths)
-│       └── go.mod
+│   ├── sdk-go/             # Shared MCP-lite Go SDK
+│   ├── hello/              # Reference hello tool service
+│   ├── filesystem/         # File system tools
+│   ├── shell/              # Shell + python execution tools
+│   ├── discord/            # Discord service
+│   ├── telegram/           # Telegram service
+│   ├── slack/              # Slack service
+│   └── whatsapp/           # WhatsApp service
 │
 ├── app/                    # Minimalist web UI (FastAPI + HTMX)
 │   ├── main.py             # FastAPI app
 │   ├── routes/             # One module per page
 │   ├── templates/          # Jinja2 HTML templates
-│   └── static/             # CSS + vendored HTMX
+│   ├── static/             # CSS + vendored HTMX
+│   └── tests/              # UI/backend route tests
 │
-├── tests/                  # Python tests
 ├── config/                 # openagent.yaml
 ├── data/                   # Runtime: sessions.db, memory/, sockets/
-└── inspire/                # Reference implementations (gitignored)
+└── inspire/                # Reference implementations
 ```
 
 ## Python Extensions
@@ -134,8 +164,14 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 
 | Service | Description | Status |
 |---------|-------------|--------|
-| *(first service — establishes pattern)* | Simple compute tool | Planned |
-| **whatsapp** | Native WhatsApp via whatsmeow | Planned (migrating from Python extension) |
+| **hello** | Reference MCP-lite service (`hello.reply`) | Implemented |
+| **filesystem** | Local file system tools | Implemented |
+| **shell** | Shell execution + Python execution tools | Implemented |
+| **discord** | Discord connector service | Implemented |
+| **telegram** | Telegram connector service (gotd/td) | Implemented |
+| **slack** | Slack connector service | Implemented |
+| **whatsapp** | WhatsApp service (service path in progress alongside Python extension) | Implemented |
+| **sdk-go** | Shared MCP-lite server/client codec helpers | Implemented |
 
 Build a service:
 ```bash
@@ -150,9 +186,23 @@ GOOS=linux GOARCH=arm64 go build -o bin/my-service-linux-arm64 .
 
 **Python tests:**
 ```bash
-pytest                              # all tests
-pytest tests/openagent/             # core only
+python -m pytest openagent/tests app/tests
+python -m pytest extensions/discord/tests
 pytest extensions/whatsapp/tests/   # extension tests
+python -m pytest extensions/stt/tests
+python -m pytest extensions/tts/tests
+```
+
+Note: avoid running `pytest` blindly at repository root if `inspire/` contains vendored/reference test trees.
+
+**Go tests:**
+```bash
+# from repo root
+for d in services/*; do
+  if [ -f "$d/go.mod" ]; then
+    (cd "$d" && GOCACHE=/tmp/go-build go test ./...)
+  fi
+done
 ```
 
 **Adding a new Python extension (channel/media):**
@@ -180,14 +230,23 @@ Visit `http://<pi-ip>:8080`.
 
 | Page | URL | Description |
 |------|-----|-------------|
-| Dashboard | `/` | Agent status, extension health, service health |
-| Chat | `/chat` | Send messages, stream responses in real time |
+| Dashboard | `/` | Extension status + service status |
+| Chat | `/chat` | Chat surface (agent loop wiring still being finalized) |
 | Logs | `/logs` | Live log stream |
 | Extensions | `/extensions` | Loaded Python extensions and status |
 | Services | `/services` | Go services with status and restart controls |
 | Config | `/config` | Read-only view of `openagent.yaml` |
 
 Stack: FastAPI 3.x · Jinja2 · HTMX · Tailwind CSS (CDN) · WebSockets · SSE
+
+## Documentation
+
+| Doc | Purpose |
+|-----|---------|
+| [CLAUDE.md](CLAUDE.md) | Full development guide — architecture, MCP-lite, config, build order |
+| [AGENTS.md](AGENTS.md) | Agent workflow rules — two-plane architecture, naming, testing |
+| [CURSOR.md](CURSOR.md) | Cursor project context — layout, contracts, conventions |
+| [roadmap.md](roadmap.md) | Consolidated Nanobot + Picoclaw comparison, build order, gaps |
 
 ## License
 

@@ -13,6 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider
+from openagent.agent.loop import AgentLoop
+from openagent.agent.tools import ToolRegistry
+from openagent.bus.bus import MessageBus
+from openagent.channels.manager import ChannelManager
 from openagent.heartbeat import (
     HeartbeatService,
     heartbeat_enabled_from_env,
@@ -22,6 +26,7 @@ from openagent.observability import configure_logging
 from openagent.observability.metrics import render_metrics
 from openagent.providers import load_provider_config, get_provider
 from openagent.services.manager import ServiceManager
+from openagent.session import SessionManager, SqliteSessionBackend
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -90,7 +95,36 @@ async def lifespan(app: FastAPI):
     service_manager = ServiceManager(root=ROOT)
     app.state.service_manager = service_manager
     await service_manager.start()
+    # Message bus
+    bus = MessageBus()
+    app.state.bus = bus
+    await bus.start()
+    # Session manager
+    session_backend = SqliteSessionBackend(ROOT / "data" / "sessions.db")
+    session_manager = SessionManager(backend=session_backend, summarise_after=40)
+    app.state.session_manager = session_manager
+    await session_manager.start()
+    # Tool registry + agent loop
+    tool_registry = ToolRegistry(service_manager)
+    await tool_registry.rebuild()
+    agent_loop = AgentLoop(
+        bus=bus,
+        provider=app.state.active_provider,
+        sessions=session_manager,
+        tools=tool_registry,
+    )
+    app.state.agent_loop = agent_loop
+    await agent_loop.start()
+    # Channel manager: attach adapters to running channel services and route
+    # outbound messages back to the originating Go service.
+    channel_manager = ChannelManager(service_manager=service_manager, bus=bus)
+    app.state.channel_manager = channel_manager
+    await channel_manager.start()
     yield
+    await channel_manager.stop()
+    await agent_loop.stop()
+    await session_manager.stop()
+    await bus.close()
     await service_manager.stop()
     await heartbeat.stop()
     logging.getLogger().removeHandler(_handler)

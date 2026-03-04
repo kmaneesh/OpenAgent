@@ -1,4 +1,7 @@
 # Agno Framework Cheat Sheet
+
+**Inspiration only** — OpenAgent does not use Agno as a dependency. This cheat sheet is for reference when designing our custom ReAct loop, session, and tool patterns.
+
 > Source: https://github.com/agno-agi/agno | Docs: https://docs.agno.com
 
 ## Install Agno Claude Code Skill (official, never need to look this up again)
@@ -249,7 +252,7 @@ model = Claude(
 
 ### Provider Tiers
 | Tier | Examples |
-|------|---------|
+|------|----------|
 | Cloud | OpenAI, Anthropic, Google, AWS, Azure |
 | Inference | Groq, Mistral, Cohere, Together |
 | Local | Ollama, LM Studio, llama.cpp, VLLM |
@@ -371,7 +374,7 @@ agent = Agent(
 ```
 
 | Store | What it holds |
-|-------|-------------|
+|-------|---------------|
 | User Profile | Structured: name, preferences |
 | User Memory | Unstructured observations |
 | Session Context | Current session state |
