@@ -1,0 +1,56 @@
+"""Logs route — GET /logs, GET /stream/logs (SSE)"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
+from fastapi.templating import Jinja2Templates
+
+router = APIRouter()
+templates: Jinja2Templates  # injected by main.py
+
+
+@router.get("/logs")
+async def logs_page(request: Request):
+    return templates.TemplateResponse("logs.html", {
+        "request": request,
+        "active": "logs",
+    })
+
+
+@router.get("/stream/logs")
+async def stream_logs(request: Request):
+    """SSE endpoint — streams log records to the browser."""
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=200)
+    clients: set = request.app.state.log_clients
+    buffer = request.app.state.log_buffer
+    clients.add(queue)
+
+    async def generate():
+        # Replay recent buffer for new connections
+        for entry in list(buffer):
+            yield f"data: {json.dumps(entry)}\n\n"
+
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    entry = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    yield f"data: {json.dumps(entry)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            clients.discard(queue)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
