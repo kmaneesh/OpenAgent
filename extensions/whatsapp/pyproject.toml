@@ -19,6 +19,7 @@ whatsapp = "plugin:WhatsAppExtension"
 package-dir = {"" = "src"}
 py-modules = [
     "plugin",
+    "transports",
     "gateway",
     "handlers",
     "builders",
