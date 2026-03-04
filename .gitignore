@@ -1,20 +1,86 @@
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.so
 *.egg
-
-# pytest
-.pytest_cache/
+*.egg-info/
+*.egg-info
+.eggs/
+dist/
+build/
+*.manifest
+*.spec
 
 # Virtual envs
 .venv/
 venv/
 env/
+.env
+.env.*
 
-# Go binaries
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Distribution / packaging
+*.whl
+
+# ---
+# Go
+# ---
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output
+*.out
+
+# Go workspace file
+go.work
+
+# Build output (binaries in service dirs)
 services/*/hello
 
-# Local
+# ---
+# IDE / editors
+# ---
+
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---
+# Local / project-specific
+# ---
+
 data/
 inspire/

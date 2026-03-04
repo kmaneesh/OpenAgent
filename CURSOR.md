@@ -8,6 +8,8 @@ The architecture has two planes:
 - **Python Control Plane (Brain)** — LLM interfacing, multi-agent orchestration, channel integrations, stateless async core loop.
 - **Go Services (Hands)** — Long-lived daemon processes for CPU/IO-intensive work. Python spawns, monitors, and manages them. They communicate via MCP-lite (tagged JSON over Unix sockets).
 
+OpenAgent uses **Agno** as the agentic layer for reusable memory, knowledge, and session capabilities. OpenAgent remains responsible for extension/service orchestration, MCP-lite lifecycle, and deployment constraints for low-power hardware.
+
 ## Design Principles
 
 1. **Deterministic behavior** — Explicit control flow, reproducible execution paths. Aligns with smaller local models where reliability matters more than flexibility.
@@ -36,10 +38,12 @@ Key files:
 
 ```
 openagent/      # Core Python — orchestration, discovery, interfaces ONLY
+  tests/         # Core tests (including channel adapters)
 extensions/         # Python channel/media integrations (independently installable)
+  <name>/tests/  # Extension-local tests
 services/           # Go service daemons (compute/data tools)
 app/                # Minimalist web UI — FastAPI 3.x + HTMX, no auth (POC/Pi only)
-tests/              # Python tests
+  tests/            # Web UI tests
 data/               # Runtime: sessions.db, memory/, sockets/, artifacts/
 config/             # openagent.yaml
 inspire/            # Reference implementations (gitignored)
@@ -52,6 +56,7 @@ inspire/            # Reference implementations (gitignored)
 | Agent loop, orchestration | `openagent/agent/` | Python | Nanobot loop.py |
 | LLM provider registry | `openagent/providers/` | Python | Nanobot ProviderRegistry |
 | Service lifecycle manager | `openagent/services/` | Python | ServiceManager |
+| Service channel adapters (MCP-lite clients) | `openagent/channels/` | Python | Shared `mcplite.py` + per-service adapter |
 | Message bus | `openagent/bus/` | Python | Nanobot bus pattern |
 | Channel integrations | `extensions/` | Python | AsyncExtension + entry points |
 | Media (TTS, STT) | `extensions/` | Python | Provider pattern |

@@ -11,6 +11,10 @@ The two planes communicate via a **MCP-lite wire protocol** (tagged JSON frames 
 
 Primary deployment target: **Raspberry Pi / low-power hardware** (Go compiles to arm64; Python core stays lean).
 
+## Agentic Layer (Agno)
+
+OpenAgent uses **Agno** as the agentic layer for reusable memory, knowledge, and session primitives. This repo focuses on deterministic orchestration, extension/service composition, MCP-lite contracts, and low-power deployment behavior rather than rebuilding generic agent memory internals.
+
 ## Reference Implementations
 
 Read these before implementing anything non-trivial. Prefer patterns from these codebases.
@@ -60,17 +64,20 @@ openagent/              # Core Python — orchestration, discovery, interfaces O
   __init__.py
   interfaces.py             # AsyncExtension protocol + BaseAsyncExtension ABC
   manager.py                # Extension discovery via entry points
+  channels/                 # MCP-lite channel/service adapters (discord, telegram, ...)
   main.py                   # Entry point: asyncio.run(load_extensions())
   agent/                    # (to build) Agent loop, context, session, memory
   providers/                # (to build) LLM provider registry
   services/                 # (to build) ServiceManager — Go service lifecycle
   bus/                      # (to build) Message bus (channel → agent → response)
+  tests/                    # Core tests (including channels/)
 
 extensions/                 # Python channel integrations (independently installable)
   discord/                  # Discord bot (discord.py + aiohttp)
   whatsapp/                 # WhatsApp via Neonize (to be migrated to services/ later)
   tts/                      # Text-to-speech (EdgeTTS, MiniMax)
   stt/                      # Speech-to-text (faster-whisper, Deepgram)
+  <name>/tests/             # Extension-local tests
 
 services/                   # Go (or compiled) service daemons
   <name>/                   # Self-contained Go module
@@ -88,10 +95,7 @@ app/                        # Minimalist web UI (FastAPI + HTMX, no auth — POC
   templates/                # Jinja2 HTML templates
   static/                   # CSS and vanilla JS (no build step)
   pyproject.toml            # Package: openagent-app
-
-tests/                      # Core and integration tests
-  openagent/
-  extensions/
+  tests/                    # Web UI tests
 
 data/                       # Runtime storage (gitignored)
   sessions.db               # SQLite session history
@@ -265,6 +269,7 @@ Python extensions handle channels and media. They do **not** do heavy CPU/IO wor
 | What | Language | Location | Pattern |
 |---|---|---|---|
 | Channel integrations (WhatsApp, Discord) | Python | `extensions/` | `AsyncExtension` + entry points |
+| Service-backed channel connectors | Python | `openagent/channels/` | Shared `mcplite.py` + per-service adapters |
 | Media (TTS, STT) | Python | `extensions/` | Provider pattern, async wrappers |
 | Heavy compute / data tools | Go | `services/` | MCP-lite daemon + `service.json` |
 
@@ -394,12 +399,14 @@ app/
 
 ## Testing Standards
 
-- Core tests: `tests/openagent/`
-- Extension tests: `extensions/<name>/tests/` and `tests/extensions/<name>/`
+- Core tests: `openagent/tests/` (including `openagent/tests/channels/`)
+- App tests: `app/tests/`
+- Extension tests: `extensions/<name>/tests/` only (self-contained per extension)
 - Service tests: `services/<name>/` (Go `_test.go` files)
 - Mock Go services in Python tests with a minimal asyncio socket stub that speaks MCP-lite
 - No real network calls in tests, no real LLM calls in tests
 - `pytest-asyncio` for async Python tests
+- Do not keep active test suites under project-root `tests/`; tests belong to their owning vertical.
 
 ## Build Order (What Needs Building)
 

@@ -6,6 +6,11 @@ This file defines how coding agents should work in this repository.
 
 Build OpenAgent as a deterministic, extension-first Python + Go hybrid agent platform that orchestrates multi-agent pipelines on offline 14B-class models. Primary deployment target: Raspberry Pi / low-power hardware.
 
+## Agentic Layer
+
+- Use **Agno** as the agentic layer for reusable memory, knowledge, and session primitives.
+- Keep OpenAgent-specific orchestration and service integration in this repository; avoid re-implementing generic memory/knowledge internals when Agno already provides them.
+
 ## Source Of Truth
 
 - Full development guide: [`CLAUDE.md`](./CLAUDE.md)
@@ -105,10 +110,12 @@ Service → Agent:  {"id":"<uuid>","type":"tools.list.ok","tools":[...]}
 
 ```
 openagent/      # Core Python (minimal)
+  tests/             # Core Python tests (including channels/)
 extensions/         # Python channel integrations (independently installable)
+  <name>/tests/      # Extension-local tests (self-contained verticals)
 services/           # Go service daemons (each with go.mod + service.json)
 app/                # Minimalist web UI (FastAPI + HTMX, no auth — POC only)
-tests/              # Python tests (mirrors openagent/ and extensions/ structure)
+  tests/             # Web UI tests (route-level and app-level)
 data/               # Runtime storage: sessions.db, memory/, sockets/, artifacts/
 config/             # openagent.yaml (primary config)
 inspire/            # Reference implementations (gitignored)
@@ -153,13 +160,15 @@ inspire/            # Reference implementations (gitignored)
 
 ## Testing Standards
 
-- Core tests: `tests/openagent/`
-- Extension tests: `extensions/<name>/tests/` and `tests/extensions/<name>/`
+- Core tests: `openagent/tests/` (including `openagent/tests/channels/`)
+- App tests: `app/tests/`
+- Extension tests: `extensions/<name>/tests/` only (self-contained per extension)
 - Go service tests: `services/<name>/` (Go `_test.go` files)
 - Mock Go services in Python tests with a minimal asyncio socket stub that speaks MCP-lite
 - No real network calls in tests, no real LLM calls in tests
 - `pytest-asyncio` for async Python tests
 - Every new core behaviour: tests covering discovery/loading, initialization, key execution paths
+- Do not add active test suites under project-root `tests/`; keep tests inside their owning vertical.
 
 ## Change Discipline
 
