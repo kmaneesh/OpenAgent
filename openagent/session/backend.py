@@ -76,3 +76,37 @@ class SessionBackend(Protocol):
     async def list_sessions(self) -> list[str]:
         """Return all known session keys."""
         ...
+
+    # ------------------------------------------------------------------
+    # Cross-channel identity
+    # ------------------------------------------------------------------
+
+    async def resolve_user_key(self, channel: str, channel_id: str) -> str:
+        """Return (or create) the stable ``user_key`` for a channel identity.
+
+        First call for a new ``(channel, channel_id)`` pair generates a unique
+        ``user:<hex>`` key and persists it.  Subsequent calls return the same
+        key and refresh ``last_active``.
+        """
+        ...
+
+    async def link_user_keys(self, key_a: str, key_b: str) -> str:
+        """Merge key_b into key_a — redirect all channel IDs and move turns.
+
+        Returns key_a (the winner).  key_b will no longer appear anywhere
+        after this call.
+        """
+        ...
+
+    async def store_link_pin(
+        self, user_key: str, pin: str, expires_at: str
+    ) -> None:
+        """Persist a one-time link pin valid until ``expires_at`` (ISO string)."""
+        ...
+
+    async def redeem_link_pin(self, redeemer_key: str, pin: str) -> str | None:
+        """Validate pin, merge the two sessions, return winning key.
+
+        Returns None if the pin is invalid, expired, or already used.
+        """
+        ...

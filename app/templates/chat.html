@@ -96,7 +96,11 @@ function chatApp() {
           return;
         }
         this.typing = false;
-        this.messages.push(msg);
+        if (msg.stream_chunk && this.messages.length > 0 && this.messages[this.messages.length - 1].role === "agent") {
+          this.messages[this.messages.length - 1] = { role: "agent", content: msg.content };
+        } else {
+          this.messages.push(msg);
+        }
         this.$nextTick(() => this.scrollToBottom());
       };
     },

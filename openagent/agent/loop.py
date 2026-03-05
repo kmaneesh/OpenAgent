@@ -24,7 +24,7 @@ output is logged at DEBUG level.
 Session key
 -----------
 ``InboundMessage.session_key`` is used throughout — it already handles
-cross-channel identity (canonical_id → "user:alice") and per-chat fallback.
+cross-channel identity (user_key → "user:<hex>") and per-chat fallback.
 """
 
 from __future__ import annotations
@@ -152,23 +152,65 @@ class AgentLoop:
 
         tool_schemas = self._tools.schemas() if self._tools.has_tools() else None
         final_content = ""
+        use_streaming = tool_schemas is None
+        streamed = False
 
         for iteration in range(MAX_ITERATIONS):
             try:
-                response: LLMResponse = await self._provider.chat(
-                    messages, tools=tool_schemas
-                )
+                if use_streaming:
+                    # Stream from LLM and dispatch chunks as they arrive
+                    accumulated = ""
+                    first = True
+                    async for chunk in self._provider.stream(messages):
+                        accumulated += chunk
+                        # Dispatch every ~80 chars to balance latency vs bus load
+                        if first or len(accumulated) % 80 < len(chunk):
+                            first = False
+                            reply = OutboundMessage(
+                                channel=msg.channel,
+                                chat_id=msg.chat_id,
+                                content=accumulated,
+                                session_key=session_key,
+                                metadata={
+                                    **dict(msg.metadata),
+                                    "stream_chunk": True,
+                                    "stream_end": False,
+                                },
+                            )
+                            await self._bus.dispatch(reply)
+                    final_content = accumulated
+                    # Send final chunk with stream_end so adapters can clean up
+                    if final_content:
+                        reply = OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=final_content,
+                            session_key=session_key,
+                            metadata={
+                                **dict(msg.metadata),
+                                "stream_chunk": True,
+                                "stream_end": True,
+                            },
+                        )
+                        await self._bus.dispatch(reply)
+                    streamed = True
+                    break
+                else:
+                    response: LLMResponse = await self._provider.chat(
+                        messages, tools=tool_schemas
+                    )
             except Exception as exc:
                 logger.error("LLM call failed on iteration %d: %s", iteration, exc)
                 final_content = f"[error] LLM call failed: {exc}"
                 break
 
-            if response.content:
-                final_content = response.content
+            if not use_streaming:
+                if response.content:
+                    final_content = response.content
 
-            if not response.has_tool_calls:
-                # Model gave a final answer — done
-                break
+                if not response.has_tool_calls:
+                    # Model gave a final answer — done
+                    break
 
             # Append assistant turn with tool_calls to context
             messages.append(Message("assistant", response.content or ""))
@@ -176,7 +218,9 @@ class AgentLoop:
             # Execute each tool call and inject results
             for tc in response.tool_calls:
                 logger.debug("Tool call: %s(%s)", tc.name, tc.arguments)
-                raw_result = await self._tools.call(tc.name, tc.arguments)
+                raw_result = await self._tools.call(
+                    tc.name, tc.arguments, session_key=session_key
+                )
 
                 # Truncate tool output
                 if len(raw_result) > MAX_TOOL_OUTPUT:
@@ -211,17 +255,16 @@ class AgentLoop:
         if final_content:
             await self._sessions.append(session_key, "assistant", final_content)
 
-        # Dispatch reply to the originating channel.
-        # Copy inbound metadata so channel adapters (e.g. Telegram) can read
-        # access_hash and other peer identifiers needed to send the reply.
-        reply = OutboundMessage(
-            channel=msg.channel,
-            chat_id=msg.chat_id,
-            content=final_content,
-            session_key=session_key,
-            metadata=dict(msg.metadata),
-        )
-        await self._bus.dispatch(reply)
+        # Dispatch reply to the originating channel (skip if already streamed).
+        if not streamed:
+            reply = OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=final_content,
+                session_key=session_key,
+                metadata=dict(msg.metadata),
+            )
+            await self._bus.dispatch(reply)
         logger.info(
             "Session %s → %s:%s (%d chars)",
             session_key, msg.channel, msg.chat_id, len(final_content),

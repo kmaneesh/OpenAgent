@@ -35,8 +35,12 @@ async def chat_ws(ws: WebSocket):
     # Unique ID for this browser tab — becomes the session key "web:<id>"
     session_id = uuid.uuid4().hex[:12]
 
-    async def _deliver(content: str) -> None:
-        await ws.send_json({"role": "agent", "content": content})
+    async def _deliver(content: str, stream_chunk: bool = False) -> None:
+        await ws.send_json({
+            "role": "agent",
+            "content": content,
+            "stream_chunk": stream_chunk,
+        })
 
     web_adapter.register_connection(session_id, _deliver)
     # Tell the browser its session ID so it can display it.

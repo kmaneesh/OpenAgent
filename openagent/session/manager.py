@@ -115,6 +115,28 @@ class SessionManager:
         return await self._backend.list_sessions()
 
     # ------------------------------------------------------------------
+    # Cross-channel identity (proxied from backend)
+    # ------------------------------------------------------------------
+
+    async def resolve_user_key(self, channel: str, channel_id: str) -> str:
+        """Return (or create) the stable user_key for a channel identity."""
+        return await self._backend.resolve_user_key(channel, channel_id)
+
+    async def link_user_keys(self, key_a: str, key_b: str) -> str:
+        """Merge key_b into key_a.  Returns key_a."""
+        return await self._backend.link_user_keys(key_a, key_b)
+
+    async def store_link_pin(
+        self, user_key: str, pin: str, expires_at: str
+    ) -> None:
+        """Persist a one-time link pin valid until expires_at (ISO string)."""
+        await self._backend.store_link_pin(user_key, pin, expires_at)
+
+    async def redeem_link_pin(self, redeemer_key: str, pin: str) -> str | None:
+        """Validate pin and merge the two sessions.  Returns winning key or None."""
+        return await self._backend.redeem_link_pin(redeemer_key, pin)
+
+    # ------------------------------------------------------------------
     # History → provider.Message conversion
     # ------------------------------------------------------------------
 

@@ -5,16 +5,26 @@ which Go/Rust service owns the tool.  The registry handles dispatch.
 
 Tool schemas are in OpenAI function-calling format so they can be passed
 directly to ``provider.chat(tools=[...])`` regardless of provider.
+
+Native tools
+------------
+Python-native tools (not backed by a Go service) can be registered via
+``register_native(name, description, params_schema, fn)``.  Their handler
+signature is ``async fn(session_key: str, args: dict) -> str``.  Native
+registrations survive ``rebuild()`` calls.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from openagent.services.manager import ServiceManager
 from openagent.services import protocol as proto
+
+NativeHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +40,13 @@ class ToolRegistry:
 
     def __init__(self, service_manager: ServiceManager) -> None:
         self._mgr = service_manager
-        # tool_name → service_name for routing
+        # tool_name → service_name for routing (Go service tools)
         self._tool_to_service: dict[str, str] = {}
-        # OpenAI-format schemas for the LLM
+        # OpenAI-format schemas from Go services (rebuilt on every rebuild())
         self._schemas: list[dict[str, Any]] = []
+        # Native Python tools — survive rebuild()
+        self._native_handlers: dict[str, NativeHandler] = {}
+        self._native_schemas: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     # Build / rebuild
@@ -77,27 +90,69 @@ class ToolRegistry:
         )
 
     # ------------------------------------------------------------------
+    # Native tool registration
+    # ------------------------------------------------------------------
+
+    def register_native(
+        self,
+        name: str,
+        description: str,
+        params_schema: dict[str, Any],
+        fn: NativeHandler,
+    ) -> None:
+        """Register a Python-native tool alongside Go service tools.
+
+        ``fn`` must be ``async fn(session_key: str, args: dict) -> str``.
+        Native registrations survive ``rebuild()`` calls.
+        """
+        self._native_handlers[name] = fn
+        self._native_schemas.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": params_schema or {"type": "object", "properties": {}},
+            },
+        })
+        logger.debug("ToolRegistry: registered native tool %r", name)
+
+    # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------
 
     def schemas(self) -> list[dict[str, Any]]:
-        """Return tool schemas in OpenAI function-calling format."""
-        return list(self._schemas)
+        """Return all tool schemas (Go services + native) in OpenAI format."""
+        return list(self._schemas) + list(self._native_schemas)
 
     def has_tools(self) -> bool:
-        return bool(self._schemas)
+        return bool(self._schemas) or bool(self._native_schemas)
 
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> str:
-        """Invoke a tool on its owning service.
+    async def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        session_key: str = "",
+    ) -> str:
+        """Invoke a tool — native Python tools first, then Go service tools.
 
         Returns the result string.  On error returns an error description
         instead of raising — the agent loop injects this into the conversation
         so the LLM can react gracefully.
         """
+        # Native tools take priority (no network hop)
+        if name in self._native_handlers:
+            try:
+                return await self._native_handlers[name](session_key, arguments)
+            except Exception as exc:
+                msg = f"[tool error] {name!r}: {exc}"
+                logger.error(msg)
+                return msg
+
         service_name = self._tool_to_service.get(name)
         if service_name is None:
             msg = f"[tool error] unknown tool: {name!r}"

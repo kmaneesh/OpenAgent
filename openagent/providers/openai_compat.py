@@ -62,16 +62,20 @@ class OpenAICompatProvider:
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
-                    chunk = line[6:]
-                    if chunk == "[DONE]":
+                    chunk = line[6:].strip()
+                    if chunk == "[DONE]" or not chunk:
                         break
                     try:
+                        parsed = json.loads(chunk)
+                        choices = parsed.get("choices") or []
+                        if not choices:
+                            continue
                         delta = (
-                            json.loads(chunk)["choices"][0]["delta"].get("content", "")
-                        )
+                            choices[0].get("delta") or {}
+                        ).get("content", "")
                         if delta:
                             yield delta
-                    except Exception:
+                    except (json.JSONDecodeError, KeyError, TypeError):
                         continue
 
     async def complete(self, messages: list[Message], **kwargs) -> str:
@@ -101,8 +105,11 @@ class OpenAICompatProvider:
             resp.raise_for_status()
             data = resp.json()
 
-        choice = data["choices"][0]
-        msg = choice.get("message", {})
+        choices = data.get("choices") or []
+        if not choices:
+            return LLMResponse(content="", tool_calls=[])
+        choice = choices[0]
+        msg = choice.get("message") or {}
         content: str = msg.get("content") or ""
         raw_calls: list[dict[str, Any]] = msg.get("tool_calls") or []
 

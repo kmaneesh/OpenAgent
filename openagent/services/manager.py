@@ -115,8 +115,8 @@ class ManagedService:
             "restart_count": self.restart_count,
             "last_error": self.last_error,
             "version": self.manifest.version,
-            "tools": len(self.manifest.tools),
-            "events": len(self.manifest.events),
+            "tools": self.manifest.tools,
+            "events": self.manifest.events,
             "socket": self.manifest.socket,
         }
 
@@ -159,12 +159,20 @@ class ServiceManager:
         await mgr.stop()
     """
 
-    def __init__(self, *, root: Path) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path,
+        env_extras: dict[str, dict[str, str]] | None = None,
+    ) -> None:
         self._root = root
         self._platform = _current_platform()
         self._services: dict[str, ManagedService] = {}
         self._watchdog_tasks: dict[str, asyncio.Task[None]] = {}
         self._running = False
+        # Per-service extra env vars injected on each launch (e.g. channel tokens).
+        # Keys are service names; values are dicts merged into the subprocess env.
+        self._env_extras: dict[str, dict[str, str]] = env_extras or {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -350,6 +358,7 @@ class ServiceManager:
         socket_path.unlink(missing_ok=True)
 
         env = {**os.environ, "OPENAGENT_SOCKET_PATH": str(socket_path)}
+        env.update(self._env_extras.get(svc.name, {}))
         svc.status = ServiceStatus.STARTING
 
         process = await asyncio.create_subprocess_exec(

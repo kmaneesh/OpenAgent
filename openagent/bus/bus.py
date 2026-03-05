@@ -7,7 +7,7 @@ global inbound queue.  A background ``_fanout`` task reads it and routes to a
 per-session ``asyncio.Queue`` keyed by ``msg.session_key``.
 
 Cross-channel sessions work automatically: if WhatsApp and Telegram messages
-both carry ``sender.canonical_id = "user:alice"``, they share one queue and
+both carry ``sender.user_key = "user:abc123"``, they share one queue and
 therefore one agent loop invocation.
 
 The agent loop calls ``session_queue(session_key)`` to get its dedicated queue

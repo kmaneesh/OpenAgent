@@ -53,9 +53,20 @@ class ChannelManager:
     On service restart the adapter is rebuilt from the new client instance.
     """
 
-    def __init__(self, *, service_manager: ServiceManager, bus: MessageBus) -> None:
+    def __init__(
+        self,
+        *,
+        service_manager: ServiceManager,
+        bus: MessageBus,
+        session_manager: object | None = None,
+    ) -> None:
         self._service_manager = service_manager
         self._bus = bus
+        # Bind SessionManager.resolve_user_key as the identity resolver for adapters.
+        # When None, adapters fall back to the channel:chat_id session key.
+        self._resolver = (
+            session_manager.resolve_user_key if session_manager is not None else None
+        )
         # channel_name → adapter
         self._adapters: dict[str, ChannelAdapter] = {}
         self._route_task: asyncio.Task[None] | None = None
@@ -138,7 +149,9 @@ class ChannelManager:
                 continue
 
             # New client (first start or restart) — create fresh adapter.
-            self._adapters[svc_name] = AdapterClass(client=client, bus=self._bus)
+            self._adapters[svc_name] = AdapterClass(
+                client=client, bus=self._bus, resolver=self._resolver
+            )
             logger.info("ChannelManager: attached adapter for %r", svc_name)
 
     # ------------------------------------------------------------------
