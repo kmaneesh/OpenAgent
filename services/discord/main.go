@@ -155,6 +155,29 @@ func (r *discordRuntime) sendMessage(channelID, text string) (string, error) {
 	})
 }
 
+func (r *discordRuntime) editMessage(channelID, messageID, text string) (string, error) {
+	if channelID == "" || messageID == "" {
+		return "", errors.New("channel_id and message_id are required")
+	}
+	if text == "" {
+		return "", errors.New("text is required")
+	}
+	if !r.started.Load() || r.sess == nil {
+		return "", errors.New("discord runtime is not started")
+	}
+	msg, err := r.sess.ChannelMessageEdit(channelID, messageID, text)
+	if err != nil {
+		r.setError(err.Error())
+		r.emitConnectionStatus()
+		return "", err
+	}
+	return marshalJSON(map[string]any{
+		"ok":         true,
+		"id":         msg.ID,
+		"channel_id": msg.ChannelID,
+	})
+}
+
 func (r *discordRuntime) pollEvent() (mcplite.EventFrame, bool) {
 	select {
 	case evt := <-r.events:
@@ -301,6 +324,19 @@ func buildServer(rt *discordRuntime) *mcplite.Server {
 				"required": []string{"channel_id", "text"},
 			},
 		},
+		{
+			Name:        "discord.edit_message",
+			Description: "Edit an existing Discord message.",
+			Params: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"channel_id":  map[string]any{"type": "string", "description": "Discord channel ID."},
+					"message_id":  map[string]any{"type": "string", "description": "Discord message ID to edit."},
+					"text":        map[string]any{"type": "string", "description": "New message text."},
+				},
+				"required": []string{"channel_id", "message_id", "text"},
+			},
+		},
 	}
 
 	server := mcplite.NewServer(tools, "ready")
@@ -314,6 +350,12 @@ func buildServer(rt *discordRuntime) *mcplite.Server {
 		channelID, _ := params["channel_id"].(string)
 		text, _ := params["text"].(string)
 		return rt.sendMessage(channelID, text)
+	})
+	server.RegisterToolHandler("discord.edit_message", func(_ context.Context, params map[string]any) (string, error) {
+		channelID, _ := params["channel_id"].(string)
+		messageID, _ := params["message_id"].(string)
+		text, _ := params["text"].(string)
+		return rt.editMessage(channelID, messageID, text)
 	})
 	return server
 }

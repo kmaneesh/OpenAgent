@@ -56,6 +56,19 @@
           "text"
         ]
       }
+    },
+    {
+      "name": "discord.edit_message",
+      "description": "Edit an existing Discord message.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "channel_id": {"type": "string", "description": "Discord channel ID."},
+          "message_id": {"type": "string", "description": "Discord message ID to edit."},
+          "text": {"type": "string", "description": "New message text."}
+        },
+        "required": ["channel_id", "message_id", "text"]
+      }
     }
   ],
   "events": [
