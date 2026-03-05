@@ -5,7 +5,7 @@ Sections
 provider:   LLM backend (existing, unchanged)
 agents:     Agent definitions (name, system_prompt, limits)
 session:    Session storage settings
-channels:   Per-channel credentials (injected into Go service env vars)
+platforms:   Per-platform credentials (injected into Go service env vars)
 tools:      Tool policy (allowed filesystem paths, shell commands)
 
 Loading order
@@ -60,36 +60,36 @@ class SessionConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Channels (credentials only — socket paths are in service.json)
+# platforms (credentials only — socket paths are in service.json)
 # ---------------------------------------------------------------------------
 
 
-class DiscordChannelConfig(BaseModel):
+class DiscordPlatformConfig(BaseModel):
     token: str = ""
     guild_ids: list[int] = Field(default_factory=list)
 
 
-class TelegramChannelConfig(BaseModel):
+class TelegramPlatformConfig(BaseModel):
     app_id: int = 0
     app_hash: str = ""
     bot_token: str = ""
 
 
-class SlackChannelConfig(BaseModel):
+class SlackPlatformConfig(BaseModel):
     bot_token: str = ""
     app_token: str = ""
 
 
-class WhatsAppChannelConfig(BaseModel):
+class WhatsAppPlatformConfig(BaseModel):
     phone_number: str = ""
     data_dir: str = "data/whatsapp"
 
 
-class ChannelsConfig(BaseModel):
-    discord: Optional[DiscordChannelConfig] = None
-    telegram: Optional[TelegramChannelConfig] = None
-    slack: Optional[SlackChannelConfig] = None
-    whatsapp: Optional[WhatsAppChannelConfig] = None
+class PlatformsConfig(BaseModel):
+    discord: Optional[DiscordPlatformConfig] = None
+    telegram: Optional[TelegramPlatformConfig] = None
+    slack: Optional[SlackPlatformConfig] = None
+    whatsapp: Optional[WhatsAppPlatformConfig] = None
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ class OpenAgentConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     agents: list[AgentConfig] = Field(default_factory=lambda: [AgentConfig()])
     session: SessionConfig = Field(default_factory=SessionConfig)
-    channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
+    platforms: PlatformsConfig = Field(default_factory=PlatformsConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
     @field_validator("tools", mode="before")
@@ -139,23 +139,23 @@ class OpenAgentConfig(BaseModel):
 
 # (yaml_path_tuple, env_var_names)  — first non-empty env var wins
 _ENV_OVERRIDES: list[tuple[tuple[str, ...], list[str]]] = [
-    # Channels — Discord
-    (("channels", "discord", "token"),
+    # platforms — Discord
+    (("platforms", "discord", "token"),
      ["DISCORD_TOKEN", "OPENAGENT_DISCORD_TOKEN"]),
-    # Channels — Telegram
-    (("channels", "telegram", "app_id"),
+    # platforms — Telegram
+    (("platforms", "telegram", "app_id"),
      ["TELEGRAM_APP_ID", "OPENAGENT_TELEGRAM_APP_ID"]),
-    (("channels", "telegram", "app_hash"),
+    (("platforms", "telegram", "app_hash"),
      ["TELEGRAM_APP_HASH", "OPENAGENT_TELEGRAM_APP_HASH"]),
-    (("channels", "telegram", "bot_token"),
+    (("platforms", "telegram", "bot_token"),
      ["TELEGRAM_BOT_TOKEN", "OPENAGENT_TELEGRAM_BOT_TOKEN"]),
-    # Channels — Slack
-    (("channels", "slack", "bot_token"),
+    # platforms — Slack
+    (("platforms", "slack", "bot_token"),
      ["SLACK_BOT_TOKEN", "OPENAGENT_SLACK_BOT_TOKEN"]),
-    (("channels", "slack", "app_token"),
+    (("platforms", "slack", "app_token"),
      ["SLACK_APP_TOKEN", "OPENAGENT_SLACK_APP_TOKEN"]),
-    # Channels — WhatsApp
-    (("channels", "whatsapp", "phone_number"),
+    # platforms — WhatsApp
+    (("platforms", "whatsapp", "phone_number"),
      ["WHATSAPP_PHONE", "OPENAGENT_WHATSAPP_PHONE"]),
 ]
 
@@ -213,11 +213,11 @@ def build_service_env_extras(cfg: OpenAgentConfig) -> dict[str, dict[str, str]]:
     """
     extras: dict[str, dict[str, str]] = {}
 
-    discord = cfg.channels.discord
+    discord = cfg.platforms.discord
     if discord and discord.token:
         extras["discord"] = {"DISCORD_BOT_TOKEN": discord.token}
 
-    telegram = cfg.channels.telegram
+    telegram = cfg.platforms.telegram
     if telegram:
         tg: dict[str, str] = {}
         if telegram.app_id:
@@ -229,7 +229,7 @@ def build_service_env_extras(cfg: OpenAgentConfig) -> dict[str, dict[str, str]]:
         if tg:
             extras["telegram"] = tg
 
-    slack = cfg.channels.slack
+    slack = cfg.platforms.slack
     if slack:
         sl: dict[str, str] = {}
         if slack.bot_token:

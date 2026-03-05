@@ -114,13 +114,39 @@ class SessionManager:
     async def list_sessions(self) -> list[str]:
         return await self._backend.list_sessions()
 
+    async def hide_session(self, session_key: str) -> None:
+        """Soft-delete: hide from list but keep turns for logs."""
+        await self._backend.hide_session(session_key)
+
     # ------------------------------------------------------------------
-    # Cross-channel identity (proxied from backend)
+    # Cross-platform identity (proxied from backend)
     # ------------------------------------------------------------------
 
-    async def resolve_user_key(self, channel: str, channel_id: str) -> str:
-        """Return (or create) the stable user_key for a channel identity."""
-        return await self._backend.resolve_user_key(channel, channel_id)
+    async def resolve_user_key(
+        self, platform: str, platform_id: str, channel_id: str = ""
+    ) -> str:
+        """Return (or create) the stable user_key for a platform identity."""
+        return await self._backend.resolve_user_key(
+            platform, platform_id, channel_id=channel_id
+        )
+
+    async def list_all_identities(self) -> list[dict]:
+        """Return all identity_links rows, newest-active first."""
+        return await self._backend.list_all_identities()
+
+    async def set_identity_link(
+        self, user_key: str, platform: str, platform_id: str, channel_id: str = ""
+    ) -> None:
+        """Create or update a platform identity link for a given user_key."""
+        await self._backend.set_identity_link(user_key, platform, platform_id, channel_id)
+
+    async def unlink_platform(self, platform: str, platform_id: str) -> None:
+        """Remove a specific platform identity link."""
+        await self._backend.unlink_platform(platform, platform_id)
+
+    async def get_identity_links(self, user_key: str) -> list[dict]:
+        """Return all platform links for user_key, newest-active first."""
+        return await self._backend.get_identity_links(user_key)
 
     async def link_user_keys(self, key_a: str, key_b: str) -> str:
         """Merge key_b into key_a.  Returns key_a."""

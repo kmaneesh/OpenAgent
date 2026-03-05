@@ -38,6 +38,7 @@ from openagent.bus.events import InboundMessage, OutboundMessage
 from openagent.providers.base import LLMResponse, Message, Provider
 from openagent.session.manager import SessionManager
 from openagent.agent.tools import ToolRegistry
+from openagent.agent.middlewares import AgentMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +72,14 @@ class AgentLoop:
         tools: ToolRegistry,
         *,
         system_prompt: str = _SYSTEM_PROMPT,
+        middlewares: list["AgentMiddleware"] | None = None,
     ) -> None:
         self._bus = bus
         self._provider = provider
         self._sessions = sessions
         self._tools = tools
         self._system_prompt = system_prompt
+        self._middlewares = middlewares or []
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._running = False
 
@@ -136,6 +139,22 @@ class AgentLoop:
     # ------------------------------------------------------------------
 
     async def _process(self, msg: InboundMessage) -> None:
+        """Run the middleware chain, terminating in the core ReAct loop."""
+        
+        async def core_loop(m: InboundMessage) -> None:
+            await self._run_react(m)
+
+        chain = core_loop
+        for middleware in reversed(self._middlewares):
+            def make_link(mw=middleware, nxt=chain):
+                async def link(m: InboundMessage) -> None:
+                    await mw(m, nxt)
+                return link
+            chain = make_link()
+            
+        await chain(msg)
+
+    async def _run_react(self, msg: InboundMessage) -> None:
         """Run one full ReAct turn for an inbound message."""
         session_key = msg.session_key
 

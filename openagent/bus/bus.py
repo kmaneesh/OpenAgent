@@ -2,17 +2,17 @@
 
 Architecture
 ------------
-Channel adapters call ``publish()`` to put an ``InboundMessage`` onto the
+platform adapters call ``publish()`` to put an ``InboundMessage`` onto the
 global inbound queue.  A background ``_fanout`` task reads it and routes to a
 per-session ``asyncio.Queue`` keyed by ``msg.session_key``.
 
-Cross-channel sessions work automatically: if WhatsApp and Telegram messages
+Cross-platform sessions work automatically: if WhatsApp and Telegram messages
 both carry ``sender.user_key = "user:abc123"``, they share one queue and
 therefore one agent loop invocation.
 
 The agent loop calls ``session_queue(session_key)`` to get its dedicated queue
 and ``dispatch()`` to put outbound replies on the shared outbound queue.
-Channel adapters drain ``outbound`` to send replies back.
+platform adapters drain ``outbound`` to send replies back.
 
 Shutdown
 --------
@@ -49,12 +49,14 @@ class MessageBus:
 
     def __init__(self, maxsize: int = 256) -> None:
         self._maxsize = maxsize
-        # Global inbound queue — channel adapters put here
+        # Global inbound queue — platform adapters put here
         self._inbound: Queue[InboundMessage | None] = Queue(maxsize=maxsize)
-        # Global outbound queue — channel adapters drain this
+        # Global outbound queue — platform adapters drain this
         self.outbound: Queue[OutboundMessage | None] = Queue(maxsize=maxsize)
         # Per-session queues — agent loop reads from these
         self._sessions: dict[str, Queue[InboundMessage | None]] = {}
+        # Observer queues — SSE clients tap inbound+outbound per session_key
+        self._observers: dict[str, list[Queue[dict | None]]] = {}
         # Optional callback: called once the first time a session_key is seen
         self._session_cb: Callable[[str], None] | None = None
         self._fanout_task: Task[Any] | None = None
@@ -98,6 +100,13 @@ class MessageBus:
                 except asyncio.QueueEmpty:
                     break
             q.put_nowait(None)
+        # Signal all observer queues
+        for queues in self._observers.values():
+            for oq in queues:
+                try:
+                    oq.put_nowait(None)
+                except asyncio.QueueFull:
+                    pass
         # Signal outbound consumers
         try:
             self.outbound.put_nowait(None)
@@ -110,7 +119,7 @@ class MessageBus:
     # ------------------------------------------------------------------
 
     async def publish(self, msg: InboundMessage) -> None:
-        """Channel adapter → bus.  Put an inbound message on the global queue."""
+        """platform adapter → bus.  Put an inbound message on the global queue."""
         if self._closed:
             raise RuntimeError("MessageBus is closed")
         await self._inbound.put(msg)
@@ -120,6 +129,14 @@ class MessageBus:
         if self._closed:
             raise RuntimeError("MessageBus is closed")
         await self.outbound.put(msg)
+        # Tap observers for this session so the UI can monitor in real-time
+        if msg.session_key:
+            self._notify_observers(msg.session_key, {
+                "direction": "outbound",
+                "platform": msg.platform,
+                "content": msg.content,
+                "session_key": msg.session_key,
+            })
 
     # ------------------------------------------------------------------
     # Session access
@@ -152,6 +169,41 @@ class MessageBus:
         return list(self._sessions.keys())
 
     # ------------------------------------------------------------------
+    # Observer queues — real-time session monitoring (SSE)
+    # ------------------------------------------------------------------
+
+    def subscribe(self, session_key: str) -> "Queue[dict | None]":
+        """Register an observer queue for a session.
+
+        Returns a queue that receives ``{"direction", "platform", "content",
+        "session_key"}`` dicts for every inbound and outbound message routed
+        through this session.  A ``None`` sentinel is sent on bus close.
+        """
+        q: Queue[dict | None] = Queue(maxsize=64)
+        self._observers.setdefault(session_key, []).append(q)
+        return q
+
+    def unsubscribe(self, session_key: str, queue: "Queue[dict | None]") -> None:
+        """Remove an observer queue when an SSE client disconnects."""
+        bucket = self._observers.get(session_key)
+        if bucket is None:
+            return
+        try:
+            bucket.remove(queue)
+        except ValueError:
+            pass
+        if not bucket:
+            del self._observers[session_key]
+
+    def _notify_observers(self, session_key: str, event: dict) -> None:
+        """Push event to observer queues for this session; drop if full."""
+        for oq in self._observers.get(session_key, []):
+            try:
+                oq.put_nowait(event)
+            except asyncio.QueueFull:
+                pass  # slow consumer; drop rather than block
+
+    # ------------------------------------------------------------------
     # Internal fanout loop
     # ------------------------------------------------------------------
 
@@ -175,6 +227,13 @@ class MessageBus:
                 logger.warning(
                     "Session queue full for key=%r; dropping message from %s",
                     key,
-                    msg.channel,
+                    msg.platform,
                 )
+            # Tap observers so SSE clients see inbound messages too
+            self._notify_observers(key, {
+                "direction": "inbound",
+                "platform": msg.platform,
+                "content": msg.content,
+                "session_key": key,
+            })
         logger.debug("MessageBus fanout loop exited")

@@ -15,6 +15,14 @@ from .backend import Turn
 logger = logging.getLogger(__name__)
 
 _CREATE_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    user_key    TEXT PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT '',
+    email       TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    last_seen   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS turns (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     session_key TEXT    NOT NULL,
@@ -27,11 +35,12 @@ CREATE TABLE IF NOT EXISTS turns (
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns (session_key, id);
 
 CREATE TABLE IF NOT EXISTS identity_links (
-    channel     TEXT NOT NULL,
-    channel_id  TEXT NOT NULL,
-    user_key    TEXT NOT NULL,
+    platform     TEXT NOT NULL,
+    platform_id  TEXT NOT NULL,
+    user_key    TEXT NOT NULL REFERENCES users(user_key) ON DELETE CASCADE,
+    channel_id  TEXT NOT NULL DEFAULT '',
     last_active TEXT NOT NULL,
-    PRIMARY KEY (channel, channel_id)
+    PRIMARY KEY (platform, platform_id)
 );
 CREATE INDEX IF NOT EXISTS idx_identity_links_user_key ON identity_links (user_key);
 
@@ -39,6 +48,11 @@ CREATE TABLE IF NOT EXISTS link_pins (
     pin        TEXT PRIMARY KEY,
     user_key   TEXT NOT NULL,
     expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS session_metadata (
+    session_key TEXT PRIMARY KEY,
+    hidden_at   TEXT          -- NULL = visible; ISO timestamp = soft-deleted
 );
 """
 
@@ -141,23 +155,45 @@ class SqliteSessionBackend:
         await self._db.commit()
 
     async def list_sessions(self) -> list[str]:
+        """Return all visible (non-hidden) session keys."""
         assert self._db, "backend not started"
         async with self._db.execute(
-            "SELECT DISTINCT session_key FROM turns ORDER BY session_key"
+            "SELECT DISTINCT t.session_key FROM turns t"
+            " LEFT JOIN session_metadata m ON t.session_key = m.session_key"
+            " WHERE m.hidden_at IS NULL"
+            " ORDER BY t.session_key"
         ) as cursor:
             rows = await cursor.fetchall()
         return [r["session_key"] for r in rows]
 
+    async def hide_session(self, session_key: str) -> None:
+        """Soft-delete: mark a session hidden so it no longer appears in list_sessions.
+
+        The turns remain in the database for logging and audit purposes.
+        """
+        assert self._db, "backend not started"
+        ts = datetime.now().isoformat()
+        await self._db.execute(
+            "INSERT INTO session_metadata (session_key, hidden_at)"
+            " VALUES (?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET hidden_at = excluded.hidden_at",
+            (session_key, ts),
+        )
+        await self._db.commit()
+
     # ------------------------------------------------------------------
-    # Cross-channel identity
+    # Cross-platform identity
     # ------------------------------------------------------------------
 
-    async def resolve_user_key(self, channel: str, channel_id: str) -> str:
-        """Return (or create) the stable user_key for a channel identity.
+    async def resolve_user_key(
+        self, platform: str, platform_id: str, *, channel_id: str = ""
+    ) -> str:
+        """Return (or create) the stable user_key for a platform identity.
 
         Uses INSERT OR IGNORE so concurrent calls within the same connection
         serialise safely — the second insert is silently dropped and the
-        SELECT always returns the winner.
+        SELECT always returns the winner.  ``channel_id`` is stored so the
+        operator can route direct replies back to the user's conversation.
         """
         assert self._db, "backend not started"
         now = datetime.now().isoformat()
@@ -165,16 +201,17 @@ class SqliteSessionBackend:
         # Fast path: known identity
         async with self._db.execute(
             "SELECT user_key FROM identity_links"
-            " WHERE channel = ? AND channel_id = ?",
-            (channel, channel_id),
+            " WHERE platform = ? AND platform_id = ?",
+            (platform, platform_id),
         ) as cur:
             row = await cur.fetchone()
 
         if row:
             await self._db.execute(
-                "UPDATE identity_links SET last_active = ?"
-                " WHERE channel = ? AND channel_id = ?",
-                (now, channel, channel_id),
+                "UPDATE identity_links SET last_active = ?, channel_id = CASE"
+                "  WHEN ? != '' THEN ? ELSE channel_id END"
+                " WHERE platform = ? AND platform_id = ?",
+                (now, channel_id, channel_id, platform, platform_id),
             )
             await self._db.commit()
             return row["user_key"]
@@ -183,24 +220,87 @@ class SqliteSessionBackend:
         new_key = f"user:{uuid.uuid4().hex[:16]}"
         await self._db.execute(
             "INSERT OR IGNORE INTO identity_links"
-            " (channel, channel_id, user_key, last_active) VALUES (?, ?, ?, ?)",
-            (channel, channel_id, new_key, now),
+            " (platform, platform_id, user_key, channel_id, last_active)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (platform, platform_id, new_key, channel_id, now),
         )
         await self._db.commit()
 
         # Re-select to get the actual winner (handles task-level concurrency)
         async with self._db.execute(
             "SELECT user_key FROM identity_links"
-            " WHERE channel = ? AND channel_id = ?",
-            (channel, channel_id),
+            " WHERE platform = ? AND platform_id = ?",
+            (platform, platform_id),
         ) as cur:
             row = await cur.fetchone()
         return row["user_key"]
 
+    async def list_all_identities(self) -> list[dict]:
+        """Return all identity_links rows, newest-active first."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT platform, platform_id, user_key, channel_id, last_active"
+            " FROM identity_links ORDER BY last_active DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "platform": r["platform"],
+                "platform_id": r["platform_id"],
+                "user_key": r["user_key"],
+                "channel_id": r["channel_id"],
+                "last_active": r["last_active"],
+            }
+            for r in rows
+        ]
+
+    async def set_identity_link(
+        self, user_key: str, platform: str, platform_id: str, channel_id: str = ""
+    ) -> None:
+        """Create or update a platform identity link for a given user_key."""
+        assert self._db, "backend not started"
+        now = datetime.now().isoformat()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO identity_links"
+            " (platform, platform_id, user_key, channel_id, last_active)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (platform, platform_id, user_key, channel_id, now),
+        )
+        await self._db.commit()
+
+    async def unlink_platform(self, platform: str, platform_id: str) -> None:
+        """Remove a specific platform identity link."""
+        assert self._db, "backend not started"
+        await self._db.execute(
+            "DELETE FROM identity_links WHERE platform = ? AND platform_id = ?",
+            (platform, platform_id),
+        )
+        await self._db.commit()
+
+    async def get_identity_links(self, user_key: str) -> list[dict]:
+        """Return all platform links for a user_key, newest-active first."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT platform, platform_id, channel_id, last_active"
+            " FROM identity_links WHERE user_key = ?"
+            " ORDER BY last_active DESC",
+            (user_key,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "platform": r["platform"],
+                "platform_id": r["platform_id"],
+                "channel_id": r["channel_id"],
+                "last_active": r["last_active"],
+            }
+            for r in rows
+        ]
+
     async def link_user_keys(self, key_a: str, key_b: str) -> str:
         """Merge key_b into key_a atomically.
 
-        All channel identities and conversation turns that belonged to key_b
+        All platform identities and conversation turns that belonged to key_b
         are reassigned to key_a.  key_b disappears from the database.
         Returns key_a.
         """

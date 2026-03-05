@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from openagent.channels.mcplite import McpLiteClient
+from openagent.platforms.mcplite import McpLiteClient
 from openagent.observability import log_event
 from openagent.observability.logging import get_logger
 
@@ -170,7 +170,7 @@ class ServiceManager:
         self._services: dict[str, ManagedService] = {}
         self._watchdog_tasks: dict[str, asyncio.Task[None]] = {}
         self._running = False
-        # Per-service extra env vars injected on each launch (e.g. channel tokens).
+        # Per-service extra env vars injected on each launch (e.g. platform tokens).
         # Keys are service names; values are dicts merged into the subprocess env.
         self._env_extras: dict[str, dict[str, str]] = env_extras or {}
 

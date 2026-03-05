@@ -74,24 +74,52 @@ class SessionBackend(Protocol):
         ...
 
     async def list_sessions(self) -> list[str]:
-        """Return all known session keys."""
+        """Return all visible (non-hidden) session keys."""
+        ...
+
+    async def hide_session(self, session_key: str) -> None:
+        """Soft-delete a session — hides it from list_sessions but keeps turns."""
         ...
 
     # ------------------------------------------------------------------
-    # Cross-channel identity
+    # Cross-platform identity
     # ------------------------------------------------------------------
 
-    async def resolve_user_key(self, channel: str, channel_id: str) -> str:
-        """Return (or create) the stable ``user_key`` for a channel identity.
+    async def resolve_user_key(
+        self, platform: str, platform_id: str, *, channel_id: str = ""
+    ) -> str:
+        """Return (or create) the stable ``user_key`` for a platform identity.
 
-        First call for a new ``(channel, channel_id)`` pair generates a unique
+        First call for a new ``(platform, platform_id)`` pair generates a unique
         ``user:<hex>`` key and persists it.  Subsequent calls return the same
-        key and refresh ``last_active``.
+        key and refresh ``last_active``.  ``channel_id`` is stored for egress
+        routing so the operator can send direct replies to the user's channel.
+        """
+        ...
+
+    async def list_all_identities(self) -> list[dict]:
+        """Return all identity_links rows, newest-active first."""
+        ...
+
+    async def set_identity_link(
+        self, user_key: str, platform: str, platform_id: str, channel_id: str = ""
+    ) -> None:
+        """Create or update a platform identity link for a given user_key."""
+        ...
+
+    async def unlink_platform(self, platform: str, platform_id: str) -> None:
+        """Remove a specific platform identity link."""
+        ...
+
+    async def get_identity_links(self, user_key: str) -> list[dict]:
+        """Return all platform links for ``user_key``, newest-active first.
+
+        Each entry: ``{platform, platform_id, channel_id, last_active}``.
         """
         ...
 
     async def link_user_keys(self, key_a: str, key_b: str) -> str:
-        """Merge key_b into key_a — redirect all channel IDs and move turns.
+        """Merge key_b into key_a — redirect all platform IDs and move turns.
 
         Returns key_a (the winner).  key_b will no longer appear anywhere
         after this call.

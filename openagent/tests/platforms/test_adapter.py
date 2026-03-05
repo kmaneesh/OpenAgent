@@ -365,7 +365,7 @@ class TestIdentityResolver:
     @pytest.mark.asyncio
     async def test_resolver_sets_user_key(self):
         """When a resolver is wired, the adapter enriches user_key before publish."""
-        async def fake_resolver(platform: str, platform_id: str) -> str:
+        async def fake_resolver(platform: str, platform_id: str, channel_id: str) -> str:
             return f"user:resolved-{platform_id}"
 
         adapter = DiscordPlatformAdapter(
@@ -409,7 +409,7 @@ class TestIdentityResolver:
     @pytest.mark.asyncio
     async def test_resolver_failure_falls_back_gracefully(self):
         """If the resolver raises, the message is still published (no user_key)."""
-        async def bad_resolver(platform: str, platform_id: str) -> str:
+        async def bad_resolver(platform: str, platform_id: str, channel_id: str) -> str:
             raise RuntimeError("db is down")
 
         adapter = DiscordPlatformAdapter(

@@ -195,7 +195,7 @@ async def test_agent_loop_simple_reply(
     """A single text reply with no tool calls reaches the outbound queue."""
     provider = _FakeProvider([LLMResponse(content="world")])
     registry = _empty_registry()
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     msg = _inbound("hello")
@@ -217,7 +217,7 @@ async def test_agent_loop_saves_turns_to_session(
 ) -> None:
     provider = _FakeProvider([LLMResponse(content="answer")])
     registry = _empty_registry()
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     msg = _inbound("question", channel_id="99")
@@ -256,7 +256,7 @@ async def test_agent_loop_tool_call_dispatched(
     client_mock.request = AsyncMock(return_value=result_frame)
     mgr_mock.get_client.return_value = client_mock
 
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     await bus.publish(_inbound("what is 1+2?"))
@@ -297,7 +297,7 @@ async def test_agent_loop_tool_output_truncated(
     client_mock.request = AsyncMock(return_value=result_frame)
     mgr_mock.get_client.return_value = client_mock
 
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     await bus.publish(_inbound("fetch lots of data"))
@@ -323,7 +323,7 @@ async def test_agent_loop_cross_platform_same_session(
         LLMResponse(content="reply2"),
     ])
     registry = _empty_registry()
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     wa = InboundMessage(
@@ -365,7 +365,7 @@ async def test_agent_loop_stop_cancels_tasks(
     provider.chat = _blocking_chat
 
     registry = _empty_registry()
-    loop = AgentLoop(bus, provider, session_mgr, registry)
+    loop = AgentLoop(bus, provider, session_mgr, registry, middlewares=[])
     await loop.start()
 
     await bus.publish(_inbound("trigger session"))

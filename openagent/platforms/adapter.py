@@ -33,8 +33,8 @@ from openagent.services import protocol as proto
 
 from .mcplite import McpLiteClient
 
-# async fn(platform, platform_id) -> user_key  (e.g. SessionManager.resolve_user_key)
-IdentityResolver = Callable[[str, str], Awaitable[str]]
+# async fn(platform, platform_id, channel_id) -> user_key  (e.g. SessionManager.resolve_user_key)
+IdentityResolver = Callable[[str, str, str], Awaitable[str]]
 
 logger = get_logger(__name__)
 
@@ -92,10 +92,10 @@ class PlatformAdapter:
             asyncio.ensure_future(self._bus.publish(inbound))
 
     async def _enrich_and_publish(self, inbound: InboundMessage) -> None:
-        """Resolve user_key before publishing so the session key is stable."""
+        """Resolve user_key (+ store channel_id) before publishing."""
         try:
             inbound.sender.user_key = await self._resolver(
-                inbound.platform, inbound.sender.user_id
+                inbound.platform, inbound.sender.user_id, inbound.channel_id
             )
         except Exception:
             logger.warning(
