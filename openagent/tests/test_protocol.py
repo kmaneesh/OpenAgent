@@ -41,11 +41,11 @@ def test_parse_tools_list_response() -> None:
 
 def test_parse_event_frame() -> None:
     frame = parse_frame(
-        '{"type":"event","event":"message.received","data":{"chat_id":"abc"}}'
+        '{"type":"event","event":"message.received","data":{"channel_id":"abc"}}'
     )
     assert isinstance(frame, EventFrame)
     assert frame.event == "message.received"
-    assert frame.data["chat_id"] == "abc"
+    assert frame.data["channel_id"] == "abc"
 
 
 def test_parse_pong_frame() -> None:

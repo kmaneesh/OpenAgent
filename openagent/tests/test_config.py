@@ -10,12 +10,12 @@ import pytest
 
 from openagent.config import (
     AgentConfig,
-    ChannelsConfig,
-    DiscordChannelConfig,
+    PlatformsConfig,
+    DiscordPlatformConfig,
     OpenAgentConfig,
     SessionConfig,
-    SlackChannelConfig,
-    TelegramChannelConfig,
+    SlackPlatformConfig,
+    TelegramPlatformConfig,
     ToolsConfig,
     build_service_env_extras,
     load_config,
@@ -33,7 +33,7 @@ def test_defaults():
     assert len(cfg.agents) == 1
     assert cfg.default_agent.name == "default"
     assert cfg.session.summarise_after == 40
-    assert cfg.channels.discord is None
+    assert cfg.platforms.discord is None
     assert cfg.tools.filesystem is None
 
 
@@ -62,7 +62,7 @@ def test_load_config_minimal_yaml(tmp_path: Path):
     assert cfg.provider.model == "claude-sonnet-4-6"
     # Unspecified sections keep defaults
     assert cfg.session.summarise_after == 40
-    assert cfg.channels.discord is None
+    assert cfg.platforms.discord is None
 
 
 def test_load_config_with_all_sections(tmp_path: Path):
@@ -78,7 +78,7 @@ def test_load_config_with_all_sections(tmp_path: Path):
         session:
           summarise_after: 20
           db_path: data/test.db
-        channels:
+        platforms:
           discord:
             token: tok-discord
             guild_ids: [12345, 67890]
@@ -102,16 +102,16 @@ def test_load_config_with_all_sections(tmp_path: Path):
     assert cfg.session.summarise_after == 20
     assert cfg.session.db_path == "data/test.db"
 
-    assert cfg.channels.discord is not None
-    assert cfg.channels.discord.token == "tok-discord"
-    assert cfg.channels.discord.guild_ids == [12345, 67890]
+    assert cfg.platforms.discord is not None
+    assert cfg.platforms.discord.token == "tok-discord"
+    assert cfg.platforms.discord.guild_ids == [12345, 67890]
 
-    assert cfg.channels.telegram is not None
-    assert cfg.channels.telegram.app_id == 999
-    assert cfg.channels.telegram.bot_token == "tok-tg"
+    assert cfg.platforms.telegram is not None
+    assert cfg.platforms.telegram.app_id == 999
+    assert cfg.platforms.telegram.bot_token == "tok-tg"
 
-    assert cfg.channels.slack is not None
-    assert cfg.channels.slack.bot_token == "xoxb-slack"
+    assert cfg.platforms.slack is not None
+    assert cfg.platforms.slack.bot_token == "xoxb-slack"
 
     assert cfg.tools.filesystem is not None
     assert "/tmp" in cfg.tools.filesystem.allowed_paths
@@ -147,11 +147,11 @@ def test_env_overrides_provider(tmp_path: Path, monkeypatch):
 
 def test_env_overrides_discord_token(tmp_path: Path, monkeypatch):
     yaml_file = tmp_path / "openagent.yaml"
-    yaml_file.write_text("channels:\n  discord:\n    token: yaml-token\n")
+    yaml_file.write_text("platforms:\n  discord:\n    token: yaml-token\n")
     monkeypatch.setenv("DISCORD_TOKEN", "env-discord-token")
     cfg = load_config(yaml_file)
-    assert cfg.channels.discord is not None
-    assert cfg.channels.discord.token == "env-discord-token"
+    assert cfg.platforms.discord is not None
+    assert cfg.platforms.discord.token == "env-discord-token"
 
 
 def test_env_overrides_telegram(monkeypatch):
@@ -159,27 +159,27 @@ def test_env_overrides_telegram(monkeypatch):
     monkeypatch.setenv("TELEGRAM_APP_HASH", "hashfromenv")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg-bot-env")
     cfg = load_config(None)
-    assert cfg.channels.telegram is not None
-    assert cfg.channels.telegram.app_id == 42
-    assert cfg.channels.telegram.app_hash == "hashfromenv"
-    assert cfg.channels.telegram.bot_token == "tg-bot-env"
+    assert cfg.platforms.telegram is not None
+    assert cfg.platforms.telegram.app_id == 42
+    assert cfg.platforms.telegram.app_hash == "hashfromenv"
+    assert cfg.platforms.telegram.bot_token == "tg-bot-env"
 
 
 def test_env_overrides_slack(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-env")
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-env")
     cfg = load_config(None)
-    assert cfg.channels.slack is not None
-    assert cfg.channels.slack.bot_token == "xoxb-env"
-    assert cfg.channels.slack.app_token == "xapp-env"
+    assert cfg.platforms.slack is not None
+    assert cfg.platforms.slack.bot_token == "xoxb-env"
+    assert cfg.platforms.slack.app_token == "xapp-env"
 
 
 def test_env_wins_over_yaml(tmp_path: Path, monkeypatch):
     yaml_file = tmp_path / "openagent.yaml"
-    yaml_file.write_text("channels:\n  discord:\n    token: yaml-token\n")
+    yaml_file.write_text("platforms:\n  discord:\n    token: yaml-token\n")
     monkeypatch.setenv("DISCORD_TOKEN", "env-wins")
     cfg = load_config(yaml_file)
-    assert cfg.channels.discord.token == "env-wins"
+    assert cfg.platforms.discord.token == "env-wins"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +189,7 @@ def test_env_wins_over_yaml(tmp_path: Path, monkeypatch):
 
 def test_build_service_env_extras_discord():
     cfg = OpenAgentConfig(
-        channels=ChannelsConfig(discord=DiscordChannelConfig(token="tok"))
+        platforms=PlatformsConfig(discord=DiscordPlatformConfig(token="tok"))
     )
     extras = build_service_env_extras(cfg)
     assert extras.get("discord") == {"DISCORD_BOT_TOKEN": "tok"}
@@ -197,8 +197,8 @@ def test_build_service_env_extras_discord():
 
 def test_build_service_env_extras_telegram():
     cfg = OpenAgentConfig(
-        channels=ChannelsConfig(
-            telegram=TelegramChannelConfig(app_id=1, app_hash="h", bot_token="t")
+        platforms=PlatformsConfig(
+            telegram=TelegramPlatformConfig(app_id=1, app_hash="h", bot_token="t")
         )
     )
     extras = build_service_env_extras(cfg)
@@ -210,8 +210,8 @@ def test_build_service_env_extras_telegram():
 
 def test_build_service_env_extras_slack():
     cfg = OpenAgentConfig(
-        channels=ChannelsConfig(
-            slack=SlackChannelConfig(bot_token="xoxb", app_token="xapp")
+        platforms=PlatformsConfig(
+            slack=SlackPlatformConfig(bot_token="xoxb", app_token="xapp")
         )
     )
     extras = build_service_env_extras(cfg)
@@ -222,13 +222,13 @@ def test_build_service_env_extras_slack():
 
 def test_build_service_env_extras_empty_discord_token():
     cfg = OpenAgentConfig(
-        channels=ChannelsConfig(discord=DiscordChannelConfig(token=""))
+        platforms=PlatformsConfig(discord=DiscordPlatformConfig(token=""))
     )
     extras = build_service_env_extras(cfg)
     assert "discord" not in extras  # empty token → not injected
 
 
-def test_build_service_env_extras_no_channels():
+def test_build_service_env_extras_no_platforms():
     cfg = OpenAgentConfig()
     extras = build_service_env_extras(cfg)
     assert extras == {}

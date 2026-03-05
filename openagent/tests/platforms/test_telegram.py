@@ -4,10 +4,10 @@ import asyncio
 import json
 from pathlib import Path
 
-from openagent.channels.telegram import TelegramServiceChannel
+from openagent.platforms.telegram import TelegramServicePlatform
 
 
-def test_telegram_service_channel_flow(tmp_path: Path):
+def test_telegram_service_platform_flow(tmp_path: Path):
     socket_path = Path("/tmp/oa_test_telegram.sock")
 
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
@@ -110,19 +110,19 @@ def test_telegram_service_channel_flow(tmp_path: Path):
     async def scenario():
         server = await asyncio.start_unix_server(handler, path=str(socket_path))
         try:
-            channel = TelegramServiceChannel(socket_path=socket_path)
-            await channel.start()
+            platform = TelegramServicePlatform(socket_path=socket_path)
+            await platform.start()
             await asyncio.sleep(0.05)
-            status = await channel.get_status()
+            status = await platform.get_status()
             assert status["connected"] is True
-            link = await channel.get_link_state()
+            link = await platform.get_link_state()
             assert link["authorized"] is True
-            sent = await channel.send_message(user_id=1, access_hash=2, text="hello")
+            sent = await platform.send_message(user_id=1, access_hash=2, text="hello")
             assert sent["ok"] is True
-            messages = channel.pop_messages()
+            messages = platform.pop_messages()
             assert len(messages) == 1
             assert messages[0]["text"] == "ping"
-            await channel.stop()
+            await platform.stop()
         finally:
             server.close()
             await server.wait_closed()

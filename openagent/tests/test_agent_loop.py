@@ -45,17 +45,21 @@ class _FakeProvider:
             return LLMResponse(content="(no more responses)")
 
     async def stream(self, messages, **kwargs):
-        yield ""
+        try:
+            response = next(self._responses)
+            yield response.content or ""
+        except StopIteration:
+            yield ""
 
     async def complete(self, messages, **kwargs) -> str:
         return ""
 
 
-def _inbound(content: str = "hello", channel: str = "telegram", chat_id: str = "1") -> InboundMessage:
+def _inbound(content: str = "hello", platform: str = "telegram", channel_id: str = "1") -> InboundMessage:
     return InboundMessage(
-        channel=channel,
-        sender=SenderInfo(platform=channel, user_id="u1"),
-        chat_id=chat_id,
+        platform=platform,
+        sender=SenderInfo(platform=platform, user_id="u1"),
+        channel_id=channel_id,
         content=content,
     )
 
@@ -201,7 +205,7 @@ async def test_agent_loop_simple_reply(
     out = bus.outbound.get_nowait()
     assert out is not None
     assert out.content == "world"
-    assert out.channel == "telegram"
+    assert out.platform == "telegram"
 
     await loop.stop()
 
@@ -216,7 +220,7 @@ async def test_agent_loop_saves_turns_to_session(
     loop = AgentLoop(bus, provider, session_mgr, registry)
     await loop.start()
 
-    msg = _inbound("question", chat_id="99")
+    msg = _inbound("question", channel_id="99")
     await bus.publish(msg)
     await asyncio.sleep(0.1)
 
@@ -245,6 +249,7 @@ async def test_agent_loop_tool_call_dispatched(
     mgr_mock.list_services.return_value = []
     registry = ToolRegistry(mgr_mock)
     registry._tool_to_service["add"] = "calc_service"
+    registry._schemas = [{"type": "function", "function": {"name": "add", "description": "add two numbers", "parameters": {"type": "object", "properties": {}}}}]
 
     client_mock = AsyncMock()
     result_frame = proto.ToolResultResponse(id="r1", type="tool.result", result="3")
@@ -285,6 +290,7 @@ async def test_agent_loop_tool_output_truncated(
     mgr_mock.list_services.return_value = []
     registry = ToolRegistry(mgr_mock)
     registry._tool_to_service["big_tool"] = "svc"
+    registry._schemas = [{"type": "function", "function": {"name": "big_tool", "description": "big tool", "parameters": {"type": "object", "properties": {}}}}]
 
     result_frame = proto.ToolResultResponse(id="r1", type="tool.result", result=long_result)
     client_mock = AsyncMock()
@@ -307,7 +313,7 @@ async def test_agent_loop_tool_output_truncated(
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_cross_channel_same_session(
+async def test_agent_loop_cross_platform_same_session(
     bus: MessageBus,
     session_mgr: SessionManager,
 ) -> None:
@@ -321,12 +327,12 @@ async def test_agent_loop_cross_channel_same_session(
     await loop.start()
 
     wa = InboundMessage(
-        channel="whatsapp", chat_id="+1",
+        platform="whatsapp", channel_id="+1",
         sender=SenderInfo("whatsapp", "+1", user_key="user:alice"),
         content="from whatsapp",
     )
     tg = InboundMessage(
-        channel="telegram", chat_id="99",
+        platform="telegram", channel_id="99",
         sender=SenderInfo("telegram", "99", user_key="user:alice"),
         content="from telegram",
     )

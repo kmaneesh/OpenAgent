@@ -1,4 +1,4 @@
-"""Tests for WebChannelAdapter."""
+"""Tests for WebPlatformAdapter."""
 
 from __future__ import annotations
 
@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openagent.bus.events import OutboundMessage
-from openagent.channels.web import WebChannelAdapter
+from openagent.platforms.web import WebPlatformAdapter
 
 
-class TestWebChannelAdapter:
+class TestWebPlatformAdapter:
     def setup_method(self):
-        self.adapter = WebChannelAdapter()
+        self.adapter = WebPlatformAdapter()
 
-    def test_channel_name(self):
-        assert self.adapter.channel_name == "web"
+    def test_platform_name(self):
+        assert self.adapter.platform_name == "web"
 
     def test_register_connection(self):
         send_fn = AsyncMock()
@@ -40,14 +40,14 @@ class TestWebChannelAdapter:
 
         self.adapter.register_connection("sess1", send_fn)
         asyncio.run(
-            self.adapter.send(OutboundMessage(channel="web", chat_id="sess1", content="hello"))
+            self.adapter.send(OutboundMessage(platform="web", channel_id="sess1", content="hello"))
         )
         assert delivered == ["hello"]
 
     def test_send_unknown_chat_id_is_safe(self):
         # No connection registered — should log warning but not raise.
         asyncio.run(
-            self.adapter.send(OutboundMessage(channel="web", chat_id="ghost", content="hi"))
+            self.adapter.send(OutboundMessage(platform="web", channel_id="ghost", content="hi"))
         )
 
     def test_send_removes_dead_connection_on_error(self):
@@ -56,7 +56,7 @@ class TestWebChannelAdapter:
 
         self.adapter.register_connection("sess1", failing_fn)
         asyncio.run(
-            self.adapter.send(OutboundMessage(channel="web", chat_id="sess1", content="boom"))
+            self.adapter.send(OutboundMessage(platform="web", channel_id="sess1", content="boom"))
         )
         # Dead connection should have been cleaned up.
         assert "sess1" not in self.adapter.active_connections()
@@ -70,8 +70,8 @@ class TestWebChannelAdapter:
         self.adapter.register_connection("a", fn_a)
         self.adapter.register_connection("b", fn_b)
 
-        asyncio.run(self.adapter.send(OutboundMessage(channel="web", chat_id="a", content="for-a")))
-        asyncio.run(self.adapter.send(OutboundMessage(channel="web", chat_id="b", content="for-b")))
+        asyncio.run(self.adapter.send(OutboundMessage(platform="web", channel_id="a", content="for-a")))
+        asyncio.run(self.adapter.send(OutboundMessage(platform="web", channel_id="b", content="for-b")))
 
         assert received["a"] == ["for-a"]
         assert received["b"] == ["for-b"]

@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from openagent.channels.mcplite import McpLiteClient
+from openagent.platforms.mcplite import McpLiteClient
 
 
 class _RecordingClient(McpLiteClient):

@@ -15,17 +15,17 @@ from openagent.bus import InboundMessage, MessageBus, OutboundMessage, SenderInf
 
 
 def _msg(
-    channel: str = "telegram",
+    platform: str = "telegram",
     user_id: str = "u1",
-    chat_id: str = "c1",
+    channel_id: str = "c1",
     content: str = "hello",
     user_key: str = "",
     session_key_override: str | None = None,
 ) -> InboundMessage:
     return InboundMessage(
-        channel=channel,
-        sender=SenderInfo(platform=channel, user_id=user_id, user_key=user_key),
-        chat_id=chat_id,
+        platform=platform,
+        sender=SenderInfo(platform=platform, user_id=user_id, user_key=user_key),
+        channel_id=channel_id,
         content=content,
         session_key_override=session_key_override,
     )
@@ -37,12 +37,12 @@ def _msg(
 
 
 def test_session_key_default() -> None:
-    m = _msg(channel="telegram", chat_id="9999")
+    m = _msg(platform="telegram", channel_id="9999")
     assert m.session_key == "telegram:9999"
 
 
 def test_session_key_user_key_wins_over_default() -> None:
-    m = _msg(channel="telegram", chat_id="9999", user_key="user:alice")
+    m = _msg(platform="telegram", channel_id="9999", user_key="user:alice")
     assert m.session_key == "user:alice"
 
 
@@ -51,9 +51,9 @@ def test_session_key_override_wins_over_user_key() -> None:
     assert m.session_key == "special:session"
 
 
-def test_cross_channel_same_user_key() -> None:
-    wa = _msg(channel="whatsapp", chat_id="+1234567890", user_key="user:alice")
-    tg = _msg(channel="telegram", chat_id="12345678", user_key="user:alice")
+def test_cross_platform_same_user_key() -> None:
+    wa = _msg(platform="whatsapp", channel_id="+1234567890", user_key="user:alice")
+    tg = _msg(platform="telegram", channel_id="12345678", user_key="user:alice")
     assert wa.session_key == tg.session_key == "user:alice"
 
 
@@ -67,7 +67,7 @@ async def test_publish_routes_to_session_queue() -> None:
     bus = MessageBus()
     await bus.start()
 
-    msg = _msg(channel="telegram", chat_id="42")
+    msg = _msg(platform="telegram", channel_id="42")
     await bus.publish(msg)
     await asyncio.sleep(0.05)  # let fanout run
 
@@ -80,13 +80,13 @@ async def test_publish_routes_to_session_queue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cross_channel_messages_share_one_queue() -> None:
+async def test_cross_platform_messages_share_one_queue() -> None:
     """WhatsApp + Telegram messages with same user_key → one session queue."""
     bus = MessageBus()
     await bus.start()
 
-    wa = _msg(channel="whatsapp", chat_id="+1", user_key="user:alice", content="hi from wa")
-    tg = _msg(channel="telegram", chat_id="99", user_key="user:alice", content="hi from tg")
+    wa = _msg(platform="whatsapp", channel_id="+1", user_key="user:alice", content="hi from wa")
+    tg = _msg(platform="telegram", channel_id="99", user_key="user:alice", content="hi from tg")
 
     await bus.publish(wa)
     await bus.publish(tg)
@@ -97,7 +97,7 @@ async def test_cross_channel_messages_share_one_queue() -> None:
 
     r1 = q.get_nowait()
     r2 = q.get_nowait()
-    assert {r1.channel, r2.channel} == {"whatsapp", "telegram"}
+    assert {r1.platform, r2.platform} == {"whatsapp", "telegram"}
 
     await bus.close()
 
@@ -107,8 +107,8 @@ async def test_different_sessions_get_different_queues() -> None:
     bus = MessageBus()
     await bus.start()
 
-    await bus.publish(_msg(channel="telegram", chat_id="1", content="a"))
-    await bus.publish(_msg(channel="telegram", chat_id="2", content="b"))
+    await bus.publish(_msg(platform="telegram", channel_id="1", content="a"))
+    await bus.publish(_msg(platform="telegram", channel_id="2", content="b"))
     await asyncio.sleep(0.05)
 
     q1 = bus.session_queue("telegram:1")
@@ -129,9 +129,9 @@ async def test_on_new_session_callback_called_once_per_key() -> None:
 
     # Publish two messages for the same session
     for _ in range(2):
-        await bus.publish(_msg(channel="slack", chat_id="C123"))
+        await bus.publish(_msg(platform="slack", channel_id="C123"))
     # Publish one message for a different session
-    await bus.publish(_msg(channel="discord", chat_id="D456"))
+    await bus.publish(_msg(platform="discord", channel_id="D456"))
     await asyncio.sleep(0.05)
 
     assert seen.count("slack:C123") == 1
@@ -146,7 +146,7 @@ async def test_dispatch_puts_on_outbound_queue() -> None:
     bus = MessageBus()
     await bus.start()
 
-    reply = OutboundMessage(channel="telegram", chat_id="42", content="pong")
+    reply = OutboundMessage(platform="telegram", channel_id="42", content="pong")
     await bus.dispatch(reply)
 
     out = bus.outbound.get_nowait()
@@ -160,8 +160,8 @@ async def test_active_sessions_snapshot() -> None:
     bus = MessageBus()
     await bus.start()
 
-    await bus.publish(_msg(channel="telegram", chat_id="1"))
-    await bus.publish(_msg(channel="telegram", chat_id="2"))
+    await bus.publish(_msg(platform="telegram", channel_id="1"))
+    await bus.publish(_msg(platform="telegram", channel_id="2"))
     await asyncio.sleep(0.05)
 
     sessions = bus.active_sessions()
@@ -182,7 +182,7 @@ async def test_close_sends_sentinel_to_session_queues() -> None:
     bus = MessageBus()
     await bus.start()
 
-    await bus.publish(_msg(channel="telegram", chat_id="99"))
+    await bus.publish(_msg(platform="telegram", channel_id="99"))
     await asyncio.sleep(0.05)
 
     # Pre-create the queue reference before close
@@ -224,7 +224,7 @@ async def test_dispatch_after_close_raises() -> None:
     await bus.close()
 
     with pytest.raises(RuntimeError, match="closed"):
-        await bus.dispatch(OutboundMessage(channel="x", chat_id="y", content="z"))
+        await bus.dispatch(OutboundMessage(platform="x", channel_id="y", content="z"))
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ async def test_full_session_queue_drops_message(caplog: pytest.LogCaptureFixture
     q.put_nowait(_msg())  # fill slot 2 — queue is now full
 
     with caplog.at_level(logging.WARNING, logger="openagent.bus.bus"):
-        await bus.publish(_msg(channel="telegram", chat_id="1", content="overflow"))
+        await bus.publish(_msg(platform="telegram", channel_id="1", content="overflow"))
         await asyncio.sleep(0.05)
 
     assert "full" in caplog.text.lower() or "dropping" in caplog.text.lower()

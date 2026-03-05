@@ -1,4 +1,4 @@
-"""Tests for ChannelAdapter and ChannelManager."""
+"""Tests for PlatformAdapter and PlatformManager."""
 
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ import pytest_asyncio
 
 from openagent.bus.bus import MessageBus
 from openagent.bus.events import InboundMessage, OutboundMessage
-from openagent.channels.adapter import (
-    ChannelAdapter,
-    DiscordChannelAdapter,
-    SlackChannelAdapter,
-    TelegramChannelAdapter,
+from openagent.platforms.adapter import (
+    PlatformAdapter,
+    DiscordPlatformAdapter,
+    SlackPlatformAdapter,
+    TelegramPlatformAdapter,
 )
-from openagent.channels.manager import ChannelManager
-from openagent.channels.mcplite import McpLiteClient
+from openagent.platforms.manager import PlatformManager
+from openagent.platforms.mcplite import McpLiteClient
 from openagent.services import protocol as proto
 
 
@@ -51,22 +51,22 @@ def _fire_event(client: MagicMock, frame: proto.EventFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DiscordChannelAdapter
+# DiscordPlatformAdapter
 # ---------------------------------------------------------------------------
 
 
-class TestDiscordChannelAdapter:
+class TestDiscordPlatformAdapter:
     def setup_method(self):
         self.client = _make_mock_client()
         self.bus = MagicMock(spec=MessageBus)
         self.bus.publish = AsyncMock()
-        self.adapter = DiscordChannelAdapter(client=self.client, bus=self.bus)
+        self.adapter = DiscordPlatformAdapter(client=self.client, bus=self.bus)
 
     def test_registers_event_handler(self):
         assert len(self.client._event_handlers) == 1
 
-    def test_channel_name(self):
-        assert self.adapter.channel_name == "discord"
+    def test_platform_name(self):
+        assert self.adapter.platform_name == "discord"
 
     def test_client_identity(self):
         assert self.adapter.client is self.client
@@ -74,7 +74,7 @@ class TestDiscordChannelAdapter:
     def test_to_inbound_basic(self):
         msg = self.adapter._to_inbound({
             "id": "m1",
-            "channel_id": "chan1",
+            "platform_id": "chan1",
             "guild_id": "guild1",
             "author_id": "user1",
             "author": "Alice",
@@ -82,8 +82,8 @@ class TestDiscordChannelAdapter:
             "is_bot": False,
         })
         assert msg is not None
-        assert msg.channel == "discord"
-        assert msg.chat_id == "chan1"
+        assert msg.platform == "discord"
+        assert msg.channel_id == "chan1"
         assert msg.content == "hello"
         assert msg.sender.user_id == "user1"
         assert msg.sender.display_name == "Alice"
@@ -92,11 +92,11 @@ class TestDiscordChannelAdapter:
     def test_to_inbound_bot_filtered(self):
         assert self.adapter._to_inbound({"is_bot": True, "content": "hi"}) is None
 
-    def test_to_inbound_missing_channel_id(self):
+    def test_to_inbound_missing_platform_id(self):
         assert self.adapter._to_inbound({"content": "hi"}) is None
 
     def test_to_inbound_empty_content(self):
-        assert self.adapter._to_inbound({"channel_id": "c1", "content": ""}) is None
+        assert self.adapter._to_inbound({"platform_id": "c1", "content": ""}) is None
 
     def test_connection_status_updates_status(self):
         _fire_event(
@@ -120,7 +120,7 @@ class TestDiscordChannelAdapter:
                     self.client,
                     _make_event("discord.message.received", {
                         "id": "m2",
-                        "channel_id": "chan2",
+                        "platform_id": "chan2",
                         "author_id": "u2",
                         "author": "Bob",
                         "content": "hey",
@@ -135,32 +135,32 @@ class TestDiscordChannelAdapter:
 
         assert len(published) == 1
         assert published[0].content == "hey"
-        assert published[0].chat_id == "chan2"
+        assert published[0].channel_id == "chan2"
 
     def test_send_calls_tool(self):
         async def run():
-            msg = OutboundMessage(channel="discord", chat_id="chan3", content="reply")
+            msg = OutboundMessage(platform="discord", channel_id="chan3", content="reply")
             await self.adapter.send(msg)
 
         asyncio.run(run())
         self.client.request.assert_called_once()
         call_args = self.client.request.call_args[0][0]
         assert call_args["tool"] == "discord.send_message"
-        assert call_args["params"]["channel_id"] == "chan3"
+        assert call_args["params"]["platform_id"] == "chan3"
         assert call_args["params"]["text"] == "reply"
 
 
 # ---------------------------------------------------------------------------
-# TelegramChannelAdapter
+# TelegramPlatformAdapter
 # ---------------------------------------------------------------------------
 
 
-class TestTelegramChannelAdapter:
+class TestTelegramPlatformAdapter:
     def setup_method(self):
         self.client = _make_mock_client()
         self.bus = MagicMock(spec=MessageBus)
         self.bus.publish = AsyncMock()
-        self.adapter = TelegramChannelAdapter(client=self.client, bus=self.bus)
+        self.adapter = TelegramPlatformAdapter(client=self.client, bus=self.bus)
 
     def test_to_inbound_basic(self):
         msg = self.adapter._to_inbound({
@@ -172,8 +172,8 @@ class TestTelegramChannelAdapter:
             "message_id": 77,
         })
         assert msg is not None
-        assert msg.channel == "telegram"
-        assert msg.chat_id == "12345"
+        assert msg.platform == "telegram"
+        assert msg.channel_id == "12345"
         assert msg.content == "hello tg"
         assert msg.metadata["access_hash"] == -9999
         assert msg.metadata["message_id"] == 77
@@ -187,8 +187,8 @@ class TestTelegramChannelAdapter:
     def test_send_calls_tool_with_access_hash(self):
         async def run():
             msg = OutboundMessage(
-                channel="telegram",
-                chat_id="12345",
+                platform="telegram",
+                channel_id="12345",
                 content="tg reply",
                 metadata={"access_hash": -9999},
             )
@@ -203,48 +203,48 @@ class TestTelegramChannelAdapter:
 
 
 # ---------------------------------------------------------------------------
-# SlackChannelAdapter
+# SlackPlatformAdapter
 # ---------------------------------------------------------------------------
 
 
-class TestSlackChannelAdapter:
+class TestSlackPlatformAdapter:
     def setup_method(self):
         self.client = _make_mock_client()
         self.bus = MagicMock(spec=MessageBus)
-        self.adapter = SlackChannelAdapter(client=self.client, bus=self.bus)
+        self.adapter = SlackPlatformAdapter(client=self.client, bus=self.bus)
 
     def test_to_inbound_basic(self):
         msg = self.adapter._to_inbound({
-            "channel_id": "C123",
+            "platform_id": "C123",
             "user_id": "U456",
             "username": "dave",
             "text": "slack msg",
             "ts": "1234.5678",
         })
         assert msg is not None
-        assert msg.channel == "slack"
-        assert msg.chat_id == "C123"
+        assert msg.platform == "slack"
+        assert msg.channel_id == "C123"
         assert msg.content == "slack msg"
 
     def test_bot_message_filtered(self):
-        assert self.adapter._to_inbound({"bot_id": "B123", "channel_id": "C1", "text": "bot"}) is None
+        assert self.adapter._to_inbound({"bot_id": "B123", "platform_id": "C1", "text": "bot"}) is None
 
     def test_send_calls_tool(self):
         async def run():
-            await self.adapter.send(OutboundMessage(channel="slack", chat_id="C999", content="yo"))
+            await self.adapter.send(OutboundMessage(platform="slack", channel_id="C999", content="yo"))
 
         asyncio.run(run())
         params = self.client.request.call_args[0][0]["params"]
-        assert params["channel_id"] == "C999"
+        assert params["platform_id"] == "C999"
         assert params["text"] == "yo"
 
 
 # ---------------------------------------------------------------------------
-# ChannelManager
+# PlatformManager
 # ---------------------------------------------------------------------------
 
 
-class TestChannelManager:
+class TestPlatformManager:
     def _make_service_manager(self, clients: dict[str, Any]) -> MagicMock:
         svc_mgr = MagicMock()
         svc_mgr.get_client.side_effect = lambda name: clients.get(name)
@@ -255,16 +255,16 @@ class TestChannelManager:
         client.running = True
         svc_mgr = self._make_service_manager({"discord": client})
         bus = MagicMock(spec=MessageBus)
-        mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+        mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
         mgr._sync_adapters()
         assert "discord" in mgr._adapters
-        assert isinstance(mgr._adapters["discord"], DiscordChannelAdapter)
+        assert isinstance(mgr._adapters["discord"], DiscordPlatformAdapter)
 
     def test_sync_adapters_removes_adapter_when_service_offline(self):
         client = _make_mock_client()
         svc_mgr = self._make_service_manager({"discord": client})
         bus = MagicMock(spec=MessageBus)
-        mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+        mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
         mgr._sync_adapters()
         assert "discord" in mgr._adapters
         # Service goes offline
@@ -277,7 +277,7 @@ class TestChannelManager:
         client2 = _make_mock_client()
         svc_mgr = self._make_service_manager({"discord": client1})
         bus = MagicMock(spec=MessageBus)
-        mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+        mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
         mgr._sync_adapters()
         adapter1 = mgr._adapters["discord"]
         # Service restarts with new client
@@ -291,7 +291,7 @@ class TestChannelManager:
         client = _make_mock_client()
         svc_mgr = self._make_service_manager({"discord": client})
         bus = MagicMock(spec=MessageBus)
-        mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+        mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
         mgr._sync_adapters()
         adapter1 = mgr._adapters["discord"]
         mgr._sync_adapters()
@@ -304,7 +304,7 @@ class TestChannelManager:
 
             client = _make_mock_client()
             svc_mgr = self._make_service_manager({"discord": client})
-            mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+            mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
             mgr._sync_adapters()
 
             # Track calls to adapter.send
@@ -312,7 +312,7 @@ class TestChannelManager:
             mgr._adapters["discord"].send = AsyncMock(side_effect=sent.append)
 
             await mgr.start()
-            await bus.dispatch(OutboundMessage(channel="discord", chat_id="C1", content="hi"))
+            await bus.dispatch(OutboundMessage(platform="discord", channel_id="C1", content="hi"))
             await asyncio.sleep(0.05)  # let route task process
             await mgr.stop()
             await bus.close()
@@ -323,15 +323,15 @@ class TestChannelManager:
         assert len(sent) == 1
         assert sent[0].content == "hi"
 
-    def test_route_outbound_logs_unknown_channel(self):
+    def test_route_outbound_logs_unknown_platform(self):
         async def run():
             bus = MessageBus()
             await bus.start()
             svc_mgr = self._make_service_manager({})
-            mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
+            mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
             await mgr.start()
-            # Dispatch to unknown channel
-            await bus.dispatch(OutboundMessage(channel="unknown", chat_id="x", content="?"))
+            # Dispatch to unknown platform
+            await bus.dispatch(OutboundMessage(platform="unknown", channel_id="x", content="?"))
             await asyncio.sleep(0.05)
             await mgr.stop()
             await bus.close()
@@ -343,8 +343,8 @@ class TestChannelManager:
         client2 = _make_mock_client()
         svc_mgr = self._make_service_manager({"discord": client1})
         bus = MagicMock(spec=MessageBus)
-        mgr = ChannelManager(service_manager=svc_mgr, bus=bus)
-        custom_adapter = DiscordChannelAdapter(client=client2, bus=bus)
+        mgr = PlatformManager(service_manager=svc_mgr, bus=bus)
+        custom_adapter = DiscordPlatformAdapter(client=client2, bus=bus)
         mgr.register(custom_adapter)
         assert mgr._adapters["discord"] is custom_adapter
 
@@ -355,7 +355,7 @@ class TestChannelManager:
 
 
 class TestIdentityResolver:
-    """ChannelAdapter enriches sender.user_key when a resolver is provided."""
+    """PlatformAdapter enriches sender.user_key when a resolver is provided."""
 
     def setup_method(self):
         self.client = _make_mock_client()
@@ -365,14 +365,14 @@ class TestIdentityResolver:
     @pytest.mark.asyncio
     async def test_resolver_sets_user_key(self):
         """When a resolver is wired, the adapter enriches user_key before publish."""
-        async def fake_resolver(channel: str, channel_id: str) -> str:
-            return f"user:resolved-{channel_id}"
+        async def fake_resolver(platform: str, platform_id: str) -> str:
+            return f"user:resolved-{platform_id}"
 
-        adapter = DiscordChannelAdapter(
+        adapter = DiscordPlatformAdapter(
             client=self.client, bus=self.bus, resolver=fake_resolver
         )
         event = _make_event("discord.message.received", {
-            "channel_id": "C1",
+            "platform_id": "C1",
             "author_id": "U1",
             "author": "alice",
             "content": "hello",
@@ -390,9 +390,9 @@ class TestIdentityResolver:
     @pytest.mark.asyncio
     async def test_no_resolver_user_key_empty(self):
         """Without a resolver the adapter publishes with user_key == '' (fallback key)."""
-        adapter = DiscordChannelAdapter(client=self.client, bus=self.bus)
+        adapter = DiscordPlatformAdapter(client=self.client, bus=self.bus)
         event = _make_event("discord.message.received", {
-            "channel_id": "C2",
+            "platform_id": "C2",
             "author_id": "U2",
             "author": "bob",
             "content": "hi",
@@ -403,20 +403,20 @@ class TestIdentityResolver:
 
         msg: InboundMessage = self.bus.publish.call_args[0][0]
         assert msg.sender.user_key == ""
-        # Falls back to channel:chat_id
+        # Falls back to platform:channel_id
         assert msg.session_key == "discord:C2"
 
     @pytest.mark.asyncio
     async def test_resolver_failure_falls_back_gracefully(self):
         """If the resolver raises, the message is still published (no user_key)."""
-        async def bad_resolver(channel: str, channel_id: str) -> str:
+        async def bad_resolver(platform: str, platform_id: str) -> str:
             raise RuntimeError("db is down")
 
-        adapter = DiscordChannelAdapter(
+        adapter = DiscordPlatformAdapter(
             client=self.client, bus=self.bus, resolver=bad_resolver
         )
         event = _make_event("discord.message.received", {
-            "channel_id": "C3",
+            "platform_id": "C3",
             "author_id": "U3",
             "author": "carol",
             "content": "test",

@@ -158,7 +158,7 @@ def test_managed_service_to_dict(tmp_path: Path) -> None:
     d = svc.to_dict()
     assert d["name"] == "svc"
     assert d["status"] == "stopped"
-    assert d["tools"] == 1
+    assert len(d["tools"]) == 1
     assert d["restart_count"] == 0
 
 

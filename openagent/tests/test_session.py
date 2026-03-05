@@ -196,7 +196,7 @@ async def test_manager_list_and_clear(mgr: SessionManager) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Cross-channel identity — SqliteSessionBackend
+# Cross-platform identity — SqliteSessionBackend
 # ---------------------------------------------------------------------------
 
 
@@ -214,7 +214,7 @@ async def test_resolve_user_key_stable(backend: SqliteSessionBackend) -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_key_different_channels(backend: SqliteSessionBackend) -> None:
+async def test_resolve_user_key_different_platforms(backend: SqliteSessionBackend) -> None:
     k1 = await backend.resolve_user_key("telegram", "999")
     k2 = await backend.resolve_user_key("slack", "999")
     # Same numeric id on different platforms → different identities
