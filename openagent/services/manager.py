@@ -227,6 +227,53 @@ class ServiceManager:
     def list_services(self) -> list[ManagedService]:
         return list(self._services.values())
 
+    async def reload(self, name: str) -> bool:
+        """Gracefully terminate, reload manifest from disk, and respawn the service."""
+        svc = self._services.get(name)
+        if not svc:
+            return False
+
+        log_event(
+            logger,
+            logging.INFO,
+            "reloading service",
+            component="service_manager",
+            operation="reload",
+            service=name,
+        )
+
+        task = self._watchdog_tasks.get(name)
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        await self._teardown(svc)
+
+        try:
+            data = json.loads(svc.manifest.manifest_path.read_text(encoding="utf-8"))
+            svc.manifest = ServiceManifest.from_dict(data, svc.manifest.manifest_path)
+            svc.status = ServiceStatus.STOPPED
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.ERROR,
+                "failed to reload manifest",
+                component="service_manager",
+                operation="reload",
+                service=name,
+                error=str(exc),
+            )
+            return False
+
+        new_task = asyncio.create_task(
+            self._watchdog(svc), name=f"svcmgr.watchdog.{svc.name}"
+        )
+        self._watchdog_tasks[svc.name] = new_task
+        return True
+
     # ------------------------------------------------------------------
     # Watchdog loop
     # ------------------------------------------------------------------
@@ -441,10 +488,28 @@ class ServiceManager:
                 svc._process.terminate()
                 await asyncio.wait_for(svc._process.wait(), timeout=5.0)
             except Exception:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "graceful termination timed out, escalating to SIGKILL",
+                    component="service_manager",
+                    operation="teardown",
+                    service=svc.name,
+                    pid=svc._process.pid,
+                )
                 try:
                     svc._process.kill()
-                except Exception:
-                    pass
+                    await asyncio.wait_for(svc._process.wait(), timeout=2.0)
+                except Exception as exc:
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "SIGKILL failed",
+                        component="service_manager",
+                        operation="teardown",
+                        service=svc.name,
+                        error=str(exc),
+                    )
         svc._process = None
 
     # ------------------------------------------------------------------

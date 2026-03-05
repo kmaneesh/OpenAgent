@@ -5,7 +5,8 @@
   "binary": {
     "linux/arm64": "bin/slack-linux-arm64",
     "linux/amd64": "bin/slack-linux-amd64",
-    "darwin/arm64": "bin/slack-darwin-arm64"
+    "darwin/arm64": "bin/slack-darwin-arm64",
+    "darwin/amd64": "bin/slack-darwin-amd64"
   },
   "socket": "data/sockets/slack.sock",
   "health": {

@@ -90,3 +90,5 @@ bin/
 config/openagent.yaml
 data/
 inspire/
+services/sandbox/target
+services/sdk-rust/target

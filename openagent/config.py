@@ -101,14 +101,20 @@ class FilesystemToolConfig(BaseModel):
     allowed_paths: list[str] = Field(default_factory=list)
 
 
-class ShellToolConfig(BaseModel):
-    # Empty list disables shell tool entirely.
-    allowed_commands: list[str] = Field(default_factory=list)
+class SandboxToolConfig(BaseModel):
+    """microsandbox server connection settings.
+
+    MSB_SERVER_URL and MSB_API_KEY are the preferred env vars.
+    These fields act as fallback config-file values.
+    """
+    server_url: str = "http://127.0.0.1:5555"
+    api_key: str = ""      # required at runtime; set via MSB_API_KEY
+    memory_mb: int = 512   # VM memory per sandbox call
 
 
 class ToolsConfig(BaseModel):
     filesystem: Optional[FilesystemToolConfig] = None
-    shell: Optional[ShellToolConfig] = None
+    sandbox: Optional[SandboxToolConfig] = None
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +163,13 @@ _ENV_OVERRIDES: list[tuple[tuple[str, ...], list[str]]] = [
     # platforms — WhatsApp
     (("platforms", "whatsapp", "phone_number"),
      ["WHATSAPP_PHONE", "OPENAGENT_WHATSAPP_PHONE"]),
+    # tools — sandbox (microsandbox)
+    (("tools", "sandbox", "server_url"),
+     ["MSB_SERVER_URL", "OPENAGENT_MSB_SERVER_URL"]),
+    (("tools", "sandbox", "api_key"),
+     ["MSB_API_KEY", "OPENAGENT_MSB_API_KEY"]),
+    (("tools", "sandbox", "memory_mb"),
+     ["MSB_MEMORY_MB", "OPENAGENT_MSB_MEMORY_MB"]),
 ]
 
 
@@ -238,5 +251,17 @@ def build_service_env_extras(cfg: OpenAgentConfig) -> dict[str, dict[str, str]]:
             sl["SLACK_APP_TOKEN"] = slack.app_token
         if sl:
             extras["slack"] = sl
+
+    sandbox = cfg.tools.sandbox
+    if sandbox:
+        sb: dict[str, str] = {}
+        if sandbox.server_url:
+            sb["MSB_SERVER_URL"] = sandbox.server_url
+        if sandbox.api_key:
+            sb["MSB_API_KEY"] = sandbox.api_key
+        if sandbox.memory_mb:
+            sb["MSB_MEMORY_MB"] = str(sandbox.memory_mb)
+        if sb:
+            extras["sandbox"] = sb
 
     return extras

@@ -82,6 +82,26 @@ class SessionBackend(Protocol):
         ...
 
     # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    async def list_users(self) -> list[dict]:
+        """Return all users, newest-active first."""
+        ...
+
+    async def get_user(self, user_key: str) -> dict | None:
+        """Return a single user record or None."""
+        ...
+
+    async def upsert_user(self, user_key: str, name: str = "", email: str = "") -> None:
+        """Create or update a user record."""
+        ...
+
+    async def delete_user(self, user_key: str) -> None:
+        """Delete a user and all their identity links."""
+        ...
+
+    # ------------------------------------------------------------------
     # Cross-platform identity
     # ------------------------------------------------------------------
 

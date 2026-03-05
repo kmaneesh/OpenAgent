@@ -7,7 +7,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(source .venv/bin/activate)",
       "Bash(pytest openagent/tests/ -v)",
-      "Bash(.venv/bin/pytest app/tests/ -x -q)"
+      "Bash(.venv/bin/pytest app/tests/ -x -q)",
+      "WebFetch(domain:docs.microsandbox.dev)"
     ]
   }
 }

@@ -6,12 +6,32 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
 
 
+# ---------------------------------------------------------------------------
+# Stream events (Path A: delta-based streaming with tools)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StreamEvent:
+    """Single event from stream_with_tools.
+
+    - content: text delta — stream immediately to UI
+    - tool_calls: when stream ends with tool_calls, execute and continue loop
+    - finish_reason: stop | tool_calls | length | content_filter
+    """
+
+    content: str | None = None
+    tool_calls: list["ToolCall"] | None = None
+    finish_reason: str | None = None
+
+
 @dataclass
 class Message:
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     tool_call_id: str = ""   # set when role == "tool" (result injection)
     tool_name: str = ""      # set when role == "tool"
+    tool_calls: list["ToolCall"] | None = None  # set when role == "assistant" and LLM called tools
 
 
 @dataclass

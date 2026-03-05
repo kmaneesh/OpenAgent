@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from .base import LLMResponse, Message, ToolCall
+from .base import LLMResponse, Message, StreamEvent, ToolCall
 from .config import ProviderConfig
 
 
@@ -33,6 +33,22 @@ class OpenAICompatProvider:
                     "tool_call_id": m.tool_call_id,
                     "name": m.tool_name,
                     "content": m.content,
+                })
+            elif m.role == "assistant" and m.tool_calls:
+                out.append({
+                    "role": "assistant",
+                    "content": m.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                            },
+                        }
+                        for tc in m.tool_calls
+                    ],
                 })
             else:
                 out.append({"role": m.role, "content": m.content})
@@ -77,6 +93,96 @@ class OpenAICompatProvider:
                             yield delta
                     except (json.JSONDecodeError, KeyError, TypeError):
                         continue
+
+    async def stream_with_tools(
+        self,
+        messages: list[Message],
+        tools: list[dict[str, Any]],
+        **kwargs,
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream with tool support. Yields content deltas for UI; buffers tool_calls.
+
+        - delta.content → StreamEvent(content=...) — stream to UI immediately
+        - delta.tool_calls → buffer by index; on stream end yield tool_calls
+        """
+        payload = {
+            **self._base_payload(messages),
+            "stream": True,
+            "tools": tools,
+            "tool_choice": "auto",
+        }
+        payload.update(kwargs)
+
+        # Buffers for incremental tool_call parsing (index → partial data)
+        tool_call_buffers: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+
+        async with httpx.AsyncClient(timeout=self._cfg.timeout) as client:
+            async with client.stream(
+                "POST", self._url(), json=payload, headers=self._headers
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    raw = line[6:].strip()
+                    if raw == "[DONE]" or not raw:
+                        break
+                    try:
+                        obj = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    finish_reason = choice.get("finish_reason") or finish_reason
+
+                    # Content delta — stream to UI immediately
+                    content = delta.get("content")
+                    if content:
+                        yield StreamEvent(content=content)
+
+                    # Tool call deltas — buffer by index
+                    raw_tcs = delta.get("tool_calls") or []
+                    for tc in raw_tcs:
+                        idx = tc.get("index", 0)
+                        if idx not in tool_call_buffers:
+                            tool_call_buffers[idx] = {
+                                "id": "",
+                                "name": "",
+                                "arguments": "",
+                            }
+                        buf = tool_call_buffers[idx]
+                        if "id" in tc and tc["id"]:
+                            buf["id"] = tc["id"]
+                        fn = tc.get("function") or {}
+                        if fn.get("name"):
+                            buf["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            buf["arguments"] += fn["arguments"]
+
+                # Stream ended — emit tool_calls if any
+                if tool_call_buffers and finish_reason == "tool_calls":
+                    tool_calls: list[ToolCall] = []
+                    for idx in sorted(tool_call_buffers.keys()):
+                        buf = tool_call_buffers[idx]
+                        args_raw = buf.get("arguments") or "{}"
+                        try:
+                            args = json.loads(args_raw)
+                        except json.JSONDecodeError:
+                            args = {"_raw": args_raw}
+                        tool_calls.append(
+                            ToolCall(
+                                id=buf.get("id") or f"call_{idx}",
+                                name=buf.get("name") or "",
+                                arguments=args,
+                            )
+                        )
+                    yield StreamEvent(tool_calls=tool_calls, finish_reason="tool_calls")
+                elif finish_reason:
+                    yield StreamEvent(finish_reason=finish_reason)
 
     async def complete(self, messages: list[Message], **kwargs) -> str:
         return "".join([chunk async for chunk in self.stream(messages, **kwargs)])

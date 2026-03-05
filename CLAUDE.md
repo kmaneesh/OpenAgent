@@ -2,14 +2,15 @@
 
 ## What We're Building
 
-**OpenAgent** is a deterministic, extension-first agent platform with a **hybrid Python + Go architecture**:
+**OpenAgent** is a deterministic, extension-first agent platform with a **hybrid Python + Go + Rust architecture**:
 
 - **Python Control Plane (the Brain)** — LLM interfacing, multi-agent orchestration, state management, and high-level reasoning. Stateless asyncio core loop. Python is the babysitter.
-- **Go Services (the Hands)** — Long-lived service daemons for CPU/IO-intensive work. Language-agnostic by design (Go today, Rust tomorrow). Python spawns, monitors, and manages them.
+- **Go Services (the Hands)** — Long-lived service daemons for CPU/IO-intensive work: platform connectors, filesystem, channel adapters. Language-agnostic by design.
+- **Rust Services (the Muscles)** — Performance-critical or isolation-heavy services. Current: `sandbox` (VM-isolated code execution via microsandbox). Incrementally replaces Go services where load justifies it.
 
 The two planes communicate via a **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets). Services run as persistent daemons; the agent's `ServiceManager` owns the full lifecycle: spawn, health-check, restart, graceful shutdown.
 
-Primary deployment target: **Raspberry Pi / low-power hardware** (Go compiles to arm64; Python core stays lean).
+Primary deployment target: **Raspberry Pi / low-power hardware** (Go/Rust compile to arm64; Python core stays lean).
 
 ## Communication Protocol (Rule #1)
 Whenever the user sends an input where their intention needs clarification or the context needs expansion, **do not assume the correct path.** Ask clarifying questions **one by one** (1-by-1) and provide possible **options/paths** for the user to choose from. Apply this explicitly in every conversation.
@@ -51,13 +52,26 @@ python -c "import importlib.metadata as m; print(m.entry_points(group='openagent
 # Run all tests
 pytest
 
-# Build a Go service (local)
+# Build all services (cross-compile)
+make all
+
+# Build for current host only (faster dev loop)
+make local
+
+# Build a single Go service
 cd services/my-service && go build -o bin/my-service .
 
 # Cross-compile Go service for Raspberry Pi (arm64)
 cd services/my-service && GOOS=linux GOARCH=arm64 go build -o bin/my-service-linux-arm64 .
-# For server (amd64)
-cd services/my-service && GOOS=linux GOARCH=amd64 go build -o bin/my-service-linux-amd64 .
+
+# Build sandbox Rust service (native darwin)
+cd services/sandbox && cargo build --release --target aarch64-apple-darwin
+
+# Cross-compile sandbox for Linux (requires: cargo install cross --locked + Docker)
+cd services/sandbox && cross build --release --target aarch64-unknown-linux-musl
+
+# Start microsandbox server (required at runtime for sandbox service)
+msb server start --dev
 ```
 
 ## Repository Layout
@@ -85,7 +99,7 @@ extensions/                 # Python platform integrations (independently instal
   stt/                      # Speech-to-text (faster-whisper, Deepgram)
   <name>/tests/             # Extension-local tests
 
-services/                   # Go (or compiled) service daemons
+services/                   # Go or Rust service daemons
   <name>/                   # Self-contained Go module
     main.go                 # UDS server + MCP-lite protocol handler
     service.json            # Service manifest — schema-first declaration
@@ -94,6 +108,11 @@ services/                   # Go (or compiled) service daemons
       <name>-linux-arm64
       <name>-linux-amd64
       <name>-darwin-arm64
+  sandbox/                  # Rust service — VM-isolated code/shell execution
+    Cargo.toml              # Rust package (uses sdk-rust crate)
+    src/main.rs             # MCP-lite server + microsandbox HTTP client
+    service.json            # Manifest: sandbox.execute, sandbox.shell tools
+    bin/                    # Cross-compiled binaries (gitignored)
 
 app/                        # Minimalist web UI (FastAPI + HTMX, no auth — POC only)
   main.py                   # FastAPI app, mounts routes and static files
@@ -169,9 +188,9 @@ InboundMessage (from platform extension)
 - Core loop is stateless — all state lives in `SessionManager`
 - **Zero-Copy Artifact Passing:** When dense data is generated or received by a service (e.g. media), the service writes the raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload, maintaining decoupling without IPC serialization taxes. Python is the absolute central router for all inter-service workflows (no east-west mesh between Go daemons).
 
-### Go Services — Service Pattern
+### Services Layer — Go and Rust
 
-Services are **long-lived daemon processes** managed by `ServiceManager`. One socket per service handles both directions.
+Services are **long-lived daemon processes** managed by `ServiceManager`. One socket per service handles both directions. Services can be written in Go or Rust — both follow the same MCP-lite contract.
 
 **ServiceManager responsibilities:**
 1. Read `service.json` manifests from `services/*/service.json` on startup
@@ -203,6 +222,53 @@ services/my-service/
 // 5. Push event frames independently (no request ID)
 // 6. Handle SIGTERM gracefully
 ```
+
+**Rust service structure:**
+```
+services/sandbox/
+  Cargo.toml     # package + dependencies (sdk-rust, minreq, tokio, serde_json)
+  src/main.rs    # McpLiteServer + tool handlers; MsbClient for HTTP to microsandbox
+  service.json   # manifest
+  bin/           # cross-compiled binaries (gitignored)
+```
+
+**Rust service internals (main.rs pattern):**
+```rust
+// 1. Build McpLiteServer from sdk-rust (reads OPENAGENT_SOCKET_PATH)
+// 2. Register tool handlers (closures or fns)
+// 3. server.run() — owns accept loop, dispatches tools.list / tool.call / ping
+// 4. Handlers call MsbClient (sync minreq HTTP) — one sandbox per invocation
+//    start → execute/run → stop
+// 5. Return tool result string to server; server sends tool.result frame
+// 6. SIGTERM handled by tokio runtime shutdown
+```
+
+**Rust sandbox: microsandbox (MSB) dependency**
+
+The `sandbox` service requires a running microsandbox server:
+```bash
+# Install MSB CLI
+cargo install msb   # or brew install microsandbox/tap/msb
+
+# Start the server (dev mode — no API key required)
+msb server start --dev
+
+# Generate an API key (production)
+msb server keygen
+```
+
+Set env vars (or config `tools.sandbox` in `openagent.yaml`):
+```
+MSB_SERVER_URL=http://127.0.0.1:5555   # default
+MSB_API_KEY=<key>                      # required unless --dev
+MSB_MEMORY_MB=512                      # memory per sandbox VM
+```
+
+MSB JSON-RPC 2.0 methods used (POST `/api/v1/rpc`, Bearer auth):
+- `sandbox.start` — create named sandbox with OCI image + resource limits
+- `sandbox.repl.run` — execute Python/Node code snippet (for `sandbox.execute` tool)
+- `sandbox.command.run` — run a shell command (for `sandbox.shell` tool)
+- `sandbox.stop` — destroy sandbox after each invocation
 
 ### MCP-lite Wire Protocol
 
@@ -280,6 +346,7 @@ Python extensions handle platforms and media. They do **not** do heavy CPU/IO wo
 | Service-backed platform connectors | Python | `openagent/platforms/` | Shared `mcplite.py` + per-service adapters |
 | Media (TTS, STT) | Python | `extensions/` | Provider pattern, async wrappers |
 | Heavy compute / data tools | Go | `services/` | MCP-lite daemon + `service.json` |
+| VM-isolated code execution | Rust | `services/sandbox/` | MCP-lite daemon + microsandbox HTTP client |
 
 **WhatsApp migration plan:** Current Python/Neonize extension works — keep it. Once `ServiceManager` is proven with a simpler first service, migrate WhatsApp to `services/whatsapp/` using whatsmeow natively (eliminates the CGo bridge).
 
@@ -408,13 +475,24 @@ app/
 - Cross-compile targets: `linux/arm64`, `linux/amd64`, `darwin/arm64`
 - Compiled binaries go in `bin/` (gitignored)
 
+### Rust Services
+- Each service: standalone Rust crate in `services/<name>/` with `Cargo.toml`
+- Use `sdk-rust` local crate for MCP-lite server boilerplate
+- Socket path read from `OPENAGENT_SOCKET_PATH` env var (same convention as Go)
+- Use `tokio` async runtime; blocking I/O (e.g. HTTP) via `tokio::task::spawn_blocking` or sync crate (`minreq`)
+- Graceful SIGTERM: tokio runtime shutdown signal
+- Include `service.json` manifest — identical schema to Go services
+- Cross-compile targets: `aarch64-apple-darwin` (native on Mac), `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl` (via `cross`)
+- Compiled binaries go in `bin/` (gitignored)
+- External runtime deps (e.g. MSB) must be documented in `service.json` or service README
+
 ## Testing Standards
 
 - Core tests: `openagent/tests/` (including `openagent/tests/platforms/`)
 - App tests: `app/tests/`
 - Extension tests: `extensions/<name>/tests/` only (self-contained per extension)
 - Service tests: `services/<name>/` (Go `_test.go` files)
-- Mock Go services in Python tests with a minimal asyncio socket stub that speaks MCP-lite
+- Mock Go/Rust services in Python tests with a minimal asyncio socket stub that speaks MCP-lite
 - No real network calls in tests, no real LLM calls in tests
 - `pytest-asyncio` for async Python tests
 - Do not keep active test suites under project-root `tests/`; tests belong to their owning vertical.
@@ -430,21 +508,23 @@ app/
 - **Tool registry** — dispatches to Go services via MCP-lite
 - **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx)
 - Extensions: discord, whatsapp, tts (edge + minimax), stt (faster-whisper + deepgram)
-- Go services: hello, filesystem, shell, discord, telegram, slack, whatsapp
+- Go services: hello, filesystem, discord, telegram, slack, whatsapp
+- **Rust services: sandbox** — VM-isolated Python/Node/shell execution via microsandbox (v0.2.0; tools: `sandbox.execute`, `sandbox.shell`)
+- Config schema extended: `agents`, `session`, `platforms`, `tools.sandbox` + env overrides
+- Cross-platform build: `make all` / `make local` / `make sandbox`
 
 ### Next (in order)
-1. **Config schema** — extend `openagent.yaml` with agents, bindings, session, tools
-2. **Chat path wiring** — agent loop ↔ platform events ↔ web UI end-to-end
-3. **Agent registry** — optional multi-agent (follow `inspire/picoclaw/pkg/agent/registry.go`)
-4. **platform manager** — config-driven init, outbound dispatch
-5. **Optional** — memory consolidation, cron, slash commands, rate limiting
+1. **Agent registry** — optional multi-agent (follow `inspire/picoclaw/pkg/agent/registry.go`)
+2. **platform manager** — config-driven init, outbound dispatch
+3. **Optional** — memory consolidation, cron, slash commands, rate limiting
+4. **Rust migration** — session store first, then channels when bottleneck proven
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 
 ## Deployment Notes
 
 **Raspberry Pi (primary):**
-- Go services compile to `linux/arm64`
+- Go and Rust services compile to `linux/arm64`
 - Keep Python deps minimal — no heavy ML libs in core
 - Prefer EdgeTTS (no API key) for TTS, `faster-whisper int8 small` for STT
 - SQLite + LanceDB — no Postgres, no Redis

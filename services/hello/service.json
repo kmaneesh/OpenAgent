@@ -5,7 +5,8 @@
   "binary": {
     "linux/arm64": "bin/hello-linux-arm64",
     "linux/amd64": "bin/hello-linux-amd64",
-    "darwin/arm64": "bin/hello-darwin-arm64"
+    "darwin/arm64": "bin/hello-darwin-arm64",
+    "darwin/amd64": "bin/hello-darwin-amd64"
   },
   "socket": "data/sockets/hello.sock",
   "health": {

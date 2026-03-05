@@ -79,6 +79,7 @@ class SqliteSessionBackend:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(_CREATE_SQL)
         await self._db.execute("PRAGMA journal_mode=WAL")
+        await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.commit()
         logger.debug("SqliteSessionBackend opened %s", self._db_path)
 
@@ -216,8 +217,14 @@ class SqliteSessionBackend:
             await self._db.commit()
             return row["user_key"]
 
-        # New identity — generate key and insert
+        # New identity — create user row + identity link
         new_key = f"user:{uuid.uuid4().hex[:16]}"
+        # Ensure users row exists first (FK constraint)
+        await self._db.execute(
+            "INSERT OR IGNORE INTO users (user_key, name, email, created_at, last_seen)"
+            " VALUES (?, '', '', ?, ?)",
+            (new_key, now, now),
+        )
         await self._db.execute(
             "INSERT OR IGNORE INTO identity_links"
             " (platform, platform_id, user_key, channel_id, last_active)"
@@ -233,7 +240,14 @@ class SqliteSessionBackend:
             (platform, platform_id),
         ) as cur:
             row = await cur.fetchone()
-        return row["user_key"]
+
+        actual_key = row["user_key"]
+        # Touch last_seen on winner
+        await self._db.execute(
+            "UPDATE users SET last_seen = ? WHERE user_key = ?", (now, actual_key)
+        )
+        await self._db.commit()
+        return actual_key
 
     async def list_all_identities(self) -> list[dict]:
         """Return all identity_links rows, newest-active first."""
@@ -260,6 +274,12 @@ class SqliteSessionBackend:
         """Create or update a platform identity link for a given user_key."""
         assert self._db, "backend not started"
         now = datetime.now().isoformat()
+        # Ensure users row exists (FK constraint)
+        await self._db.execute(
+            "INSERT OR IGNORE INTO users (user_key, name, email, created_at, last_seen)"
+            " VALUES (?, '', '', ?, ?)",
+            (user_key, now, now),
+        )
         await self._db.execute(
             "INSERT OR REPLACE INTO identity_links"
             " (platform, platform_id, user_key, channel_id, last_active)"
@@ -276,6 +296,72 @@ class SqliteSessionBackend:
             (platform, platform_id),
         )
         await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    async def list_users(self) -> list[dict]:
+        """Return all users, newest-active first."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT user_key, name, email, created_at, last_seen FROM users"
+            " ORDER BY last_seen DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "user_key": r["user_key"],
+                "name": r["name"],
+                "email": r["email"],
+                "created_at": r["created_at"],
+                "last_seen": r["last_seen"],
+            }
+            for r in rows
+        ]
+
+    async def get_user(self, user_key: str) -> dict | None:
+        """Return a single user record or None."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT user_key, name, email, created_at, last_seen FROM users WHERE user_key = ?",
+            (user_key,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "user_key": row["user_key"],
+            "name": row["name"],
+            "email": row["email"],
+            "created_at": row["created_at"],
+            "last_seen": row["last_seen"],
+        }
+
+    async def upsert_user(self, user_key: str, name: str = "", email: str = "") -> None:
+        """Create or update a user record."""
+        assert self._db, "backend not started"
+        now = datetime.now().isoformat()
+        await self._db.execute(
+            "INSERT INTO users (user_key, name, email, created_at, last_seen)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(user_key) DO UPDATE SET"
+            "   name = CASE WHEN ? != '' THEN ? ELSE name END,"
+            "   email = CASE WHEN ? != '' THEN ? ELSE email END,"
+            "   last_seen = excluded.last_seen",
+            (user_key, name, email, now, now, name, name, email, email),
+        )
+        await self._db.commit()
+
+    async def delete_user(self, user_key: str) -> None:
+        """Delete a user and all their identity links (CASCADE)."""
+        assert self._db, "backend not started"
+        await self._db.execute("DELETE FROM users WHERE user_key = ?", (user_key,))
+        await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # Cross-platform identity (continued)
+    # ------------------------------------------------------------------
 
     async def get_identity_links(self, user_key: str) -> list[dict]:
         """Return all platform links for a user_key, newest-active first."""

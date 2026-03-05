@@ -5,7 +5,8 @@
   "binary": {
     "linux/arm64": "bin/telegram-linux-arm64",
     "linux/amd64": "bin/telegram-linux-amd64",
-    "darwin/arm64": "bin/telegram-darwin-arm64"
+    "darwin/arm64": "bin/telegram-darwin-arm64",
+    "darwin/amd64": "bin/telegram-darwin-amd64"
   },
   "socket": "data/sockets/telegram.sock",
   "health": {

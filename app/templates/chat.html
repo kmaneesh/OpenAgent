@@ -160,6 +160,7 @@
       sessionChannelId: "",
       ws: null,
       sse: null,
+      _refreshInterval: null,
       intentionalDisconnect: false,
 
       platformLabel(p) { return PLATFORM_LABELS[p] || p.slice(0, 2).toUpperCase(); },
@@ -172,6 +173,8 @@
 
       async initApp() {
         await this.loadSessions();
+        // Periodic refresh so new platform sessions (Discord, etc.) appear in sidebar
+        this._refreshInterval = setInterval(() => this.loadSessions(), 15000);
 
         // Restore last session from localStorage
         const saved = localStorage.getItem(LS_SESSION_KEY);
@@ -182,11 +185,20 @@
             this.switchSession(existing);
             return;
           }
-          // Session not in DB yet (e.g. new web session with no turns) — reconnect anyway
+          // Session not in DB sidebar (soft-deleted or no turns yet) — reconnect and try history
           if (saved.startsWith('web:')) {
             this.sessionId = saved;
             this.sessionPlatform = 'web';
-            this.messages = [];
+            try {
+              const res = await fetch(`/api/chat/sessions/${encodeURIComponent(saved)}/history`);
+              if (res.ok) {
+                const data = await res.json();
+                this.messages = (data.history || [])
+                  .filter(m => m.role === 'user' || m.role === 'assistant')
+                  .map(m => ({ role: m.role === 'assistant' ? 'agent' : m.role, content: m.content }));
+                this.$nextTick(() => this.scrollToBottom());
+              }
+            } catch (e) { console.error("Failed to load history", e); }
             this.connect(saved);
             return;
           }
@@ -205,7 +217,14 @@
           const res = await fetch('/api/chat/sessions');
           if (res.ok) {
             const data = await res.json();
-            this.sessions = data.sessions || [];
+            const server = data.sessions || [];
+            // Keep current session in sidebar if not yet in server (e.g. new web tab)
+            if (this.sessionId && !server.find(s => s.key === this.sessionId)) {
+              const platform = this.sessionId.includes(':') ? this.sessionId.split(':')[0] : 'unknown';
+              this.sessions = [...server, { key: this.sessionId, platform, channel_id: this.sessionId, platforms: [] }];
+            } else {
+              this.sessions = server;
+            }
           }
         } catch (e) {
           console.error("Failed to load sessions", e);

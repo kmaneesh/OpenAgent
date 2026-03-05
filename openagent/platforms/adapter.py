@@ -433,3 +433,47 @@ class SlackPlatformAdapter(PlatformAdapter):
             "tool": "slack.send_message",
             "params": {"platform_id": msg.channel_id, "text": msg.content},
         })
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp
+# ---------------------------------------------------------------------------
+
+
+class WhatsAppPlatformAdapter(PlatformAdapter):
+    """Adapter for the WhatsApp Go service.
+
+    Expected event data fields (from ``whatsapp.message.received``):
+        chat_id, sender, text
+    """
+
+    def __init__(self, *, client: McpLiteClient, bus: MessageBus, resolver: IdentityResolver | None = None) -> None:
+        super().__init__(platform_name="whatsapp", client=client, bus=bus, resolver=resolver)
+        self._status: dict[str, Any] = {"connected": False}
+
+    def _on_connection_status(self, data: dict[str, Any]) -> None:
+        self._status.update(data)
+
+    def _to_inbound(self, data: dict[str, Any]) -> InboundMessage | None:
+        chat_id = str(data.get("chat_id", ""))
+        content = str(data.get("text", ""))
+        sender = str(data.get("sender", chat_id))
+        if not chat_id or not content:
+            return None
+        return InboundMessage(
+            platform="whatsapp",
+            channel_id=chat_id,
+            sender=SenderInfo(
+                platform="whatsapp",
+                user_id=chat_id,
+                display_name=sender,
+            ),
+            content=content,
+        )
+
+    async def send(self, msg: OutboundMessage) -> None:
+        await self._client.request({
+            "type": "tool.call",
+            "tool": "whatsapp.send_text",
+            "params": {"chat_id": msg.channel_id, "text": msg.content},
+        })

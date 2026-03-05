@@ -31,6 +31,7 @@ from .adapter import (
     DiscordPlatformAdapter,
     SlackPlatformAdapter,
     TelegramPlatformAdapter,
+    WhatsAppPlatformAdapter,
 )
 
 logger = get_logger(__name__)
@@ -40,6 +41,7 @@ _PLATFORM_ADAPTERS: dict[str, type[PlatformAdapter]] = {
     "discord": DiscordPlatformAdapter,
     "telegram": TelegramPlatformAdapter,
     "slack": SlackPlatformAdapter,
+    "whatsapp": WhatsAppPlatformAdapter,
 }
 
 _MONITOR_INTERVAL_S = 2.0

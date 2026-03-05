@@ -10,7 +10,7 @@
 #   OPENAGENT_MODEL           — model name to request
 #   OPENAGENT_LLM_TIMEOUT     — request timeout in seconds (float)
 #
-# ── platform env vars (preferred over storing secrets in YAML) ─────────────
+# ── Platform env vars (preferred over storing secrets in YAML) ─────────────
 #   DISCORD_TOKEN             — Discord bot token
 #   TELEGRAM_APP_ID           — Telegram MTProto app ID (integer)
 #   TELEGRAM_APP_HASH         — Telegram MTProto app hash
@@ -18,6 +18,11 @@
 #   SLACK_BOT_TOKEN           — Slack bot OAuth token (xoxb-...)
 #   SLACK_APP_TOKEN           — Slack app-level token (xapp-..., socket mode)
 #   WHATSAPP_PHONE            — WhatsApp linked phone number
+#
+# ── Sandbox env vars ─────────────────────────────────────────────────────────
+#   MSB_SERVER_URL            — microsandbox server URL (default http://127.0.0.1:5555)
+#   MSB_API_KEY               — microsandbox API key (required; run: msb server keygen)
+#   MSB_MEMORY_MB             — VM memory per sandbox call in MB (default 512)
 
 # ── Provider ─────────────────────────────────────────────────────────────────
 provider:
@@ -57,7 +62,7 @@ session:
   backend: sqlite
   db_path: data/sessions.db
 
-# ── platforms ──────────────────────────────────────────────────────────────────
+# ── Platforms ─────────────────────────────────────────────────────────────────
 # Credentials injected as env vars into the corresponding Go service binary.
 platforms:
   # discord:
@@ -84,5 +89,13 @@ tools:
   #     - ~/Documents
   #     - /tmp
 
-  # shell:
-  #   allowed_commands: []   # empty = shell tool disabled
+  # sandbox — secure code execution and shell via microsandbox (VM-level OCI isolation).
+  # Provides: sandbox.execute (python, node) and sandbox.shell (bash commands).
+  # Requires a running microsandbox server:
+  #   msb server start --dev          # development mode (generates a key)
+  #   msb server keygen               # generate production API key
+  #
+  # sandbox:
+  #   server_url: http://127.0.0.1:5555   # MSB_SERVER_URL
+  #   api_key: ""                          # MSB_API_KEY  (required)
+  #   memory_mb: 512                       # MSB_MEMORY_MB  (optional)

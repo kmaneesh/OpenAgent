@@ -9,10 +9,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Response
-from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings
 from openagent.agent.identity_tools import make_identity_tools
 from openagent.agent.loop import AgentLoop
 from openagent.agent.middlewares.stt import STTMiddleware
+from openagent.agent.middlewares.tts import TTSMiddleware
 from openagent.agent.tools import ToolRegistry
 from openagent.bus.bus import MessageBus
 from openagent.platforms.manager import PlatformManager
@@ -23,6 +26,8 @@ from openagent.heartbeat import (
     heartbeat_enabled_from_env,
     heartbeat_interval_from_env,
 )
+from openagent.cron import CronService, CronJob
+from openagent.bus.events import InboundMessage, SenderInfo
 from openagent.observability import configure_logging
 from openagent.observability.metrics import render_metrics
 from openagent.providers import get_provider
@@ -109,6 +114,23 @@ async def lifespan(app: FastAPI):
     app.state.bus = bus
     await bus.start()
 
+    async def on_cron_job(job: CronJob) -> None:
+        msg = InboundMessage(
+            platform="cron",
+            sender=SenderInfo("cron", "system"),
+            channel_id=job.payload.channel or "cron_default",
+            content=job.payload.message,
+            session_key_override=job.payload.to,
+        )
+        await bus.publish(msg)
+
+    cron = CronService(
+        store_path=ROOT / "data" / "cron.json",
+        on_job=on_cron_job,
+    )
+    app.state.cron = cron
+    await cron.start()
+
     # Session manager
     session_backend = SqliteSessionBackend(
         ROOT / cfg.session.db_path
@@ -125,13 +147,30 @@ async def lifespan(app: FastAPI):
     await tool_registry.rebuild()
     for name, description, params, fn in make_identity_tools(session_manager):
         tool_registry.register_native(name, description, params, fn)
+
+    # Middleware — inject STT/TTS fns from extensions via lazy lookup wrappers
+    from openagent.manager import get_extension
+
+    async def _stt_fn(audio_path: str) -> str:
+        ext = get_extension("stt")
+        return await ext.listen(file=audio_path) if ext else ""
+
+    async def _tts_fn(text: str) -> str:
+        ext = get_extension("tts")
+        return await ext.speak(text=text) if ext else ""
+
     agent_loop = AgentLoop(
         bus=bus,
         provider=app.state.active_provider,
         sessions=session_manager,
         tools=tool_registry,
         system_prompt=cfg.default_agent.system_prompt,
-        middlewares=[STTMiddleware()],
+        max_iterations=cfg.default_agent.max_iterations,
+        max_tool_output=cfg.default_agent.max_tool_output,
+        middlewares=[
+            STTMiddleware(stt_fn=_stt_fn),
+            TTSMiddleware(tts_fn=_tts_fn),
+        ],
     )
     app.state.agent_loop = agent_loop
     await agent_loop.start()
@@ -158,6 +197,7 @@ async def lifespan(app: FastAPI):
     await session_manager.stop()
     await bus.close()
     await service_manager.stop()
+    await cron.stop()
     await heartbeat.stop()
     logging.getLogger().removeHandler(_handler)
     for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -181,6 +221,7 @@ logs.templates = templates
 extensions.templates = templates
 services.templates = templates
 config.templates = templates
+settings.templates = templates
 
 app.include_router(dashboard.router)
 app.include_router(chat.router)
@@ -188,6 +229,7 @@ app.include_router(logs.router)
 app.include_router(extensions.router)
 app.include_router(services.router)
 app.include_router(config.router)
+app.include_router(settings.router)
 app.include_router(llm.router)
 app.include_router(provider.router)
 

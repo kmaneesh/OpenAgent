@@ -5,7 +5,8 @@
   "binary": {
     "linux/arm64": "bin/whatsapp-linux-arm64",
     "linux/amd64": "bin/whatsapp-linux-amd64",
-    "darwin/arm64": "bin/whatsapp-darwin-arm64"
+    "darwin/arm64": "bin/whatsapp-darwin-arm64",
+    "darwin/amd64": "bin/whatsapp-darwin-amd64"
   },
   "socket": "data/sockets/whatsapp.sock",
   "health": {

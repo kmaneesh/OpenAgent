@@ -119,6 +119,22 @@ class SessionManager:
         await self._backend.hide_session(session_key)
 
     # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    async def list_users(self) -> list[dict]:
+        return await self._backend.list_users()
+
+    async def get_user(self, user_key: str) -> dict | None:
+        return await self._backend.get_user(user_key)
+
+    async def upsert_user(self, user_key: str, name: str = "", email: str = "") -> None:
+        await self._backend.upsert_user(user_key, name, email)
+
+    async def delete_user(self, user_key: str) -> None:
+        await self._backend.delete_user(user_key)
+
+    # ------------------------------------------------------------------
     # Cross-platform identity (proxied from backend)
     # ------------------------------------------------------------------
 
