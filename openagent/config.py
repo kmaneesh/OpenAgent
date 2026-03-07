@@ -82,7 +82,7 @@ class SlackPlatformConfig(BaseModel):
 
 class WhatsAppPlatformConfig(BaseModel):
     phone_number: str = ""
-    data_dir: str = "data/whatsapp"
+    data_dir: str = "data"  # parent dir for whatsapp.db
 
 
 class PlatformsConfig(BaseModel):
@@ -218,11 +218,13 @@ def load_config(yaml_path: Path | None = None) -> OpenAgentConfig:
     return OpenAgentConfig.model_validate(data)
 
 
-def build_service_env_extras(cfg: OpenAgentConfig) -> dict[str, dict[str, str]]:
+def build_service_env_extras(cfg: OpenAgentConfig, root: Path) -> dict[str, dict[str, str]]:
     """Build per-service env var maps to inject when launching Go services.
 
     ServiceManager merges these into the subprocess env on each launch.
     Keys are service names (matching service.json ``name`` fields).
+    Relative paths (e.g. data_dir) are resolved against root so the subprocess
+    gets absolute paths regardless of its working directory.
     """
     extras: dict[str, dict[str, str]] = {}
 
@@ -251,6 +253,15 @@ def build_service_env_extras(cfg: OpenAgentConfig) -> dict[str, dict[str, str]]:
             sl["SLACK_APP_TOKEN"] = slack.app_token
         if sl:
             extras["slack"] = sl
+
+    whatsapp = cfg.platforms.whatsapp
+    if whatsapp and whatsapp.data_dir:
+        data_dir = Path(whatsapp.data_dir)
+        if not data_dir.is_absolute():
+            data_dir = (root / data_dir).resolve()
+        extras["whatsapp"] = {
+            "WHATSAPP_DATA_DIR": str(data_dir),
+        }
 
     sandbox = cfg.tools.sandbox
     if sandbox:

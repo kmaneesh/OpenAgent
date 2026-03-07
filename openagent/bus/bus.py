@@ -136,6 +136,8 @@ class MessageBus:
                 "platform": msg.platform,
                 "content": msg.content,
                 "session_key": msg.session_key,
+                "stream_chunk": bool(msg.metadata.get("stream_chunk")),
+                "stream_end": bool(msg.metadata.get("stream_end")),
             })
 
     # ------------------------------------------------------------------

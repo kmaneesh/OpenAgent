@@ -8,6 +8,7 @@ import logging
 import os
 import platform
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +50,7 @@ class ServiceManifest:
     tools: list[dict[str, Any]]
     events: list[dict[str, Any]]
     manifest_path: Path
+    runtime: str  # "go" | "rust"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any], manifest_path: Path) -> ServiceManifest:
@@ -70,6 +72,7 @@ class ServiceManifest:
             tools=list(data.get("tools") or []),
             events=list(data.get("events") or []),
             manifest_path=manifest_path,
+            runtime=str(data.get("runtime", "go")),
         )
 
 
@@ -115,9 +118,11 @@ class ManagedService:
             "restart_count": self.restart_count,
             "last_error": self.last_error,
             "version": self.manifest.version,
+            "description": self.manifest.description,
             "tools": self.manifest.tools,
             "events": self.manifest.events,
             "socket": self.manifest.socket,
+            "runtime": self.manifest.runtime,
         }
 
 
@@ -173,6 +178,9 @@ class ServiceManager:
         # Per-service extra env vars injected on each launch (e.g. platform tokens).
         # Keys are service names; values are dicts merged into the subprocess env.
         self._env_extras: dict[str, dict[str, str]] = env_extras or {}
+        # Optional async callback fired each time a service becomes ready.
+        # Signature: async fn(service_name: str) -> None
+        self._service_ready_cb: Callable[[str], Awaitable[None]] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -217,6 +225,15 @@ class ServiceManager:
             operation="stop",
         )
 
+    def on_service_ready(self, cb: Callable[[str], Awaitable[None]]) -> None:
+        """Register an async callback invoked each time a service becomes ready.
+
+        Called after every successful launch, including restarts.
+        Signature: ``async fn(service_name: str) -> None``.
+        Used by ``ToolRegistry.register_service`` to load tools per-service.
+        """
+        self._service_ready_cb = cb
+
     def get_client(self, name: str) -> McpLiteClient | None:
         """Return the running MCP-lite client for *name*, or None."""
         svc = self._services.get(name)
@@ -226,6 +243,30 @@ class ServiceManager:
 
     def list_services(self) -> list[ManagedService]:
         return list(self._services.values())
+
+    async def stop_service(self, name: str) -> bool:
+        """Permanently stop a service without restarting (for Settings enable/disable)."""
+        svc = self._services.get(name)
+        if not svc:
+            return False
+        task = self._watchdog_tasks.pop(name, None)
+        if task:
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+        await self._teardown(svc)
+        svc.status = ServiceStatus.STOPPED
+        log_event(
+            logger,
+            logging.INFO,
+            "service stopped by operator",
+            component="service_manager",
+            operation="stop_service",
+            service=name,
+        )
+        return True
 
     async def reload(self, name: str) -> bool:
         """Gracefully terminate, reload manifest from disk, and respawn the service."""
@@ -448,6 +489,11 @@ class ServiceManager:
             service=svc.name,
             socket=str(socket_path),
         )
+        if self._service_ready_cb is not None:
+            asyncio.create_task(
+                self._service_ready_cb(svc.name),
+                name=f"svcmgr.ready_cb.{svc.name}",
+            )
 
     async def _wait_for_socket(self, svc: ManagedService, socket_path: Path) -> None:
         loop = asyncio.get_running_loop()
@@ -554,8 +600,8 @@ class ServiceManager:
         path = Path(rel)
         if path.is_absolute():
             return path
-        # Relative to root (binaries are built into root/bin/ per convention)
-        return self._root / path
+        # Relative to the service directory (manifest parent); Makefile builds to services/<name>/bin/
+        return manifest.manifest_path.parent / path
 
     def _resolve_socket(self, manifest: ServiceManifest) -> Path:
         p = Path(manifest.socket)

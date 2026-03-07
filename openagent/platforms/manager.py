@@ -20,7 +20,7 @@ Extend it to add new platform services without touching this class.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Callable
 
 from openagent.bus.bus import MessageBus
 from openagent.observability.logging import get_logger
@@ -61,6 +61,7 @@ class PlatformManager:
         service_manager: ServiceManager,
         bus: MessageBus,
         session_manager: object | None = None,
+        get_connectors_enabled: Callable[[], dict[str, bool]] | None = None,
     ) -> None:
         self._service_manager = service_manager
         self._bus = bus
@@ -69,6 +70,7 @@ class PlatformManager:
         self._resolver = (
             session_manager.resolve_user_key if session_manager is not None else None
         )
+        self._get_connectors_enabled = get_connectors_enabled or (lambda: {})
         # platform_name → adapter
         self._adapters: dict[str, PlatformAdapter] = {}
         self._route_task: asyncio.Task[None] | None = None
@@ -134,7 +136,18 @@ class PlatformManager:
 
     def _sync_adapters(self) -> None:
         """Create or remove adapters based on current service client state."""
+        enabled_map = self._get_connectors_enabled()
         for svc_name, AdapterClass in _PLATFORM_ADAPTERS.items():
+            # Skip disabled connectors (Settings > Connector tab)
+            if enabled_map.get(svc_name) is False:
+                existing = self._adapters.get(svc_name)
+                if existing is not None:
+                    del self._adapters[svc_name]
+                    logger.info(
+                        "PlatformManager: removed adapter for %r (connector disabled)", svc_name
+                    )
+                continue
+
             client = self._service_manager.get_client(svc_name)
             existing = self._adapters.get(svc_name)
 

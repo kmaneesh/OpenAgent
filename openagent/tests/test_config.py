@@ -191,7 +191,7 @@ def test_build_service_env_extras_discord():
     cfg = OpenAgentConfig(
         platforms=PlatformsConfig(discord=DiscordPlatformConfig(token="tok"))
     )
-    extras = build_service_env_extras(cfg)
+    extras = build_service_env_extras(cfg, Path("/tmp"))
     assert extras.get("discord") == {"DISCORD_BOT_TOKEN": "tok"}
 
 
@@ -201,7 +201,7 @@ def test_build_service_env_extras_telegram():
             telegram=TelegramPlatformConfig(app_id=1, app_hash="h", bot_token="t")
         )
     )
-    extras = build_service_env_extras(cfg)
+    extras = build_service_env_extras(cfg, Path("/tmp"))
     tg = extras.get("telegram", {})
     assert tg["TELEGRAM_APP_ID"] == "1"
     assert tg["TELEGRAM_APP_HASH"] == "h"
@@ -214,7 +214,7 @@ def test_build_service_env_extras_slack():
             slack=SlackPlatformConfig(bot_token="xoxb", app_token="xapp")
         )
     )
-    extras = build_service_env_extras(cfg)
+    extras = build_service_env_extras(cfg, Path("/tmp"))
     sl = extras.get("slack", {})
     assert sl["SLACK_BOT_TOKEN"] == "xoxb"
     assert sl["SLACK_APP_TOKEN"] == "xapp"
@@ -224,11 +224,11 @@ def test_build_service_env_extras_empty_discord_token():
     cfg = OpenAgentConfig(
         platforms=PlatformsConfig(discord=DiscordPlatformConfig(token=""))
     )
-    extras = build_service_env_extras(cfg)
+    extras = build_service_env_extras(cfg, Path("/tmp"))
     assert "discord" not in extras  # empty token → not injected
 
 
 def test_build_service_env_extras_no_platforms():
     cfg = OpenAgentConfig()
-    extras = build_service_env_extras(cfg)
+    extras = build_service_env_extras(cfg, Path("/tmp"))
     assert extras == {}

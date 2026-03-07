@@ -42,6 +42,11 @@ class PlainFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         request_id = get_request_id() or "-"
         base = f"{self.formatTime(record)} {record.levelname:<8} {record.name} [{request_id}] {record.getMessage()}"
+        extra = getattr(record, "openagent_extra", None)
+        if isinstance(extra, dict):
+            pairs = " ".join(f"{k}={v}" for k, v in extra.items() if k not in ("component", "operation"))
+            if pairs:
+                base = f"{base} -- {pairs}"
         if record.exc_info:
             return f"{base}\n{self.formatException(record.exc_info)}"
         return base

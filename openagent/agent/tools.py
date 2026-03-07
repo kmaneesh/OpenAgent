@@ -34,60 +34,80 @@ _TOOL_CALL_TIMEOUT = 30.0  # seconds
 class ToolRegistry:
     """Discovers tools from all running services and dispatches tool calls.
 
-    Built once per ``AgentLoop`` from the ``ServiceManager``.  Refreshed on
-    ``rebuild()`` if services restart and expose new tools.
+    Tools are registered per-service as each comes online via
+    ``register_service()``.  The ``ServiceManager`` fires this callback
+    from its watchdog whenever a service becomes ready, so tools appear
+    incrementally rather than in one bulk startup call.
+
+    Native Python tools (not backed by a Go service) survive service restarts.
     """
 
     def __init__(self, service_manager: ServiceManager) -> None:
         self._mgr = service_manager
         # tool_name → service_name for routing (Go service tools)
         self._tool_to_service: dict[str, str] = {}
-        # OpenAI-format schemas from Go services (rebuilt on every rebuild())
-        self._schemas: list[dict[str, Any]] = []
-        # Native Python tools — survive rebuild()
+        # Per-service schema lists — keyed by service name for easy replacement on restart
+        self._service_schemas: dict[str, list[dict[str, Any]]] = {}
+        # Native Python tools — survive service restarts
         self._native_handlers: dict[str, NativeHandler] = {}
         self._native_schemas: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
-    # Build / rebuild
+    # Per-service registration (called by ServiceManager watchdog callback)
     # ------------------------------------------------------------------
 
-    async def rebuild(self) -> None:
-        """Discover all tools currently exposed by running services.
+    async def register_service(self, name: str) -> None:
+        """Query tools from one service and register them.
 
-        Called at startup and whenever a service restarts (watchdog can
-        notify the agent loop to rebuild).
+        Called by ``ServiceManager.on_service_ready`` each time a service
+        finishes starting (including after restarts).  Replaces any
+        previously registered tools from the same service.
         """
-        self._tool_to_service.clear()
-        self._schemas.clear()
+        from openagent.platforms.mcplite import McpLiteClient  # avoid circular at module level
+        client: McpLiteClient | None = self._mgr.get_client(name)
+        if client is None:
+            logger.warning("ToolRegistry: service %r ready but client not available", name)
+            return
 
-        for svc in self._mgr.list_services():
-            client = self._mgr.get_client(svc.name)
-            if client is None:
-                continue
-            try:
-                frame = await client.request({"type": "tools.list"}, timeout_s=5.0)
-            except Exception:
-                logger.warning("Could not list tools from service %s", svc.name)
-                continue
+        try:
+            frame = await client.request({"type": "tools.list"}, timeout_s=5.0)
+        except Exception as exc:
+            logger.warning("ToolRegistry: could not list tools from %r: %s", name, exc)
+            return
 
-            if not isinstance(frame, proto.ToolListResponse):
-                continue
+        if not isinstance(frame, proto.ToolListResponse):
+            logger.warning("ToolRegistry: unexpected response from %r tools.list", name)
+            return
 
-            for tool in frame.tools:
-                if tool.name in self._tool_to_service:
-                    logger.warning(
-                        "Duplicate tool name %r — service %s overrides %s",
-                        tool.name, svc.name, self._tool_to_service[tool.name],
-                    )
-                self._tool_to_service[tool.name] = svc.name
-                self._schemas.append(_to_openai_schema(tool))
+        # Remove old routing entries for this service
+        self._tool_to_service = {
+            t: s for t, s in self._tool_to_service.items() if s != name
+        }
 
+        schemas: list[dict[str, Any]] = []
+        for tool in frame.tools:
+            if tool.name in self._tool_to_service:
+                logger.warning(
+                    "Duplicate tool %r — service %r overrides %r",
+                    tool.name, name, self._tool_to_service[tool.name],
+                )
+            self._tool_to_service[tool.name] = name
+            schemas.append(_to_openai_schema(tool))
+
+        self._service_schemas[name] = schemas
         logger.info(
-            "ToolRegistry: %d tools from %d services",
-            len(self._schemas),
-            len({s for s in self._tool_to_service.values()}),
+            "ToolRegistry: registered %d tools from service %r (total service tools: %d)",
+            len(schemas), name, sum(len(v) for v in self._service_schemas.values()),
         )
+
+    async def rebuild(self) -> None:
+        """Bootstrap: register tools from all currently-running services.
+
+        Useful as a one-shot fallback when the service-ready callback was
+        not set before services started.
+        """
+        for svc in self._mgr.list_services():
+            await self.register_service(svc.name)
 
     # ------------------------------------------------------------------
     # Native tool registration
@@ -122,10 +142,13 @@ class ToolRegistry:
 
     def schemas(self) -> list[dict[str, Any]]:
         """Return all tool schemas (Go services + native) in OpenAI format."""
-        return list(self._schemas) + list(self._native_schemas)
+        svc_schemas: list[dict[str, Any]] = []
+        for s in self._service_schemas.values():
+            svc_schemas.extend(s)
+        return svc_schemas + list(self._native_schemas)
 
     def has_tools(self) -> bool:
-        return bool(self._schemas) or bool(self._native_schemas)
+        return bool(self._service_schemas) or bool(self._native_schemas)
 
     # ------------------------------------------------------------------
     # Dispatch

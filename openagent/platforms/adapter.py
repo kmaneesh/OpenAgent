@@ -23,6 +23,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -135,8 +137,8 @@ class DiscordPlatformAdapter(PlatformAdapter):
     def __init__(self, *, client: McpLiteClient, bus: MessageBus, resolver: IdentityResolver | None = None) -> None:
         super().__init__(platform_name="discord", client=client, bus=bus, resolver=resolver)
         self._status: dict[str, Any] = {"connected": False, "authorized": False}
-        # stream_key -> message_id for progressive edits (stream_key = f"{platform}:{channel_id}:{session_key}")
-        self._stream_message_ids: dict[str, str] = {}
+        # stream_key -> {msg_id, last_edit} for throttled progressive edits
+        self._stream_states: dict[str, dict] = {}
 
     def _on_connection_status(self, data: dict[str, Any]) -> None:
         self._status.update(data)
@@ -165,6 +167,8 @@ class DiscordPlatformAdapter(PlatformAdapter):
 
     # Discord message limit (API rejects > 2000 chars)
     _MAX_MESSAGE_LEN = 1900
+    # Minimum seconds between edit_message API calls during streaming (~5 edits/5s limit)
+    _EDIT_MIN_INTERVAL_S = 1.2
     # Progressive delivery: show first chunk immediately, then edit.
     # Discord allows ~5 edits per 5 seconds — use 1s between edits to stay under limit.
     _PROGRESSIVE_CHUNK = 200
@@ -268,22 +272,45 @@ class DiscordPlatformAdapter(PlatformAdapter):
                     })
                 break
 
+    def _process_think_blocks(self, text: str) -> str:
+        """Convert <think>...</think> blocks to Discord spoiler format.
+
+        Models like Qwen omit the opening tag — only </think> is emitted.
+        Normalise first, then wrap thinking content in ||spoiler|| so users
+        can click to reveal it, with a small label above.
+        """
+        # Normalise: implicit opener (only </think> present, no <think>)
+        if "</think>" in text and "<think>" not in text:
+            text = "<think>" + text
+
+        def _replace(m: re.Match) -> str:
+            inner = m.group(1).strip()
+            if not inner:
+                return ""
+            return f"-# 💭 Thinking\n||{inner}||\n"
+
+        return re.sub(r"<think>([\s\S]*?)</think>", _replace, text)
+
     def _stream_key(self, msg: OutboundMessage) -> str:
         return f"{msg.platform}:{msg.channel_id}:{msg.session_key}"
 
     async def send(self, msg: OutboundMessage) -> None:
-        content = msg.content or ""
         meta = msg.metadata or {}
         stream_chunk = meta.get("stream_chunk", False)
         stream_end = meta.get("stream_end", False)
 
+        # Process think blocks on complete content only (stream_end or non-streaming).
+        # Intermediate chunks are raw accumulated text — no </think> yet.
+        raw = msg.content or ""
+        content = self._process_think_blocks(raw) if (stream_end or not stream_chunk) else raw
+
         if stream_chunk:
-            # True LLM streaming: create or edit message
+            # True LLM streaming: create message on first chunk, throttle edits
             key = self._stream_key(msg)
-            msg_id = self._stream_message_ids.get(key)
-            if msg_id is None:
-                # First chunk: create message (content may be partial)
-                if not content:
+            state = self._stream_states.get(key)
+            if state is None:
+                # First chunk: create the message
+                if not raw:
                     return
                 frame = await self._client.request({
                     "type": "tool.call",
@@ -294,27 +321,31 @@ class DiscordPlatformAdapter(PlatformAdapter):
                     getattr(frame, "result", None) if hasattr(frame, "result") else None
                 )
                 if new_id:
-                    self._stream_message_ids[key] = new_id
+                    self._stream_states[key] = {"msg_id": new_id, "last_edit": time.monotonic()}
             else:
-                # Subsequent chunk: edit existing message
-                if content:
+                # Subsequent chunk: only edit if interval exceeded or this is the final chunk
+                now = time.monotonic()
+                elapsed = now - state["last_edit"]
+                if raw and (stream_end or elapsed >= self._EDIT_MIN_INTERVAL_S):
                     try:
                         await self._client.request({
                             "type": "tool.call",
                             "tool": "discord.edit_message",
                             "params": {
                                 "platform_id": msg.channel_id,
-                                "message_id": msg_id,
+                                "message_id": state["msg_id"],
                                 "text": content,
                             },
                         })
+                        state["last_edit"] = time.monotonic()
                     except Exception:
                         pass  # Rate limit or edit failed
             if stream_end:
-                self._stream_message_ids.pop(key, None)
+                self._stream_states.pop(key, None)
             return
 
         # Non-streaming: full message (fallback or when tools were used)
+        # content already has think blocks processed above
         chunks = self._split_content(content)
         if not chunks:
             return
@@ -375,8 +406,11 @@ class TelegramPlatformAdapter(PlatformAdapter):
         )
 
     async def send(self, msg: OutboundMessage) -> None:
+        meta = msg.metadata or {}
+        if meta.get("stream_chunk") and not meta.get("stream_end"):
+            return  # Skip intermediate chunks; send only the final complete message
         user_id = int(msg.channel_id)
-        access_hash = int(msg.metadata.get("access_hash", 0))
+        access_hash = int(meta.get("access_hash", 0))
         await self._client.request({
             "type": "tool.call",
             "tool": "telegram.send_message",
@@ -397,7 +431,7 @@ class SlackPlatformAdapter(PlatformAdapter):
     """Adapter for the Slack Go service.
 
     Expected event data fields (from ``slack.message.received``):
-        platform_id, user_id, username, text, ts, bot_id
+        channel_id, user_id, text, ts, team_id
     """
 
     def __init__(self, *, client: McpLiteClient, bus: MessageBus, resolver: IdentityResolver | None = None) -> None:
@@ -410,14 +444,14 @@ class SlackPlatformAdapter(PlatformAdapter):
     def _to_inbound(self, data: dict[str, Any]) -> InboundMessage | None:
         if data.get("bot_id"):
             return None
-        platform_id = str(data.get("platform_id", ""))
+        channel_id = str(data.get("channel_id") or data.get("platform_id", ""))
         content = str(data.get("text", ""))
         user_id = str(data.get("user_id", ""))
-        if not platform_id or not content:
+        if not channel_id or not content:
             return None
         return InboundMessage(
             platform="slack",
-            channel_id=platform_id,
+            channel_id=channel_id,
             sender=SenderInfo(
                 platform="slack",
                 user_id=user_id,
@@ -428,10 +462,13 @@ class SlackPlatformAdapter(PlatformAdapter):
         )
 
     async def send(self, msg: OutboundMessage) -> None:
+        meta = msg.metadata or {}
+        if meta.get("stream_chunk") and not meta.get("stream_end"):
+            return  # Skip intermediate chunks; send only the final complete message
         await self._client.request({
             "type": "tool.call",
             "tool": "slack.send_message",
-            "params": {"platform_id": msg.channel_id, "text": msg.content},
+            "params": {"channel_id": msg.channel_id, "text": msg.content},
         })
 
 
@@ -483,6 +520,9 @@ class WhatsAppPlatformAdapter(PlatformAdapter):
         )
 
     async def send(self, msg: OutboundMessage) -> None:
+        meta = msg.metadata or {}
+        if meta.get("stream_chunk") and not meta.get("stream_end"):
+            return  # Skip intermediate chunks; send only the final complete message
         await self._client.request({
             "type": "tool.call",
             "tool": "whatsapp.send_text",

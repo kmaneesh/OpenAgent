@@ -8,7 +8,6 @@ from .adapter import (
 )
 from .discord import DiscordServicePlatform
 from .telegram import TelegramServicePlatform
-from .whatsapp import WhatsAppTransport
 
 __all__ = [
     # Push-model adapters (production)
@@ -19,5 +18,4 @@ __all__ = [
     # Legacy pull-model clients (tests / standalone use)
     "DiscordServicePlatform",
     "TelegramServicePlatform",
-    "WhatsAppTransport",
 ]
