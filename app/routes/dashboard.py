@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
-import json
 import time
-from pathlib import Path
+from typing import Any
 
 import psutil
 from fastapi import APIRouter, Request
@@ -15,6 +14,28 @@ router = APIRouter()
 templates: Jinja2Templates  # injected by main.py
 
 _START_TIME = time.time()
+
+
+def _online_services_from_manager(mgr) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Get Go and Rust services from ServiceManager, filtered to online (running) only."""
+    go_services: list[dict[str, Any]] = []
+    rust_services: list[dict[str, Any]] = []
+
+    for svc in mgr.list_services():
+        d = svc.to_dict()
+        if d.get("status") != "running":
+            continue
+        entry = {
+            "name": d["name"],
+            "version": d.get("version", "?"),
+            "status": "online",
+        }
+        if d.get("runtime") == "rust":
+            rust_services.append(entry)
+        else:
+            go_services.append(entry)
+
+    return go_services, rust_services
 
 
 def _system_stats() -> dict:
@@ -62,41 +83,39 @@ def _installed_extensions() -> list[dict]:
     return result
 
 
-def _discover_services(root: Path) -> list[dict]:
-    services_dir = root / "services"
-    result = []
-    if services_dir.exists():
-        for manifest in sorted(services_dir.glob("*/service.json")):
-            try:
-                data = json.loads(manifest.read_text())
-                result.append({
-                    "name": data.get("name", manifest.parent.name),
-                    "description": data.get("description", ""),
-                    "version": data.get("version", "?"),
-                    "status": "stopped",  # ServiceManager not built yet
-                })
-            except Exception:
-                pass
-    return result
-
-
 @router.get("/")
 async def dashboard(request: Request):
+    mgr = getattr(request.app.state, "service_manager", None)
+    if mgr:
+        services, rust_services = _online_services_from_manager(mgr)
+    else:
+        services = []
+        rust_services = []
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "active": "dashboard",
         "stats": _system_stats(),
         "extensions": _installed_extensions(),
-        "services": _discover_services(request.app.state.root),
+        "services": services,
+        "rust_services": rust_services,
     })
 
 
 @router.get("/api/stats")
 async def stats_partial(request: Request):
     """Partial for HTMX stat-card polling — returns cards only, no layout."""
+    mgr = getattr(request.app.state, "service_manager", None)
+    if mgr:
+        services, rust_services = _online_services_from_manager(mgr)
+    else:
+        services = []
+        rust_services = []
+
     return templates.TemplateResponse("_stats_cards.html", {
         "request": request,
         "stats": _system_stats(),
         "extensions": _installed_extensions(),
-        "services": _discover_services(request.app.state.root),
+        "services": services,
+        "rust_services": rust_services,
     })

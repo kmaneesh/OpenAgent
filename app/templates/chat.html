@@ -88,8 +88,8 @@
             :class="msg.role === 'user'
                     ? 'bg-[#FF9933]/20 border border-[#FF9933]/30 text-stone-950 dark:text-slate-100 rounded-2xl rounded-tr-sm'
                     : 'bg-pastelFog dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] text-stone-800 dark:text-steelMist rounded-2xl rounded-tl-sm'"
-            class="max-w-2xl px-3 py-2.5 text-sm leading-normal whitespace-pre-wrap shadow-sm inline-block m-0"
-            x-text="msg.content">
+            class="max-w-2xl px-3 py-2.5 text-sm leading-normal shadow-sm inline-block m-0"
+            x-html="renderMessage(msg.content)">
           </div>
         </div>
       </template>
@@ -371,7 +371,13 @@
         this.sse.onmessage = (e) => {
           const event = JSON.parse(e.data);
           const role = event.direction === 'inbound' ? 'user' : 'agent';
-          this.messages.push({ role, content: event.content });
+          const last = this.messages.length > 0 ? this.messages[this.messages.length - 1] : null;
+          if (event.stream_chunk && last && last.role === 'agent') {
+            // Edit the last agent bubble in place (streaming update)
+            this.messages[this.messages.length - 1] = { role: 'agent', content: event.content };
+          } else {
+            this.messages.push({ role, content: event.content });
+          }
           this.$nextTick(() => this.scrollToBottom());
         };
         this.sse.onerror = () => {};
@@ -392,7 +398,49 @@
       scrollToBottom() {
         const el = this.$refs.thread;
         el.scrollTop = el.scrollHeight;
-      }
+      },
+
+      // ── Message rendering — parse <think> blocks into collapsible details ──
+      renderMessage(content) {
+        const esc = s => s
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+
+        // Some models (Qwen, etc.) omit the opening <think> tag and only emit </think>.
+        // Universally: if </think> is present without <think>, the opener was implicit — prepend it.
+        let normalized = content;
+        if (content.includes('</think>') && !content.includes('<think>')) {
+          normalized = '<think>' + content;
+        }
+
+        const parts = normalized.split(/(<think>|<\/think>)/);
+        let inThink = false;
+        let html = '';
+
+        for (const part of parts) {
+          if (part === '<think>') {
+            inThink = true;
+            html += `<details open class="think-block"><summary class="think-summary">Thinking…</summary><div class="think-body">`;
+          } else if (part === '</think>') {
+            inThink = false;
+            html += `</div></details>`;
+          } else {
+            if (part.trim() === '') continue;
+            // Support marked.js if available, otherwise fallback to plain text
+            if (typeof marked !== 'undefined') {
+              html += `<div class="markdown-body">${marked.parse(part, { breaks: true })}</div>`;
+            } else {
+              html += `<span class="msg-text">${esc(part)}</span>`;
+            }
+          }
+        }
+
+        // Streaming: <think> opened but </think> not yet received
+        if (inThink) html += `</div></details>`;
+
+        return html;
+      },
     }
   }
 </script>

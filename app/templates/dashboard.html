@@ -4,27 +4,105 @@
 
 {% block content %}
 
-<!-- ── Stat cards ─────────────────────────────────────────── -->
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-  <div id="stat-cards" class="contents"
-       hx-get="/api/stats" hx-trigger="every 10s" hx-swap="innerHTML">
-    {% include "_stats_cards.html" %}
+<!-- ── Top Layout (Stats) ─────────────────────────── -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+  
+  <!-- Left Column: Stat Cards -->
+  <div class="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-4">
+    <div id="stat-cards" class="contents"
+         hx-get="/api/stats" hx-trigger="every 10s" hx-swap="innerHTML">
+      {% include "_stats_cards.html" %}
+    </div>
   </div>
-</div>
 
-<!-- ── Extensions + Services ─────────────────────────────── -->
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Right Column (First Row): Rust Services -->
+  <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl overflow-hidden shadow-sm dark:shadow-none h-max">
+    <div class="px-4 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Rust Services</h2>
+      <span class="text-xs text-stone-500 dark:text-stone-400">OS & Internet</span>
+    </div>
+    {% if rust_services %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
+          <th class="text-left px-4 py-2">Name</th>
+          <th class="text-left px-4 py-2">Version</th>
+          <th class="text-left px-4 py-2">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for svc in rust_services %}
+        {% if svc.status == 'online' or svc.status == 'enabled' %}
+        <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
+          <td class="px-4 py-2 font-mono text-[#dea584]">{{ svc.name }}</td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ svc.version }}</td>
+          <td class="px-4 py-2">
+            <span class="inline-flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+              {{ svc.status }}
+            </span>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="px-4 py-6 text-sm text-stone-500 text-center">
+      No Rust services discovered.
+    </p>
+    {% endif %}
+  </div>
 
-  <!-- Extensions table -->
-  <div class="bg-stone-800 border border-stone-700 rounded-xl overflow-hidden">
-    <div class="px-4 py-3 border-b border-stone-700 flex items-center justify-between">
-      <h2 class="text-sm font-semibold">Extensions</h2>
-      <span class="text-xs text-stone-400">Python channel integrations</span>
+  <!-- Left Column (Second Row): Go Services -->
+  <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl overflow-hidden shadow-sm dark:shadow-none h-max">
+    <div class="px-4 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Go Services</h2>
+      <span class="text-xs text-stone-500 dark:text-stone-400">Connectors</span>
+    </div>
+    {% if services %}
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
+          <th class="text-left px-4 py-2">Name</th>
+          <th class="text-left px-4 py-2">Version</th>
+          <th class="text-left px-4 py-2">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for svc in services %}
+        {% if svc.status == 'online' or svc.status == 'enabled' %}
+        <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
+          <td class="px-4 py-2 font-mono text-[#dea584]">{{ svc.name }}</td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ svc.version }}</td>
+          <td class="px-4 py-2">
+            <span class="inline-flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+              {{ svc.status }}
+            </span>
+          </td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="px-4 py-6 text-sm text-stone-500 text-center">
+      No services discovered. Add a Go service under <code class="font-mono">services/</code>.
+    </p>
+    {% endif %}
+  </div>
+
+  <!-- Right Column (Second Row): Extensions -->
+  <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl overflow-hidden shadow-sm dark:shadow-none h-max">
+    <div class="px-4 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between">
+      <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Extensions</h2>
+      <span class="text-xs text-stone-500 dark:text-stone-400">Python channel integrations</span>
     </div>
     {% if extensions %}
     <table class="w-full text-sm">
       <thead>
-        <tr class="text-xs text-stone-400 border-b border-stone-700">
+        <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
           <th class="text-left px-4 py-2">Name</th>
           <th class="text-left px-4 py-2">Version</th>
           <th class="text-left px-4 py-2">Status</th>
@@ -32,12 +110,12 @@
       </thead>
       <tbody>
         {% for ext in extensions %}
-        <tr class="border-b border-stone-700/50 hover:bg-stone-700/30">
-          <td class="px-4 py-2 font-mono text-saffron">{{ ext.name }}</td>
-          <td class="px-4 py-2 text-stone-400">{{ ext.version }}</td>
+        <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
+          <td class="px-4 py-2 font-mono text-[#dea584]">{{ ext.name }}</td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ ext.version }}</td>
           <td class="px-4 py-2">
-            <span class="inline-flex items-center gap-1.5 text-xs text-green-400">
-              <span class="w-1.5 h-1.5 rounded-full bg-green-400"></span>
+            <span class="inline-flex items-center gap-1.5 text-xs text-sage">
+              <span class="w-1.5 h-1.5 rounded-full bg-sage"></span>
               {{ ext.status }}
             </span>
           </td>
@@ -47,43 +125,6 @@
     </table>
     {% else %}
     <p class="px-4 py-6 text-sm text-stone-500 text-center">No extensions registered.</p>
-    {% endif %}
-  </div>
-
-  <!-- Services table -->
-  <div class="bg-stone-800 border border-stone-700 rounded-xl overflow-hidden">
-    <div class="px-4 py-3 border-b border-stone-700 flex items-center justify-between">
-      <h2 class="text-sm font-semibold">Go Services</h2>
-      <span class="text-xs text-stone-400">Compute daemons</span>
-    </div>
-    {% if services %}
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="text-xs text-stone-400 border-b border-stone-700">
-          <th class="text-left px-4 py-2">Name</th>
-          <th class="text-left px-4 py-2">Version</th>
-          <th class="text-left px-4 py-2">Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for svc in services %}
-        <tr class="border-b border-stone-700/50 hover:bg-stone-700/30">
-          <td class="px-4 py-2 font-mono text-indigo-400">{{ svc.name }}</td>
-          <td class="px-4 py-2 text-stone-400">{{ svc.version }}</td>
-          <td class="px-4 py-2">
-            <span class="inline-flex items-center gap-1.5 text-xs text-stone-400">
-              <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-              {{ svc.status }}
-            </span>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="px-4 py-6 text-sm text-stone-500 text-center">
-      No services discovered. Add a Go service under <code class="font-mono">services/</code>.
-    </p>
     {% endif %}
   </div>
 

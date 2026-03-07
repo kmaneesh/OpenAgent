@@ -12,7 +12,7 @@
       {% for level in ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] %}
       <button @click="filter = '{{ level }}'"
               :class="filter === '{{ level }}'
-                ? 'bg-[#FF9933]/10 border-[#FF9933] text-[#FF9933]'
+                ? 'bg-saffron/10 border-saffron text-saffron'
                 : 'border-stone-700 text-stone-400 hover:border-stone-500'"
               class="border rounded-lg px-3 py-1 text-xs font-medium transition-colors">
         {{ level }}
@@ -24,7 +24,7 @@
 
     <!-- Auto-scroll toggle -->
     <button @click="autoScroll = !autoScroll"
-            :class="autoScroll ? 'text-[#FF9933]' : 'text-stone-500'"
+            :class="autoScroll ? 'text-saffron' : 'text-stone-500'"
             class="text-xs flex items-center gap-1.5">
       <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -34,7 +34,7 @@
     </button>
 
     <!-- Clear -->
-    <button @click="lines = []" class="text-xs text-red-400 hover:text-red-300">Clear</button>
+    <button @click="lines = []" class="text-xs text-saffron hover:text-saffron/80">Clear</button>
 
     <!-- SSE indicator -->
     <span class="inline-flex items-center gap-1.5 text-xs"

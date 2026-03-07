@@ -16,23 +16,26 @@ router = APIRouter()
 templates: Jinja2Templates  # injected by main.py
 
 
-def _get_services(root: Path) -> list[dict[str, Any]]:
-    """Scan ``root/services/*/service.json`` and return a summary list.
+def _discover_services(root: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Scan ``root/services/*/service.json`` and split into Go and Rust service lists.
 
-    Each entry has at minimum ``name`` and ``status`` ("stopped" or "error").
-    Used for static discovery independent of a running ServiceManager.
+    Uses the ``runtime`` field in each manifest to classify. Defaults to ``"go"``
+    if not present. Returns (go_services, rust_services).
     """
     services_dir = root / "services"
+    go_services: list[dict[str, Any]] = []
+    rust_services: list[dict[str, Any]] = []
+
     if not services_dir.exists():
-        return []
-    result: list[dict[str, Any]] = []
+        return go_services, rust_services
+
     for svc_dir in sorted(services_dir.iterdir()):
         manifest_path = svc_dir / "service.json"
         if not manifest_path.exists():
             continue
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            result.append({
+            entry = {
                 "name": manifest.get("name", svc_dir.name),
                 "description": manifest.get("description", ""),
                 "version": manifest.get("version", ""),
@@ -42,9 +45,10 @@ def _get_services(root: Path) -> list[dict[str, Any]]:
                 "restart_count": 0,
                 "last_error": None,
                 "socket": manifest.get("socket", ""),
-            })
+                "runtime": manifest.get("runtime", "go"),
+            }
         except (json.JSONDecodeError, OSError):
-            result.append({
+            entry = {
                 "name": svc_dir.name,
                 "description": "",
                 "version": "",
@@ -54,18 +58,36 @@ def _get_services(root: Path) -> list[dict[str, Any]]:
                 "restart_count": 0,
                 "last_error": "invalid service.json",
                 "socket": "",
-            })
-    return result
+                "runtime": "go",
+            }
+
+        if entry["runtime"] == "rust":
+            rust_services.append(entry)
+        else:
+            go_services.append(entry)
+
+    return go_services, rust_services
 
 
 @router.get("/services")
 async def services_page(request: Request):
     mgr: ServiceManager | None = getattr(request.app.state, "service_manager", None)
-    service_list = [s.to_dict() for s in mgr.list_services()] if mgr else []
+
+    if mgr:
+        # ServiceManager is live — use its in-memory state, then split by runtime
+        all_svcs = [s.to_dict() for s in mgr.list_services()]
+        go_services = [s for s in all_svcs if s.get("runtime", "go") != "rust"]
+        rust_services = [s for s in all_svcs if s.get("runtime", "go") == "rust"]
+    else:
+        # Static directory scan — already split
+        go_services, rust_services = _discover_services(request.app.state.root)
+
     return templates.TemplateResponse("services.html", {
         "request": request,
         "active": "services",
-        "services": service_list,
+        "services": go_services,
+        "rust_services": rust_services,
+        "mgr_status": mgr is not None
     })
 
 

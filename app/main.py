@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings, browser
 from openagent.agent.identity_tools import make_identity_tools
 from openagent.agent.platform_tools import make_platform_tools
+from openagent.agent.skill_tools import make_skill_tools
 from openagent.agent.loop import AgentLoop
 from openagent.agent.middlewares.stt import STTMiddleware
 from openagent.agent.middlewares.tts import TTSMiddleware
@@ -148,12 +149,16 @@ async def lifespan(app: FastAPI):
     app.state.session_manager = session_manager
     await session_manager.start()
 
-    # Tool registry — Go service tools + Python-native identity tools
+    # Tool registry — tools are registered per-service as each comes online.
+    # The on_service_ready callback fires from the watchdog after every successful
+    # launch (initial start and restarts), so tools appear incrementally.
     tool_registry = ToolRegistry(service_manager)
-    await tool_registry.rebuild()
+    service_manager.on_service_ready(tool_registry.register_service)
     for name, description, params, fn in make_identity_tools(session_manager):
         tool_registry.register_native(name, description, params, fn)
     for name, description, params, fn in make_platform_tools(bus):
+        tool_registry.register_native(name, description, params, fn)
+    for name, description, params, fn in make_skill_tools():
         tool_registry.register_native(name, description, params, fn)
 
     # Middleware — inject STT/TTS fns from extensions via lazy lookup wrappers

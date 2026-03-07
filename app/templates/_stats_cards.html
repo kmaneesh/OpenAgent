@@ -1,44 +1,74 @@
 {% set cards = [
-  ("Extensions", extensions|length, "registered", "saffron"),
-  ("Services",   services|length,   "discovered", "indigo"),
-  ("CPU",        stats.cpu_pct|string + " %", "", "plain"),
+  ("CPU",        stats.cpu_pct|string + " %", "", "plain", "cpu"),
   ("RAM",        stats.ram_pct|string + " %",
-                 stats.ram_used_mb|string + " / " + stats.ram_total_mb|string + " MB", "plain"),
+                 stats.ram_used_mb|string + " / " + stats.ram_total_mb|string + " MB", "plain", "ram"),
+  ("Services", services|length, "discovered", "plain", "golang"),
+  ("Services", rust_services|length, "sandboxed", "plain", "rust")
 ] %}
 
-{% for label, value, sub, color in cards %}
-<div class="bg-stone-800 border border-stone-700 rounded-xl p-4">
-  <p class="text-xs text-stone-400 mb-1">{{ label }}</p>
-  <p class="text-2xl font-bold
-            {% if color == 'saffron' %}text-saffron
-            {% elif color == 'indigo' %}text-indigo-400
-            {% else %}text-stone-100{% endif %}">{{ value }}</p>
-  {% if sub %}<p class="text-xs text-stone-500 mt-0.5">{{ sub }}</p>{% endif %}
+{% for label, value, sub, color, icon in cards %}
+<div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl p-4 shadow-sm dark:shadow-none flex items-center justify-between">
+  <div>
+    <!-- Label row: show Go or Rust icon inline next to "Services" label -->
+    <div class="flex items-center gap-1.5 mb-1">
+      {% if icon == 'golang' %}
+        <img src="/static/go.svg" alt="Go" class="w-5 h-5 flex-shrink-0 icon-warm">
+      {% elif icon == 'rust' %}
+        <img src="/static/rust.svg" alt="Rust" class="w-5 h-5 flex-shrink-0 icon-warm">
+      {% endif %}
+      <p class="text-xs text-stone-500 dark:text-stone-400">{{ label }}</p>
+    </div>
+    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">{{ value }}</p>
+    {% if sub %}<p class="text-xs text-stone-400 dark:text-stone-500 mt-0.5">{{ sub }}</p>{% endif %}
+  </div>
+  <div class="text-[#dea584] opacity-80">
+    {% if icon == 'cpu' %}
+      <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>
+        <path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>
+      </svg>
+    {% elif icon == 'ram' %}
+      <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="2" y="7" width="20" height="10" rx="2"/>
+        <path d="M6 7V5M10 7V5M14 7V5M18 7V5"/>
+        <path d="M6 17v2M10 17v2M14 17v2M18 17v2"/>
+        <path d="M8 11h1M12 11h1M16 11h1"/>
+      </svg>
+    {% elif icon == 'golang' %}
+      <img src="/static/go.svg" alt="Go" class="w-12 h-12 icon-warm">
+    {% elif icon == 'rust' %}
+      <img src="/static/rust.svg" alt="Rust" class="w-12 h-12 icon-warm">
+    {% endif %}
+  </div>
 </div>
 {% endfor %}
 
 <!-- Disk -->
-<div class="bg-stone-800 border border-stone-700 rounded-xl p-4">
-  <p class="text-xs text-stone-400 mb-1">Disk</p>
-  <p class="text-2xl font-bold text-stone-100">{{ stats.disk_pct }} %</p>
-  <p class="text-xs text-stone-500 mt-0.5">{{ stats.disk_used_gb }} / {{ stats.disk_total_gb }} GB</p>
-</div>
-
-<!-- Temperature -->
-<div class="bg-stone-800 border border-stone-700 rounded-xl p-4">
-  <p class="text-xs text-stone-400 mb-1">Temp</p>
-  {% if stats.temp_c is not none %}
-    <p class="text-2xl font-bold
-              {% if stats.temp_c > 75 %}text-red-400
-              {% elif stats.temp_c > 60 %}text-yellow-400
-              {% else %}text-green-400{% endif %}">{{ stats.temp_c }}&nbsp;°C</p>
-  {% else %}
-    <p class="text-2xl font-bold text-stone-500">N/A</p>
-  {% endif %}
+<div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl p-4 shadow-sm dark:shadow-none flex items-center justify-between">
+  <div>
+    <p class="text-xs text-stone-500 dark:text-stone-400 mb-1">Disk</p>
+    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">{{ stats.disk_pct }} %</p>
+    <p class="text-xs text-stone-400 dark:text-stone-500 mt-0.5">{{ stats.disk_used_gb }} / {{ stats.disk_total_gb }} GB</p>
+  </div>
+  <div class="text-[#dea584] opacity-80">
+    <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <ellipse cx="12" cy="5" rx="9" ry="3"/>
+      <path d="M21 5v6c0 1.657-4.03 3-9 3S3 12.657 3 11V5"/>
+      <path d="M21 11v6c0 1.657-4.03 3-9 3s-9-1.343-9-3v-6"/>
+    </svg>
+  </div>
 </div>
 
 <!-- Uptime -->
-<div class="bg-stone-800 border border-stone-700 rounded-xl p-4">
-  <p class="text-xs text-stone-400 mb-1">UI Uptime</p>
-  <p class="text-2xl font-bold text-stone-100">{{ stats.uptime }}</p>
+<div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl p-4 shadow-sm dark:shadow-none flex items-center justify-between">
+  <div>
+    <p class="text-xs text-stone-500 dark:text-stone-400 mb-1">UI Uptime</p>
+    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">{{ stats.uptime }}</p>
+  </div>
+  <div class="text-[#dea584] opacity-80">
+    <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <circle cx="12" cy="12" r="9"/>
+      <path d="M12 7v5l3 3"/>
+    </svg>
+  </div>
 </div>
