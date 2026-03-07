@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import io
+import base64
+
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -158,3 +161,73 @@ async def merge_sessions(request: Request):
         return {"error": "session manager unavailable"}
     winner = await sessions.link_user_keys(key_a, key_b)
     return {"ok": True, "winner": winner}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp QR (for linking in Settings > Platforms)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/settings/whatsapp/qr")
+async def whatsapp_qr(request: Request):
+    """Return WhatsApp QR code as data URL for scanning. QR comes from Go service or Python extension."""
+    qr_text: str | None = None
+    connected = False
+    status = "unavailable"
+
+    # 1. Try platform adapter (Go whatsapp service)
+    platform_manager = getattr(request.app.state, "platform_manager", None)
+    if platform_manager:
+        adapters = platform_manager.adapters()
+        wa_adapter = adapters.get("whatsapp")
+        if wa_adapter and hasattr(wa_adapter, "latest_qr"):
+            qr_text = wa_adapter.latest_qr() or None  # normalise "" → None
+            connected = wa_adapter._status.get("connected", False)
+            status = "connected" if connected else ("pending" if qr_text else "waiting")
+
+    # 2. Fallback: Python WhatsApp extension (neonize)
+    # Falsy check — Go service stub emits qr="" (empty string, not None)
+    if not qr_text:
+        from openagent.manager import get_extension
+        ext = get_extension("whatsapp")
+        if ext and hasattr(ext, "latest_qr"):
+            qr_text = ext.latest_qr()
+            st = ext.get_status() or {}
+            connected = st.get("connected", False) or st.get("linked", False)
+            status = "connected" if connected else ("pending" if qr_text else "waiting")
+
+    if not qr_text:
+        if status == "unavailable":
+            msg = (
+                "WhatsApp backend not available. "
+                "Install the neonize extension ('pip install neonize') and restart, "
+                "or ensure the Go whatsapp service binary is running."
+            )
+        elif connected:
+            msg = "WhatsApp is already connected — no QR needed."
+        else:
+            msg = "Waiting for QR code… WhatsApp is starting up. Refresh in a few seconds."
+        return {"qr": None, "connected": connected, "status": status, "message": msg}
+
+    # Generate QR image as base64 data URL
+    try:
+        import qrcode
+        img = qrcode.make(qr_text)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        b64 = base64.b64encode(buf.read()).decode("ascii")
+        data_url = f"data:image/png;base64,{b64}"
+        return {
+            "qr": data_url,
+            "connected": connected,
+            "status": status,
+            "message": "Scan with WhatsApp: Settings > Linked Devices > Link a Device",
+        }
+    except Exception as e:
+        return {
+            "qr": None,
+            "connected": connected,
+            "status": "error",
+            "message": f"QR generation failed: {e}",
+        }

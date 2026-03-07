@@ -83,16 +83,28 @@ class SessionManager:
                 "neonize is not installed or could not be imported."
             ) from exc
 
-        raw_client = None
-        if hasattr(neonize, "ClientFactory"):
+        # neonize >=0.3: NewClient(name) where name doubles as session db path
+        if hasattr(neonize, "NewClient"):
+            raw_client = neonize.NewClient(str(self.config.session_db_path))
+        elif hasattr(neonize, "ClientFactory"):
             raw_client = neonize.ClientFactory(str(self.config.session_db_path))
         elif hasattr(neonize, "Client"):
             raw_client = neonize.Client(str(self.config.session_db_path))
-        if raw_client is None:
+        else:
             raise NeonizeUnavailableError("Unsupported neonize client API.")
 
-        if on_qr and hasattr(raw_client, "on_qr"):
-            raw_client.on_qr(on_qr)
+        # neonize >=0.3: client.qr(fn) where fn receives (client, bytes)
+        if on_qr:
+            if hasattr(raw_client, "qr"):
+                def _qr_handler(client: Any, qr_bytes: bytes) -> None:
+                    try:
+                        on_qr(qr_bytes.decode("utf-8") if isinstance(qr_bytes, bytes) else str(qr_bytes))
+                    except Exception:
+                        pass
+                raw_client.qr(_qr_handler)
+            elif hasattr(raw_client, "on_qr"):
+                raw_client.on_qr(on_qr)
+
         if on_event and hasattr(raw_client, "on_event"):
             raw_client.on_event(on_event)
 

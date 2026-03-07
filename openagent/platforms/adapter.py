@@ -450,6 +450,17 @@ class WhatsAppPlatformAdapter(PlatformAdapter):
     def __init__(self, *, client: McpLiteClient, bus: MessageBus, resolver: IdentityResolver | None = None) -> None:
         super().__init__(platform_name="whatsapp", client=client, bus=bus, resolver=resolver)
         self._status: dict[str, Any] = {"connected": False}
+        self._latest_qr: str | None = None
+
+    def _dispatch(self, frame: proto.EventFrame) -> None:
+        if frame.event == "whatsapp.qr":
+            self._latest_qr = str(frame.data.get("qr") or "")
+            return
+        super()._dispatch(frame)
+
+    def latest_qr(self) -> str | None:
+        """Return latest QR payload for linking (from whatsapp.qr event)."""
+        return self._latest_qr
 
     def _on_connection_status(self, data: dict[str, Any]) -> None:
         self._status.update(data)

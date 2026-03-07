@@ -45,8 +45,26 @@ async def load_extensions() -> List[LoadedExtension]:
         entries = entry_points.get(ENTRYPOINT_GROUP, [])
 
     for entry in entries:
-        extension_class = entry.load()
-        instance = _ensure_async_extension_contract(extension_class(), entry.name)
+        try:
+            extension_class = entry.load()
+            instance = _ensure_async_extension_contract(extension_class(), entry.name)
+        except Exception as exc:
+            EXTENSION_LIFECYCLE_TOTAL.labels(
+                extension=entry.name,
+                operation="load",
+                status="error",
+            ).inc()
+            log_event(
+                logger,
+                logging.WARNING,
+                "extension load failed — skipping",
+                component="extension.manager",
+                operation="load",
+                extension=entry.name,
+                error=str(exc),
+            )
+            continue
+
         try:
             await instance.initialize()
         except Exception as exc:
@@ -58,13 +76,13 @@ async def load_extensions() -> List[LoadedExtension]:
             log_event(
                 logger,
                 logging.ERROR,
-                "extension initialize failed",
+                "extension initialize failed — skipping",
                 component="extension.manager",
                 operation="initialize",
                 extension=entry.name,
                 error=str(exc),
             )
-            raise
+            continue
 
         EXTENSION_LIFECYCLE_TOTAL.labels(
             extension=entry.name,

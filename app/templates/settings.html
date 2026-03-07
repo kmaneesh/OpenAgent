@@ -12,6 +12,11 @@
             class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
       Provider
     </button>
+    <button @click="tab = 'platforms'; loadWhatsAppQR(); startWaQRPoll()"
+            :class="tab === 'platforms' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
+            class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
+      Platforms
+    </button>
     <button @click="tab = 'identity'; loadIdentity()"
             :class="tab === 'identity' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
             class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
@@ -34,7 +39,7 @@
                 class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
                        bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
                        focus:outline-none focus:ring-2 focus:ring-saffron/40">
-          <option value="openai_compat">OpenAI-compatible</option>
+          <option value="openai_compat">OpenAI-Alike</option>
           <option value="openai">OpenAI</option>
           <option value="anthropic">Anthropic</option>
         </select>
@@ -101,6 +106,44 @@
     </div>
   </div>
 
+  <!-- ── Platforms tab ──────────────────────────────────────── -->
+  <div x-show="tab === 'platforms'" x-cloak class="space-y-4">
+
+    <!-- WhatsApp QR -->
+    <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-6">
+      <h3 class="text-sm font-semibold mb-1 text-stone-900 dark:text-stone-100">WhatsApp — Link your phone</h3>
+      <p class="text-xs text-mutedCharcoal dark:text-steelMist mb-4">
+        Scan the QR code with WhatsApp on your phone: Settings → Linked Devices → Link a Device
+      </p>
+
+      <div class="flex flex-col items-start gap-4">
+        <template x-if="waQR.status === 'connected'">
+          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-300 text-sm">
+            <span class="w-2 h-2 rounded-full bg-green-500"></span>
+            WhatsApp connected
+          </div>
+        </template>
+        <template x-if="waQR.qr">
+          <div class="p-4 bg-white rounded-lg border border-[#DEE2E6] dark:border-[#21262D]">
+            <img :src="waQR.qr" alt="WhatsApp QR code" class="w-64 h-64" />
+          </div>
+        </template>
+        <template x-if="!waQR.qr && waQR.status !== 'connected' && waQR.status !== 'unavailable'">
+          <p class="text-sm text-mutedCharcoal dark:text-steelMist" x-text="waQR.message || 'Waiting for QR...'"></p>
+        </template>
+        <template x-if="waQR.status === 'unavailable'">
+          <p class="text-sm text-amber-600 dark:text-amber-400" x-text="waQR.message"></p>
+        </template>
+        <button @click="loadWhatsAppQR()"
+                class="px-4 py-2 text-sm font-medium rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
+                       text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+          Refresh
+        </button>
+      </div>
+    </div>
+
+  </div>
+
   <!-- ── Identity tab ──────────────────────────────────────── -->
   <div x-show="tab === 'identity'" x-cloak class="space-y-4">
 
@@ -143,19 +186,23 @@
         <!-- Platform ID -->
         <div class="space-y-1">
           <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Platform user ID</label>
-          <input x-model="form.platform_id" type="text" placeholder="e.g. 123456789"
+          <input x-model="form.platform_id" type="text"
+                 :placeholder="platformIdPlaceholder(form.platform)"
                  class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
                         bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
                         focus:outline-none focus:ring-2 focus:ring-saffron/40"/>
+          <p class="text-xs text-mutedCharcoal dark:text-steelMist" x-text="platformIdHint(form.platform)"></p>
         </div>
 
         <!-- Channel ID (optional) -->
         <div class="space-y-1">
           <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Channel ID <span class="normal-case font-normal">(optional — for replies)</span></label>
-          <input x-model="form.channel_id" type="text" placeholder="e.g. 987654321"
+          <input x-model="form.channel_id" type="text"
+                 :placeholder="channelIdPlaceholder(form.platform)"
                  class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
                         bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
                         focus:outline-none focus:ring-2 focus:ring-saffron/40"/>
+          <p class="text-xs text-mutedCharcoal dark:text-steelMist" x-text="channelIdHint(form.platform)"></p>
         </div>
 
       </div>
@@ -317,6 +364,9 @@ function settingsApp() {
     providerOk: true,
     provider: { kind: '', base_url: '', model: '', api_key: '', max_tokens: '', timeout: '' },
 
+    waQR: { qr: null, connected: false, status: '', message: '' },
+    _waQRPoll: null,
+
     users: [],
     form: { user_key: '', platform: 'discord', platform_id: '', channel_id: '' },
     linkMsg: '', linkOk: true,
@@ -327,6 +377,33 @@ function settingsApp() {
       const r = await fetch('/api/config/provider')
       const d = await r.json()
       this.provider = { ...d, api_key: '' }
+    },
+
+    async loadWhatsAppQR() {
+      try {
+        const r = await fetch('/api/settings/whatsapp/qr')
+        const d = await r.json()
+        this.waQR = { qr: d.qr, connected: d.connected, status: d.status || '', message: d.message || '' }
+      } catch (e) {
+        this.waQR = { qr: null, connected: false, status: 'error', message: 'Failed to load' }
+      }
+    },
+
+    startWaQRPoll() {
+      if (this._waQRPoll) return
+      this._waQRPoll = setInterval(() => {
+        if (this.tab !== 'platforms') {
+          clearInterval(this._waQRPoll)
+          this._waQRPoll = null
+          return
+        }
+        if (this.waQR.connected) {
+          clearInterval(this._waQRPoll)
+          this._waQRPoll = null
+          return
+        }
+        this.loadWhatsAppQR()
+      }, 3000)
     },
 
     async saveProvider() {
@@ -439,6 +516,46 @@ function settingsApp() {
         this.mergeMsg = d.error || 'Error'
       }
       setTimeout(() => this.mergeMsg = '', 4000)
+    },
+
+    platformIdPlaceholder(p) {
+      return {
+        discord:  '123456789012345678',
+        telegram: '123456789',
+        whatsapp: '15551234567@s.whatsapp.net',
+        slack:    'U01234ABCDE',
+        web:      'web:abc123def456',
+      }[p] || 'Platform user ID'
+    },
+
+    platformIdHint(p) {
+      return {
+        discord:  'Discord user snowflake (18-digit number). Right-click user → Copy User ID.',
+        telegram: 'Telegram numeric user ID. Use @userinfobot to find it.',
+        whatsapp: 'WhatsApp JID — phone number with country code + @s.whatsapp.net.',
+        slack:    'Slack member ID — starts with U. Found in member profile.',
+        web:      'Web session ID assigned by OpenAgent.',
+      }[p] || ''
+    },
+
+    channelIdPlaceholder(p) {
+      return {
+        discord:  '987654321098765432',
+        telegram: '123456789',
+        whatsapp: '15551234567@s.whatsapp.net',
+        slack:    'C01234ABCDE',
+        web:      'web:abc123def456',
+      }[p] || 'Channel / chat ID'
+    },
+
+    channelIdHint(p) {
+      return {
+        discord:  'Discord channel snowflake. Right-click channel → Copy Channel ID.',
+        telegram: 'Same as user ID for DMs. Use chat ID for groups (negative number).',
+        whatsapp: 'Same as user JID for DMs. Group JID ends with @g.us.',
+        slack:    'Slack channel ID — starts with C. Found in channel details.',
+        web:      'Matches the web session ID.',
+      }[p] || ''
     },
 
     platformClass(p) {

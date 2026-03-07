@@ -11,8 +11,9 @@ from pathlib import Path
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings
+from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings, browser
 from openagent.agent.identity_tools import make_identity_tools
+from openagent.agent.platform_tools import make_platform_tools
 from openagent.agent.loop import AgentLoop
 from openagent.agent.middlewares.stt import STTMiddleware
 from openagent.agent.middlewares.tts import TTSMiddleware
@@ -21,6 +22,7 @@ from openagent.bus.bus import MessageBus
 from openagent.platforms.manager import PlatformManager
 from openagent.platforms.web import WebPlatformAdapter
 from openagent.config import build_service_env_extras, load_config
+from openagent.manager import load_extensions
 from openagent.heartbeat import (
     HeartbeatService,
     heartbeat_enabled_from_env,
@@ -86,6 +88,10 @@ async def lifespan(app: FastAPI):
     app.state.log_clients = LOG_CLIENTS
     app.state.root = ROOT
 
+    # Load extensions (e.g. WhatsApp neonize for QR linking)
+    loaded_extensions = await load_extensions()
+    app.state.extensions = {e.name: e.instance for e in loaded_extensions}
+
     # Full config — provider, agents, session, platforms, tools
     cfg = load_config(ROOT / "config" / "openagent.yaml")
     app.state.config = cfg
@@ -147,6 +153,8 @@ async def lifespan(app: FastAPI):
     await tool_registry.rebuild()
     for name, description, params, fn in make_identity_tools(session_manager):
         tool_registry.register_native(name, description, params, fn)
+    for name, description, params, fn in make_platform_tools(bus):
+        tool_registry.register_native(name, description, params, fn)
 
     # Middleware — inject STT/TTS fns from extensions via lazy lookup wrappers
     from openagent.manager import get_extension
@@ -192,6 +200,13 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Shutdown extensions
+    for ext in getattr(app.state, "extensions", {}).values():
+        try:
+            await ext.shutdown()
+        except Exception:
+            pass
+
     await platform_manager.stop()
     await agent_loop.stop()
     await session_manager.stop()
@@ -222,6 +237,7 @@ extensions.templates = templates
 services.templates = templates
 config.templates = templates
 settings.templates = templates
+browser.templates = templates
 
 app.include_router(dashboard.router)
 app.include_router(chat.router)
@@ -232,6 +248,7 @@ app.include_router(config.router)
 app.include_router(settings.router)
 app.include_router(llm.router)
 app.include_router(provider.router)
+app.include_router(browser.router)
 
 
 @app.get("/metrics")
