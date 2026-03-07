@@ -508,7 +508,7 @@ app/
 - **Tool registry** — dispatches to Go services via MCP-lite
 - **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx)
 - Extensions: discord, whatsapp, tts (edge + minimax), stt (faster-whisper + deepgram)
-- Go services: hello, filesystem, discord, telegram, slack, whatsapp
+- Go services: hello, discord, telegram, slack, whatsapp
 - **Rust services: sandbox** — VM-isolated Python/Node/shell execution via microsandbox (v0.2.0; tools: `sandbox.execute`, `sandbox.shell`)
 - Config schema extended: `agents`, `session`, `platforms`, `tools.sandbox` + env overrides
 - Cross-platform build: `make all` / `make local` / `make sandbox`

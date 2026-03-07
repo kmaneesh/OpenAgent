@@ -7,11 +7,9 @@
 
   <div class="px-5 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between">
     <p class="text-sm text-stone-500 dark:text-stone-400">
-      Python channel and media integrations discovered via
-      <code class="font-mono text-xs bg-stone-100 dark:bg-stone-700 px-1.5 py-0.5 rounded">openagent.extensions</code>
-      entry points.
+      Python extensions scanned from <code class="font-mono text-xs bg-stone-100 dark:bg-stone-700 px-1.5 py-0.5 rounded">extensions/</code>.
     </p>
-    <span class="text-sm font-semibold text-saffron">{{ extensions|length }} registered</span>
+    <span class="text-sm font-semibold text-saffron">{{ extensions|length }} found</span>
   </div>
 
   {% if extensions %}

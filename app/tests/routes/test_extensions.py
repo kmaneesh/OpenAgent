@@ -1,21 +1,42 @@
+"""Tests for app.routes.extensions — directory scan."""
+
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 
-from app.routes import extensions
+import pytest
+
+from app.routes.extensions import _extensions_from_directory
 
 
-def test_get_extensions_lists_registered(monkeypatch) -> None:
-    entry = SimpleNamespace(name="demo", value="demo_pkg:DemoExtension")
+def test_extensions_from_directory_empty(tmp_path: Path) -> None:
+    result = _extensions_from_directory(tmp_path)
+    assert result == []
 
-    class _Dist:
-        metadata = {"Version": "1.2.3", "Name": "demo_pkg"}
 
-    monkeypatch.setattr(extensions.importlib.metadata, "entry_points", lambda group: [entry])
-    monkeypatch.setattr(extensions.importlib.metadata, "distribution", lambda _pkg: _Dist())
+def test_extensions_from_directory_missing(tmp_path: Path) -> None:
+    # No extensions dir
+    result = _extensions_from_directory(tmp_path)
+    assert result == []
 
-    result = extensions._get_extensions()
-    assert len(result) == 1
-    assert result[0]["name"] == "demo"
-    assert result[0]["version"] == "1.2.3"
-    assert result[0]["status"] == "registered"
+
+def test_extensions_from_directory_finds_tts_stt(tmp_path: Path) -> None:
+    # Create extensions/tts and extensions/stt with pyproject.toml
+    for name, pkg in [("tts", "openagent-tts"), ("stt", "openagent-stt")]:
+        ext_dir = tmp_path / "extensions" / name
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "pyproject.toml").write_text(f'''
+[project]
+name = "{pkg}"
+version = "0.1.0"
+
+[project.entry-points."openagent.extensions"]
+{name} = "{name}.plugin:Extension"
+''')
+
+    result = _extensions_from_directory(tmp_path)
+    assert len(result) == 2
+    names = [r["name"] for r in result]
+    assert "stt" in names
+    assert "tts" in names
+    assert all(r["status"] == "registered" for r in result)

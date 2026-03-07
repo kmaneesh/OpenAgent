@@ -1,31 +1,30 @@
+"""Tests for extensions route — directory scan."""
+
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
+from unittest.mock import MagicMock
 
-from app.routes import extensions
+import pytest
+
+from app.routes.extensions import _extensions_from_directory
 
 
-def test_get_extensions_uses_entrypoint_name_for_package(monkeypatch):
-    ep1 = SimpleNamespace(name="discord", value="discord_plugin:DiscordExtension")
-    ep2 = SimpleNamespace(name="whatsapp", value="plugin:WhatsAppExtension")
+def test_extensions_from_directory_returns_name_version(tmp_path: Path) -> None:
+    ext_dir = tmp_path / "extensions" / "tts"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "pyproject.toml").write_text('''
+[project]
+name = "openagent-tts"
+version = "1.2.3"
 
-    monkeypatch.setattr(
-        extensions.importlib.metadata,
-        "entry_points",
-        lambda group: [ep1, ep2] if group == "openagent.extensions" else [],
-    )
+[project.entry-points."openagent.extensions"]
+tts = "tts.plugin:TTSExtension"
+''')
 
-    def _fake_distribution(_pkg: str):
-        raise RuntimeError("not installed in this test")
-
-    monkeypatch.setattr(extensions.importlib.metadata, "distribution", _fake_distribution)
-
-    rows = extensions._get_extensions()
-
-    assert rows[0]["name"] == "discord"
-    assert rows[0]["package"] == "discord"
-    assert rows[0]["entry_point"] == "discord_plugin:DiscordExtension"
-
-    assert rows[1]["name"] == "whatsapp"
-    assert rows[1]["package"] == "whatsapp"
-    assert rows[1]["entry_point"] == "plugin:WhatsAppExtension"
+    result = _extensions_from_directory(tmp_path)
+    assert len(result) == 1
+    assert result[0]["name"] == "tts"
+    assert result[0]["package"] == "openagent-tts"
+    assert result[0]["version"] == "1.2.3"
+    assert "TTSExtension" in result[0]["entry_point"]

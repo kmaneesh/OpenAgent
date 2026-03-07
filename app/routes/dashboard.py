@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import time
+import tomllib
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -70,21 +71,47 @@ def _system_stats() -> dict:
     }
 
 
-def _installed_extensions() -> list[dict]:
-    eps = importlib.metadata.entry_points(group="openagent.extensions")
-    result = []
-    for ep in eps:
+def _extensions_from_directory(root: Path) -> list[dict[str, Any]]:
+    """Scan root/extensions/ for Python extension packages (those with pyproject.toml)."""
+    extensions_dir = root / "extensions"
+    result: list[dict[str, Any]] = []
+
+    if not extensions_dir.exists():
+        return result
+
+    for ext_dir in sorted(extensions_dir.iterdir()):
+        if not ext_dir.is_dir():
+            continue
+        pyproject = ext_dir / "pyproject.toml"
+        if not pyproject.exists():
+            continue
         try:
-            dist = importlib.metadata.distribution(ep.value.split(":")[0].split(".")[0])
-            version = dist.metadata["Version"]
-        except Exception:
-            version = "?"
-        result.append({"name": ep.name, "entry": ep.value, "version": version, "status": "installed"})
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+            project = data.get("project", {})
+            name = project.get("name", ext_dir.name)
+            version = str(project.get("version", "?"))
+            # Use directory name as display name (e.g. tts, stt)
+            display_name = ext_dir.name
+            result.append({
+                "name": display_name,
+                "package": name,
+                "version": version,
+                "status": "installed",
+            })
+        except (tomllib.TOMLDecodeError, OSError):
+            result.append({
+                "name": ext_dir.name,
+                "package": ext_dir.name,
+                "version": "?",
+                "status": "error",
+            })
+
     return result
 
 
 @router.get("/")
 async def dashboard(request: Request):
+    root = getattr(request.app.state, "root", Path.cwd())
     mgr = getattr(request.app.state, "service_manager", None)
     if mgr:
         services, rust_services = _online_services_from_manager(mgr)
@@ -96,7 +123,7 @@ async def dashboard(request: Request):
         "request": request,
         "active": "dashboard",
         "stats": _system_stats(),
-        "extensions": _installed_extensions(),
+        "extensions": _extensions_from_directory(root),
         "services": services,
         "rust_services": rust_services,
     })
@@ -105,6 +132,7 @@ async def dashboard(request: Request):
 @router.get("/api/stats")
 async def stats_partial(request: Request):
     """Partial for HTMX stat-card polling — returns cards only, no layout."""
+    root = getattr(request.app.state, "root", Path.cwd())
     mgr = getattr(request.app.state, "service_manager", None)
     if mgr:
         services, rust_services = _online_services_from_manager(mgr)
@@ -115,7 +143,7 @@ async def stats_partial(request: Request):
     return templates.TemplateResponse("_stats_cards.html", {
         "request": request,
         "stats": _system_stats(),
-        "extensions": _installed_extensions(),
+        "extensions": _extensions_from_directory(root),
         "services": services,
         "rust_services": rust_services,
     })

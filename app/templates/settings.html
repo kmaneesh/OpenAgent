@@ -7,20 +7,15 @@
 
   <!-- Tab bar -->
   <div class="flex gap-1 border-b border-[#DEE2E6] dark:border-[#21262D]">
-    <button @click="tab = 'provider'"
+    <button @click="tab = 'connector'; loadConnectors()"
+            :class="tab === 'connector' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
+            class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
+      Connector
+    </button>
+    <button @click="tab = 'provider'; loadModels()"
             :class="tab === 'provider' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
             class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
       Provider
-    </button>
-    <button @click="tab = 'platforms'; loadWhatsAppQR(); startWaQRPoll()"
-            :class="tab === 'platforms' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
-            class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
-      Platforms
-    </button>
-    <button @click="tab = 'identity'; loadIdentity()"
-            :class="tab === 'identity' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-900 dark:hover:text-stone-100'"
-            class="px-4 py-2 text-sm font-medium -mb-px transition-colors">
-      Identity
     </button>
   </div>
 
@@ -57,10 +52,21 @@
       <!-- Model -->
       <div class="space-y-1">
         <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Model</label>
-        <input x-model="provider.model" type="text" placeholder="qwen2.5:14b"
+        <select x-model="provider.model"
+                x-show="provider.kind !== 'anthropic' && providerModels.length > 0"
+                class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
+                       bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
+                       focus:outline-none focus:ring-2 focus:ring-saffron/40">
+          <template x-for="m in providerModels" :key="m">
+            <option :value="m" x-text="m"></option>
+          </template>
+        </select>
+        <input x-model="provider.model" type="text" placeholder="Model name"
+               x-show="provider.kind === 'anthropic' || (provider.kind !== 'anthropic' && providerModels.length === 0)"
                class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
                       bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
                       focus:outline-none focus:ring-2 focus:ring-saffron/40"/>
+        <p x-show="modelsError" x-text="modelsError" class="text-xs text-red-500"></p>
       </div>
 
       <!-- API Key -->
@@ -106,11 +112,48 @@
     </div>
   </div>
 
-  <!-- ── Platforms tab ──────────────────────────────────────── -->
-  <div x-show="tab === 'platforms'" x-cloak class="space-y-4">
+  <!-- ── Connector tab ──────────────────────────────────────── -->
+  <div x-show="tab === 'connector'" x-cloak class="space-y-4">
 
-    <!-- WhatsApp QR -->
-    <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-6">
+    <!-- Connector cards: Discord, Slack, Telegram, WhatsApp -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <template x-for="c in connectors" :key="c.name">
+        <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-4 flex flex-col">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-stone-900 dark:text-stone-100 capitalize" x-text="c.name"></h3>
+            <span class="text-xs px-2 py-0.5 rounded-full"
+                  :class="c.enabled ? 'bg-sage/20 text-sage' : 'bg-stone-200 dark:bg-stone-700 text-stone-500'"
+                  x-text="c.enabled ? 'Enabled' : 'Disabled'"></span>
+          </div>
+          <p class="text-xs text-mutedCharcoal dark:text-steelMist mb-3 flex-1" x-text="c.description"></p>
+          <div class="flex gap-2">
+            <button @click="setConnectorEnabled(c.name, true)"
+                    :class="c.enabled ? 'opacity-50 cursor-default' : ''"
+                    class="px-3 py-1.5 text-xs font-medium rounded-lg bg-sage text-white hover:bg-sage/90 disabled:opacity-50 transition-colors">
+              Enable
+            </button>
+            <button @click="setConnectorEnabled(c.name, false)"
+                    :class="!c.enabled ? 'opacity-50 cursor-default' : ''"
+                    class="px-3 py-1.5 text-xs font-medium rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
+                           text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
+              Disable
+            </button>
+            <template x-if="c.name === 'whatsapp'">
+              <button @click="toggleWaQRCard()"
+                      class="px-3 py-1.5 text-xs font-medium rounded-lg border border-saffron text-saffron
+                             hover:bg-saffron/10 transition-colors ml-auto"
+                      :class="waQRCardOpen ? 'ring-2 ring-saffron/50' : ''">
+                <span x-text="waQRCardOpen ? 'Hide QR' : 'Scan QR code'"></span>
+              </button>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- WhatsApp QR — toggled by "Scan QR code" on WhatsApp card -->
+    <div id="wa-qr-card" x-show="waQRCardOpen" x-cloak
+         class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-6">
       <h3 class="text-sm font-semibold mb-1 text-stone-900 dark:text-stone-100">WhatsApp — Link your phone</h3>
       <p class="text-xs text-mutedCharcoal dark:text-steelMist mb-4">
         Scan the QR code with WhatsApp on your phone: Settings → Linked Devices → Link a Device
@@ -129,7 +172,13 @@
           </div>
         </template>
         <template x-if="!waQR.qr && waQR.status !== 'connected' && waQR.status !== 'unavailable'">
-          <p class="text-sm text-mutedCharcoal dark:text-steelMist" x-text="waQR.message || 'Waiting for QR...'"></p>
+          <div class="flex flex-col items-center gap-3 py-6">
+            <svg class="w-10 h-10 animate-spin text-saffron" fill="none" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+            </svg>
+            <span class="text-sm text-mutedCharcoal dark:text-steelMist">Loading QR code…</span>
+          </div>
         </template>
         <template x-if="waQR.status === 'unavailable'">
           <p class="text-sm text-amber-600 dark:text-amber-400" x-text="waQR.message"></p>
@@ -137,246 +186,91 @@
         <button @click="loadWhatsAppQR()"
                 class="px-4 py-2 text-sm font-medium rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
                        text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/50 transition-colors">
-          Refresh
+          Scan QR code
         </button>
       </div>
     </div>
 
   </div>
 
-  <!-- ── Identity tab ──────────────────────────────────────── -->
-  <div x-show="tab === 'identity'" x-cloak class="space-y-4">
-
-    <!-- Add identity link form -->
-    <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-6">
-      <h3 class="text-sm font-semibold mb-4 text-stone-900 dark:text-stone-100">Link a platform identity</h3>
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-
-        <!-- Target session -->
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Target session (user_key)</label>
-          <div class="flex gap-2">
-            <select x-model="form.user_key"
-                    class="flex-1 px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                           bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                           focus:outline-none focus:ring-2 focus:ring-saffron/40">
-              <option value="">— new session —</option>
-              <template x-for="u in users" :key="u.user_key">
-                <option :value="u.user_key" x-text="(u.name || u.user_key) + (u.name ? ' (' + u.user_key + ')' : '')"></option>
-              </template>
-            </select>
-          </div>
-        </div>
-
-        <!-- Platform -->
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Platform</label>
-          <select x-model="form.platform"
-                  class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                         bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                         focus:outline-none focus:ring-2 focus:ring-saffron/40">
-            <option value="discord">Discord</option>
-            <option value="telegram">Telegram</option>
-            <option value="slack">Slack</option>
-            <option value="whatsapp">WhatsApp</option>
-            <option value="web">Web</option>
-          </select>
-        </div>
-
-        <!-- Platform ID -->
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Platform user ID</label>
-          <input x-model="form.platform_id" type="text"
-                 :placeholder="platformIdPlaceholder(form.platform)"
-                 class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                        bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                        focus:outline-none focus:ring-2 focus:ring-saffron/40"/>
-          <p class="text-xs text-mutedCharcoal dark:text-steelMist" x-text="platformIdHint(form.platform)"></p>
-        </div>
-
-        <!-- Channel ID (optional) -->
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Channel ID <span class="normal-case font-normal">(optional — for replies)</span></label>
-          <input x-model="form.channel_id" type="text"
-                 :placeholder="channelIdPlaceholder(form.platform)"
-                 class="w-full px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                        bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                        focus:outline-none focus:ring-2 focus:ring-saffron/40"/>
-          <p class="text-xs text-mutedCharcoal dark:text-steelMist" x-text="channelIdHint(form.platform)"></p>
-        </div>
-
-      </div>
-
-      <div class="flex items-center gap-3 mt-4">
-        <button @click="addLink()"
-                :disabled="!form.platform_id.trim()"
-                class="px-4 py-2 text-sm font-medium rounded-lg bg-saffron text-white
-                       hover:bg-saffron/80 disabled:opacity-50 transition-colors">
-          Link identity
-        </button>
-        <span x-show="linkMsg" x-text="linkMsg"
-              :class="linkOk ? 'text-green-500' : 'text-red-500'"
-              class="text-xs font-medium"></span>
-      </div>
-    </div>
-
-    <!-- Merge sessions -->
-    <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl p-6">
-      <h3 class="text-sm font-semibold mb-1 text-stone-900 dark:text-stone-100">Merge sessions</h3>
-      <p class="text-xs text-mutedCharcoal dark:text-steelMist mb-4">Moves all turns and platform identities from B into A. Session B disappears.</p>
-      <div class="flex flex-wrap gap-3 items-end">
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Keep (A)</label>
-          <select x-model="merge.key_a"
-                  class="px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                         bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                         focus:outline-none focus:ring-2 focus:ring-saffron/40 min-w-[14rem]">
-            <option value="">— select session —</option>
-            <template x-for="u in users" :key="u.user_key">
-              <option :value="u.user_key" x-text="(u.name || u.user_key)"></option>
-            </template>
-          </select>
-        </div>
-        <div class="space-y-1">
-          <label class="block text-xs font-medium text-mutedCharcoal dark:text-steelMist uppercase tracking-wide">Absorb (B)</label>
-          <select x-model="merge.key_b"
-                  class="px-3 py-2 text-sm rounded-lg border border-[#DEE2E6] dark:border-[#21262D]
-                         bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                         focus:outline-none focus:ring-2 focus:ring-saffron/40 min-w-[14rem]">
-            <option value="">— select session —</option>
-            <template x-for="u in users" :key="u.user_key">
-              <option :value="u.user_key" x-text="(u.name || u.user_key)"></option>
-            </template>
-          </select>
-        </div>
-        <button @click="mergeSessions()"
-                :disabled="!merge.key_a || !merge.key_b || merge.key_a === merge.key_b"
-                class="px-4 py-2 text-sm font-medium rounded-lg bg-red-600 text-white
-                       hover:bg-red-500 disabled:opacity-50 transition-colors">
-          Merge
-        </button>
-        <span x-show="mergeMsg" x-text="mergeMsg"
-              :class="mergeOk ? 'text-green-500' : 'text-red-500'"
-              class="text-xs font-medium self-center"></span>
-      </div>
-    </div>
-
-    <!-- Users / identity table -->
-    <div class="bg-white dark:bg-charcoalLayer border border-[#DEE2E6] dark:border-[#21262D] rounded-xl overflow-hidden">
-      <div class="flex items-center justify-between px-4 py-3 border-b border-[#DEE2E6] dark:border-[#21262D]">
-        <h3 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Sessions &amp; identities</h3>
-        <button @click="loadIdentity()" title="Refresh"
-                class="w-7 h-7 flex items-center justify-center rounded-lg text-mutedCharcoal hover:text-saffron
-                       dark:text-steelMist dark:hover:text-saffron transition-colors">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-          </svg>
-        </button>
-      </div>
-
-      <template x-if="users.length === 0">
-        <div class="px-4 py-8 text-center text-sm text-mutedCharcoal dark:text-steelMist">
-          No sessions yet. Messages from any platform will auto-create sessions.
-        </div>
-      </template>
-
-      <div class="divide-y divide-[#DEE2E6] dark:divide-[#21262D]">
-        <template x-for="u in users" :key="u.user_key">
-          <div class="px-4 py-3" x-data="{ editing: false, editName: u.name, editEmail: u.email }">
-            <!-- User header row -->
-            <div class="flex items-start justify-between gap-3">
-              <div class="flex-1 min-w-0">
-                <!-- Name / edit -->
-                <div class="flex items-center gap-2">
-                  <template x-if="!editing">
-                    <span class="text-sm font-medium text-stone-900 dark:text-stone-100 truncate"
-                          x-text="u.name || '(unnamed)'"></span>
-                  </template>
-                  <template x-if="editing">
-                    <input x-model="editName" type="text" placeholder="Display name"
-                           class="text-sm px-2 py-0.5 rounded border border-[#DEE2E6] dark:border-[#21262D]
-                                  bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                                  focus:outline-none focus:ring-1 focus:ring-saffron/40 w-48"/>
-                  </template>
-                  <button @click="editing = !editing"
-                          class="text-xs text-mutedCharcoal dark:text-steelMist hover:text-saffron transition-colors">
-                    <span x-text="editing ? 'cancel' : 'edit'"></span>
-                  </button>
-                  <template x-if="editing">
-                    <button @click="saveUser(u, editName, editEmail); editing = false"
-                            class="text-xs text-saffron hover:text-saffron/70 transition-colors">save</button>
-                  </template>
-                </div>
-                <!-- user_key + email -->
-                <div class="text-xs text-mutedCharcoal dark:text-steelMist mt-0.5 space-y-0.5">
-                  <div x-text="u.user_key" class="font-mono"></div>
-                  <template x-if="editing">
-                    <input x-model="editEmail" type="email" placeholder="Email (optional)"
-                           class="text-xs px-2 py-0.5 rounded border border-[#DEE2E6] dark:border-[#21262D]
-                                  bg-white dark:bg-deepSpaceBlue text-stone-900 dark:text-stone-100
-                                  focus:outline-none focus:ring-1 focus:ring-saffron/40 w-56"/>
-                  </template>
-                  <template x-if="!editing && u.email">
-                    <div x-text="u.email"></div>
-                  </template>
-                </div>
-              </div>
-              <!-- Delete user -->
-              <button @click="deleteUser(u)"
-                      title="Delete session"
-                      class="flex-shrink-0 text-xs text-mutedCharcoal dark:text-steelMist hover:text-red-500 transition-colors px-1">
-                ✕
-              </button>
-            </div>
-
-            <!-- Platform badges -->
-            <div class="mt-2 flex flex-wrap gap-1.5">
-              <template x-for="p in u.platforms" :key="p.platform + ':' + p.platform_id">
-                <div class="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border transition-colors"
-                     :class="platformClass(p.platform)">
-                  <span class="font-semibold uppercase" x-text="p.platform.slice(0,2)"></span>
-                  <span class="font-mono truncate max-w-[8rem]" x-text="p.platform_id"></span>
-                  <button @click="removeLink(u, p)"
-                          class="ml-0.5 opacity-60 hover:opacity-100 transition-opacity text-xs leading-none"
-                          title="Unlink">×</button>
-                </div>
-              </template>
-              <template x-if="u.platforms.length === 0">
-                <span class="text-xs text-mutedCharcoal dark:text-steelMist italic">no platform links</span>
-              </template>
-            </div>
-          </div>
-        </template>
-      </div>
-    </div>
-
-  </div><!-- /identity tab -->
-
 </div><!-- /settingsApp -->
 
 <script>
 function settingsApp() {
   return {
-    tab: 'provider',
+    tab: 'connector',
     saving: false,
     providerMsg: '',
     providerOk: true,
     provider: { kind: '', base_url: '', model: '', api_key: '', max_tokens: '', timeout: '' },
+    providerModels: [],
+    modelsLoading: false,
+    modelsError: '',
 
+    connectors: [],
     waQR: { qr: null, connected: false, status: '', message: '' },
+    waQRCardOpen: false,
     _waQRPoll: null,
-
-    users: [],
-    form: { user_key: '', platform: 'discord', platform_id: '', channel_id: '' },
-    linkMsg: '', linkOk: true,
-    merge: { key_a: '', key_b: '' },
-    mergeMsg: '', mergeOk: true,
 
     async init() {
       const r = await fetch('/api/config/provider')
       const d = await r.json()
       this.provider = { ...d, api_key: '' }
+      this.loadConnectors()
+    },
+
+    async loadModels() {
+      if (this.provider.kind === 'anthropic' || !this.provider.base_url) return
+      this.modelsLoading = true
+      this.modelsError = ''
+      try {
+        const url = '/api/config/models?base_url=' + encodeURIComponent(this.provider.base_url)
+        const r = await fetch(url)
+        const d = await r.json()
+        if (d.ok) {
+          this.providerModels = d.models || []
+          if (this.providerModels.length && !this.providerModels.includes(this.provider.model)) {
+            this.provider.model = this.providerModels[0]
+          }
+        } else {
+          this.providerModels = []
+          this.modelsError = d.error || 'Failed to load models'
+        }
+      } catch (e) {
+        this.providerModels = []
+        this.modelsError = 'Network error'
+      }
+      this.modelsLoading = false
+    },
+
+    async loadConnectors() {
+      const r = await fetch('/api/settings/connectors')
+      const d = await r.json()
+      this.connectors = d.connectors || []
+    },
+
+    async setConnectorEnabled(name, enabled) {
+      const r = await fetch(`/api/settings/connectors/${name}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      })
+      const d = await r.json()
+      if (d.ok) {
+        const c = this.connectors.find(x => x.name === name)
+        if (c) c.enabled = enabled
+      }
+    },
+
+    toggleWaQRCard() {
+      this.waQRCardOpen = !this.waQRCardOpen
+      if (this.waQRCardOpen) {
+        this.loadWhatsAppQR()
+        this.startWaQRPoll()
+        this.$nextTick(() => document.getElementById('wa-qr-card')?.scrollIntoView({ behavior: 'smooth' }))
+      } else {
+        if (this._waQRPoll) { clearInterval(this._waQRPoll); this._waQRPoll = null }
+      }
     },
 
     async loadWhatsAppQR() {
@@ -392,7 +286,7 @@ function settingsApp() {
     startWaQRPoll() {
       if (this._waQRPoll) return
       this._waQRPoll = setInterval(() => {
-        if (this.tab !== 'platforms') {
+        if (this.tab !== 'connector' || !this.waQRCardOpen) {
           clearInterval(this._waQRPoll)
           this._waQRPoll = null
           return
@@ -434,138 +328,6 @@ function settingsApp() {
       }
       this.saving = false
       setTimeout(() => this.providerMsg = '', 3000)
-    },
-
-    async loadIdentity() {
-      const r = await fetch('/api/settings/users')
-      const d = await r.json()
-      this.users = d.users || []
-    },
-
-    async saveUser(u, name, email) {
-      await fetch(`/api/settings/users/${u.user_key}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email })
-      })
-      u.name = name
-      u.email = email
-    },
-
-    async deleteUser(u) {
-      if (!confirm(`Delete session ${u.user_key}? This removes all their identity links.`)) return
-      await fetch(`/api/settings/users/${u.user_key}`, { method: 'DELETE' })
-      this.users = this.users.filter(x => x.user_key !== u.user_key)
-    },
-
-    async addLink() {
-      this.linkMsg = ''
-      let userKey = this.form.user_key
-      if (!userKey) {
-        // Create a new bare user first
-        const r = await fetch('/api/settings/users', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: '', email: '' })
-        })
-        const d = await r.json()
-        if (!d.ok) { this.linkMsg = d.error || 'Failed to create user'; this.linkOk = false; return }
-        userKey = d.user_key
-      }
-      const r = await fetch('/api/settings/identity/link', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_key: userKey, ...this.form })
-      })
-      const d = await r.json()
-      if (d.ok) {
-        this.linkOk = true
-        this.linkMsg = 'Linked'
-        this.form.platform_id = ''
-        this.form.channel_id = ''
-        await this.loadIdentity()
-      } else {
-        this.linkOk = false
-        this.linkMsg = d.error || 'Error'
-      }
-      setTimeout(() => this.linkMsg = '', 3000)
-    },
-
-    async removeLink(u, p) {
-      const r = await fetch(`/api/settings/identity/${p.platform}/${p.platform_id}`, { method: 'DELETE' })
-      const d = await r.json()
-      if (d.ok) u.platforms = u.platforms.filter(x => !(x.platform === p.platform && x.platform_id === p.platform_id))
-    },
-
-    async mergeSessions() {
-      this.mergeMsg = ''
-      if (!confirm(`Merge ${this.merge.key_b} into ${this.merge.key_a}? This cannot be undone.`)) return
-      const r = await fetch('/api/settings/identity/merge', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(this.merge)
-      })
-      const d = await r.json()
-      if (d.ok) {
-        this.mergeOk = true
-        this.mergeMsg = `Merged → ${d.winner}`
-        this.merge = { key_a: '', key_b: '' }
-        await this.loadIdentity()
-      } else {
-        this.mergeOk = false
-        this.mergeMsg = d.error || 'Error'
-      }
-      setTimeout(() => this.mergeMsg = '', 4000)
-    },
-
-    platformIdPlaceholder(p) {
-      return {
-        discord:  '123456789012345678',
-        telegram: '123456789',
-        whatsapp: '15551234567@s.whatsapp.net',
-        slack:    'U01234ABCDE',
-        web:      'web:abc123def456',
-      }[p] || 'Platform user ID'
-    },
-
-    platformIdHint(p) {
-      return {
-        discord:  'Discord user snowflake (18-digit number). Right-click user → Copy User ID.',
-        telegram: 'Telegram numeric user ID. Use @userinfobot to find it.',
-        whatsapp: 'WhatsApp JID — phone number with country code + @s.whatsapp.net.',
-        slack:    'Slack member ID — starts with U. Found in member profile.',
-        web:      'Web session ID assigned by OpenAgent.',
-      }[p] || ''
-    },
-
-    channelIdPlaceholder(p) {
-      return {
-        discord:  '987654321098765432',
-        telegram: '123456789',
-        whatsapp: '15551234567@s.whatsapp.net',
-        slack:    'C01234ABCDE',
-        web:      'web:abc123def456',
-      }[p] || 'Channel / chat ID'
-    },
-
-    channelIdHint(p) {
-      return {
-        discord:  'Discord channel snowflake. Right-click channel → Copy Channel ID.',
-        telegram: 'Same as user ID for DMs. Use chat ID for groups (negative number).',
-        whatsapp: 'Same as user JID for DMs. Group JID ends with @g.us.',
-        slack:    'Slack channel ID — starts with C. Found in channel details.',
-        web:      'Matches the web session ID.',
-      }[p] || ''
-    },
-
-    platformClass(p) {
-      return {
-        discord:  'border-indigo-300  dark:border-indigo-700  text-indigo-600  dark:text-indigo-400  bg-indigo-50  dark:bg-indigo-900/30',
-        telegram: 'border-sky-300     dark:border-sky-700     text-sky-600     dark:text-sky-400     bg-sky-50     dark:bg-sky-900/30',
-        slack:    'border-purple-300  dark:border-purple-700  text-purple-600  dark:text-purple-400  bg-purple-50  dark:bg-purple-900/30',
-        whatsapp: 'border-green-300   dark:border-green-700   text-green-600   dark:text-green-400   bg-green-50   dark:bg-green-900/30',
-        web:      'border-stone-300   dark:border-stone-600   text-stone-600   dark:text-stone-400   bg-stone-50   dark:bg-stone-800/30',
-      }[p] || 'border-stone-300 dark:border-stone-600 text-stone-600 dark:text-stone-400'
     },
   }
 }

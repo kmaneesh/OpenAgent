@@ -12,7 +12,6 @@ from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings, browser
-from openagent.agent.identity_tools import make_identity_tools
 from openagent.agent.platform_tools import make_platform_tools
 from openagent.agent.skill_tools import make_skill_tools
 from openagent.agent.loop import AgentLoop
@@ -36,6 +35,7 @@ from openagent.observability.metrics import render_metrics
 from openagent.providers import get_provider
 from openagent.services.manager import ServiceManager
 from openagent.session import SessionManager, SqliteSessionBackend
+from openagent.settings_store import SettingsStore
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -66,11 +66,9 @@ class _SSELogHandler(logging.Handler):
                 pass
 
 
+from openagent.observability.logging import PlainFormatter as _PlainFormatter
 _handler = _SSELogHandler()
-_handler.setFormatter(
-    logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s",
-                      datefmt="%H:%M:%S")
-)
+_handler.setFormatter(_PlainFormatter(datefmt="%H:%M:%S"))
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -89,15 +87,43 @@ async def lifespan(app: FastAPI):
     app.state.log_clients = LOG_CLIENTS
     app.state.root = ROOT
 
-    # Load extensions (e.g. WhatsApp neonize for QR linking)
+    # Load extensions (discord, tts, stt, etc.)
     loaded_extensions = await load_extensions()
     app.state.extensions = {e.name: e.instance for e in loaded_extensions}
 
     # Full config — provider, agents, session, platforms, tools
     cfg = load_config(ROOT / "config" / "openagent.yaml")
     app.state.config = cfg
-    app.state.provider_config = cfg.provider   # backward compat for provider route
+
+    # Settings store — persistent key-value in openagent.db
+    db_path = ROOT / cfg.session.db_path  # same file as sessions (openagent.db)
+    settings_store = SettingsStore(db_path)
+    await settings_store.start()
+    app.state.settings_store = settings_store
+
+    # Provider overrides from settings table (persist across restarts)
+    _provider_settings = await settings_store.get_all(prefix="provider.")
+    if _provider_settings:
+        _overrides = {k.replace("provider.", ""): v for k, v in _provider_settings.items()}
+        _merged = {}
+        for _f in ("kind", "base_url", "api_key", "model", "timeout", "max_tokens"):
+            if _f not in _overrides:
+                continue
+            _val = _overrides[_f]
+            if _f in ("timeout", "max_tokens"):
+                try:
+                    _val = float(_val) if _f == "timeout" else int(_val)
+                except (ValueError, TypeError):
+                    continue
+            _merged[_f] = _val
+        if _merged:
+            cfg.provider = cfg.provider.model_copy(update=_merged)
+    app.state.provider_config = cfg.provider
     app.state.active_provider = get_provider(cfg.provider)
+
+    # Connector enable/disable — loaded from SQLite on each request; in-memory map
+    # is populated lazily by the settings route when connectors are toggled.
+    app.state.connectors_enabled = {}
 
     heartbeat = HeartbeatService(
         root=ROOT,
@@ -111,10 +137,17 @@ async def lifespan(app: FastAPI):
     # Service manager — inject platform credentials as env vars into Go services
     service_manager = ServiceManager(
         root=ROOT,
-        env_extras=build_service_env_extras(cfg),
+        env_extras=build_service_env_extras(cfg, ROOT),
     )
     app.state.service_manager = service_manager
     await service_manager.start()
+
+    # Stop connectors that were explicitly disabled in settings
+    _connector_settings = await settings_store.get_all(prefix="connector.")
+    for _key, _val in _connector_settings.items():
+        if _key.endswith(".enabled") and _val == "0":
+            _svc_name = _key.split(".")[1]
+            await service_manager.stop_service(_svc_name)
 
     # Message bus
     bus = MessageBus()
@@ -154,8 +187,6 @@ async def lifespan(app: FastAPI):
     # launch (initial start and restarts), so tools appear incrementally.
     tool_registry = ToolRegistry(service_manager)
     service_manager.on_service_ready(tool_registry.register_service)
-    for name, description, params, fn in make_identity_tools(session_manager):
-        tool_registry.register_native(name, description, params, fn)
     for name, description, params, fn in make_platform_tools(bus):
         tool_registry.register_native(name, description, params, fn)
     for name, description, params, fn in make_skill_tools():
@@ -188,11 +219,15 @@ async def lifespan(app: FastAPI):
     app.state.agent_loop = agent_loop
     await agent_loop.start()
 
-    # Platform manager — auto-attaches adapters; session_manager provides identity resolver
+    # Platform manager — auto-attaches adapters; identity hardwired to platform:channel_id
+    def _get_connectors_enabled():
+        return getattr(app.state, "connectors_enabled", {})
+
     platform_manager = PlatformManager(
         service_manager=service_manager,
         bus=bus,
-        session_manager=session_manager,
+        session_manager=None,  # hardwired identity: session_key = platform:channel_id
+        get_connectors_enabled=_get_connectors_enabled,
     )
     app.state.platform_manager = platform_manager
 
@@ -215,6 +250,7 @@ async def lifespan(app: FastAPI):
     await platform_manager.stop()
     await agent_loop.stop()
     await session_manager.stop()
+    await settings_store.stop()
     await bus.close()
     await service_manager.stop()
     await cron.stop()

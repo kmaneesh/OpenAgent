@@ -1,4 +1,4 @@
-"""Settings route — GET /settings (Provider + Identity tabs)."""
+"""Settings route — GET /settings (Provider + Connector tabs)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,9 @@ import base64
 
 from fastapi import APIRouter, Request
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
 
 router = APIRouter()
 templates: Jinja2Templates  # injected by main.py
-
-
-def _sessions(request: Request):
-    app = request.app
-    return getattr(app.state, "session_manager", None) or getattr(app.state, "sessions", None)
 
 
 # ---------------------------------------------------------------------------
@@ -31,177 +25,124 @@ async def settings_page(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Users API
+# Connectors API (enable/disable Discord, Slack, Telegram, WhatsApp)
 # ---------------------------------------------------------------------------
 
-class UserPatch(BaseModel):
-    name: str = ""
-    email: str = ""
+CONNECTOR_INFO = {
+    "discord":  {"description": "Discord bot for servers and DMs. Configure token in config/openagent.yaml."},
+    "slack":    {"description": "Slack workspace bot. Requires bot token and app token."},
+    "telegram": {"description": "Telegram bot or MTProto client. Configure app_id, app_hash, bot_token."},
+    "whatsapp": {"description": "WhatsApp via whatsmeow (Go). Link phone via QR code below."},
+}
+
+_SETTINGS_KEY = "connector.{name}.enabled"
 
 
-@router.get("/api/settings/users")
-async def list_users(request: Request):
-    sessions = _sessions(request)
-    if not sessions:
-        return {"users": []}
-    users = await sessions.list_users()
-    # Attach identity links per user
-    result = []
-    for u in users:
-        links = await sessions.get_identity_links(u["user_key"])
-        result.append({**u, "platforms": links})
-    return {"users": result}
+def _settings_store(request: Request):
+    return getattr(request.app.state, "settings_store", None)
 
 
-@router.post("/api/settings/users")
-async def create_user(request: Request, body: UserPatch):
-    """Create a bare user record (no platform identity yet)."""
-    import uuid
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    user_key = f"user:{uuid.uuid4().hex[:16]}"
-    await sessions.upsert_user(user_key, name=body.name, email=body.email)
-    return {"ok": True, "user_key": user_key}
+def _service_manager(request: Request):
+    return getattr(request.app.state, "service_manager", None)
 
 
-@router.patch("/api/settings/users/{user_key}")
-async def update_user(request: Request, user_key: str, body: UserPatch):
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    await sessions.upsert_user(user_key, name=body.name, email=body.email)
-    return {"ok": True}
+@router.get("/api/settings/connectors")
+async def list_connectors(request: Request):
+    """Return connector list with enabled state (from SQLite) and running status."""
+    store = _settings_store(request)
+    mgr = _service_manager(request)
 
+    # Load all connector settings in one query
+    all_settings: dict[str, str] = {}
+    if store:
+        all_settings = await store.get_all(prefix="connector.")
 
-@router.delete("/api/settings/users/{user_key}")
-async def delete_user(request: Request, user_key: str):
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    await sessions.delete_user(user_key)
-    return {"ok": True}
+    # Build running-status map from ServiceManager
+    running: dict[str, bool] = {}
+    if mgr:
+        for svc in mgr.list_services():
+            running[svc.name] = svc.status.value == "running"
 
+    connectors = []
+    for name, info in CONNECTOR_INFO.items():
+        raw = all_settings.get(_SETTINGS_KEY.format(name=name))
+        # Default: enabled if credentials exist in config (non-empty token)
+        if raw is None:
+            cfg = getattr(request.app.state, "config", None)
+            platforms = getattr(cfg, "platforms", None) if cfg else None
+            has_creds = bool(getattr(platforms, name, None)) if platforms else False
+            enabled = has_creds
+        else:
+            enabled = raw == "1"
 
-# ---------------------------------------------------------------------------
-# Identity links API
-# ---------------------------------------------------------------------------
-
-PLATFORMS = {"web", "discord", "telegram", "slack", "whatsapp"}
-
-
-class LinkBody(BaseModel):
-    user_key: str
-    platform: str
-    platform_id: str
-    channel_id: str = ""
-
-
-@router.get("/api/settings/identity")
-async def list_identities(request: Request):
-    """Return all identity links grouped by user_key."""
-    sessions = _sessions(request)
-    if not sessions:
-        return {"identities": []}
-    rows = await sessions.list_all_identities()
-    # Group by user_key
-    grouped: dict[str, list] = {}
-    for r in rows:
-        grouped.setdefault(r["user_key"], []).append({
-            "platform": r["platform"],
-            "platform_id": r["platform_id"],
-            "channel_id": r["channel_id"],
-            "last_active": r["last_active"],
+        connectors.append({
+            "name": name,
+            "description": info["description"],
+            "enabled": enabled,
+            "running": running.get(name, False),
         })
-    return {
-        "identities": [
-            {"user_key": k, "platforms": v} for k, v in grouped.items()
-        ]
-    }
+    return {"connectors": connectors}
 
 
-@router.post("/api/settings/identity/link")
-async def add_identity_link(request: Request, body: LinkBody):
-    """Manually link a platform identity to a user_key."""
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    if body.platform not in PLATFORMS:
-        return {"error": f"unknown platform '{body.platform}'. Valid: {sorted(PLATFORMS)}"}
-    if not body.platform_id.strip():
-        return {"error": "platform_id required"}
-    await sessions.set_identity_link(
-        body.user_key, body.platform, body.platform_id.strip(), body.channel_id.strip()
-    )
-    return {"ok": True}
-
-
-@router.delete("/api/settings/identity/{platform}/{platform_id:path}")
-async def remove_identity_link(request: Request, platform: str, platform_id: str):
-    """Remove a specific platform identity link."""
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    await sessions.unlink_platform(platform, platform_id)
-    return {"ok": True}
-
-
-@router.post("/api/settings/identity/merge")
-async def merge_sessions(request: Request):
-    """Merge key_b into key_a — all turns and identities move to key_a."""
+@router.patch("/api/settings/connectors/{name}")
+async def patch_connector(request: Request, name: str):
+    """Enable or disable a connector — persists to SQLite and starts/stops the service."""
     body = await request.json()
-    key_a = str(body.get("key_a", "")).strip()
-    key_b = str(body.get("key_b", "")).strip()
-    if not key_a or not key_b:
-        return {"error": "key_a and key_b required"}
-    if key_a == key_b:
-        return {"error": "cannot merge a session with itself"}
-    sessions = _sessions(request)
-    if not sessions:
-        return {"error": "session manager unavailable"}
-    winner = await sessions.link_user_keys(key_a, key_b)
-    return {"ok": True, "winner": winner}
+    enabled = body.get("enabled")
+    if enabled is None:
+        return {"ok": False, "error": "enabled required"}
+    if name not in CONNECTOR_INFO:
+        return {"ok": False, "error": f"unknown connector: {name}"}
+
+    store = _settings_store(request)
+    mgr = _service_manager(request)
+
+    # Persist to SQLite
+    if store:
+        await store.set(_SETTINGS_KEY.format(name=name), "1" if enabled else "0")
+    # Also update in-memory map so PlatformManager picks it up immediately
+    enabled_map = getattr(request.app.state, "connectors_enabled", {})
+    enabled_map[name] = bool(enabled)
+    request.app.state.connectors_enabled = enabled_map
+
+    # Start or stop the Go service
+    if mgr:
+        if enabled:
+            ok = await mgr.reload(name)
+            return {"ok": ok, "action": "started"}
+        else:
+            ok = await mgr.stop_service(name)
+            return {"ok": ok, "action": "stopped"}
+
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
-# WhatsApp QR (for linking in Settings > Platforms)
+# WhatsApp QR (for linking in Settings > Connector)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/api/settings/whatsapp/qr")
 async def whatsapp_qr(request: Request):
-    """Return WhatsApp QR code as data URL for scanning. QR comes from Go service or Python extension."""
+    """Return WhatsApp QR code as data URL for scanning. QR comes from the Go whatsapp service (whatsmeow)."""
     qr_text: str | None = None
     connected = False
     status = "unavailable"
 
-    # 1. Try platform adapter (Go whatsapp service)
     platform_manager = getattr(request.app.state, "platform_manager", None)
     if platform_manager:
         adapters = platform_manager.adapters()
         wa_adapter = adapters.get("whatsapp")
         if wa_adapter and hasattr(wa_adapter, "latest_qr"):
-            qr_text = wa_adapter.latest_qr() or None  # normalise "" → None
+            qr_text = wa_adapter.latest_qr() or None
             connected = wa_adapter._status.get("connected", False)
-            status = "connected" if connected else ("pending" if qr_text else "waiting")
-
-    # 2. Fallback: Python WhatsApp extension (neonize)
-    # Falsy check — Go service stub emits qr="" (empty string, not None)
-    if not qr_text:
-        from openagent.manager import get_extension
-        ext = get_extension("whatsapp")
-        if ext and hasattr(ext, "latest_qr"):
-            qr_text = ext.latest_qr()
-            st = ext.get_status() or {}
-            connected = st.get("connected", False) or st.get("linked", False)
             status = "connected" if connected else ("pending" if qr_text else "waiting")
 
     if not qr_text:
         if status == "unavailable":
             msg = (
-                "WhatsApp backend not available. "
-                "Install the neonize extension ('pip install neonize') and restart, "
-                "or ensure the Go whatsapp service binary is running."
+                "WhatsApp service not available. Ensure the Go whatsapp service is built "
+                "('make whatsapp') and running. Check Settings > Connector to enable WhatsApp."
             )
         elif connected:
             msg = "WhatsApp is already connected — no QR needed."
