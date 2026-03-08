@@ -411,7 +411,7 @@ Agno's `Agent` + `Team` + `Workflow` replaces our planned:
 - ServiceManager orchestration (use Team)
 - Worker/message bus (use Workflow + async)
 
-Our MCP-lite Go services can be wrapped as MCP stdio servers (Go has MCP SDK support) so `MCPTools("./bin/hello-service")` works out of the box.
+Our MCP-lite Go services can be wrapped as MCP stdio servers (Go has MCP SDK support) so `MCPTools("./bin/discord-service")` works out of the box.
 
 ---
 

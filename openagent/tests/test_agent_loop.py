@@ -128,7 +128,7 @@ async def test_registry_rebuild_with_running_service() -> None:
     client.request = AsyncMock(return_value=tool_response)
 
     svc = MagicMock()
-    svc.name = "hello"
+    svc.name = "discord"
 
     mgr = MagicMock()
     mgr.list_services.return_value = [svc]
@@ -150,14 +150,14 @@ async def test_registry_call_returns_result() -> None:
     client.request = AsyncMock(return_value=result_frame)
 
     svc = MagicMock()
-    svc.name = "hello"
+    svc.name = "discord"
 
     mgr = MagicMock()
     mgr.list_services.return_value = [svc]
     mgr.get_client.return_value = client
 
     registry = ToolRegistry(mgr)
-    registry._tool_to_service["ping"] = "hello"
+    registry._tool_to_service["ping"] = "discord"
 
     result = await registry.call("ping", {})
     assert result == "pong"

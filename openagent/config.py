@@ -118,6 +118,31 @@ class ToolsConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# STT
+# ---------------------------------------------------------------------------
+
+
+class STTConfig(BaseModel):
+    provider: str = "faster-whisper"
+    whisper_model: str = "small"
+
+
+# ---------------------------------------------------------------------------
+# TTS
+# ---------------------------------------------------------------------------
+
+
+class TTSConfig(BaseModel):
+    provider: str = "edge"           # edge | minimax
+    voice: str = "en-US-AriaNeural"  # Edge voice name or MiniMax voice_id
+    speed: str = "+0%"               # Edge: "+10%" etc; MiniMax: float string e.g. "1.2"
+    volume: str = "+0%"              # Edge: "+10%" etc; MiniMax: float string e.g. "1.0"
+    # MiniMax-only credentials (prefer env vars MINIMAX_API_KEY / MINIMAX_GROUP_ID)
+    api_key: str = ""
+    group_id: str = ""
+
+
+# ---------------------------------------------------------------------------
 # Root
 # ---------------------------------------------------------------------------
 
@@ -128,6 +153,8 @@ class OpenAgentConfig(BaseModel):
     session: SessionConfig = Field(default_factory=SessionConfig)
     platforms: PlatformsConfig = Field(default_factory=PlatformsConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    stt: STTConfig = Field(default_factory=STTConfig)
+    tts: TTSConfig = Field(default_factory=TTSConfig)
 
     @field_validator("tools", mode="before")
     @classmethod
@@ -163,6 +190,9 @@ _ENV_OVERRIDES: list[tuple[tuple[str, ...], list[str]]] = [
     # platforms — WhatsApp
     (("platforms", "whatsapp", "phone_number"),
      ["WHATSAPP_PHONE", "OPENAGENT_WHATSAPP_PHONE"]),
+    # tts — MiniMax credentials
+    (("tts", "api_key"),   ["MINIMAX_API_KEY", "OPENAGENT_MINIMAX_API_KEY"]),
+    (("tts", "group_id"),  ["MINIMAX_GROUP_ID", "OPENAGENT_MINIMAX_GROUP_ID"]),
     # tools — sandbox (microsandbox)
     (("tools", "sandbox", "server_url"),
      ["MSB_SERVER_URL", "OPENAGENT_MSB_SERVER_URL"]),

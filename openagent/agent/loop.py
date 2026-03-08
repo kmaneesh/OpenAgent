@@ -210,7 +210,7 @@ class AgentLoop:
         stream_with_tools = getattr(
             self._provider, "stream_with_tools", None
         ) if tool_schemas else None
-        use_legacy_stream = tool_schemas is None  # no tools → plain stream
+        use_legacy_stream = tool_schemas is None and hasattr(self._provider, "stream")  # no tools + provider supports streaming
 
         for iteration in range(self._max_iterations):
             try:

@@ -493,7 +493,29 @@ class WhatsAppPlatformAdapter(PlatformAdapter):
         if frame.event == "whatsapp.qr":
             self._latest_qr = str(frame.data.get("qr") or "")
             return
+        if frame.event == "whatsapp.call.received":
+            self._on_call(dict(frame.data))
+            return
         super()._dispatch(frame)
+
+    def _on_call(self, data: dict) -> None:
+        chat_id = str(data.get("chat_id", ""))
+        is_video = bool(data.get("is_video", False))
+        call_type = "video" if is_video else "voice"
+        logger.info("WhatsApp %s call from %s (call_id=%s)", call_type, chat_id, data.get("call_id", ""))
+        # Synthesise an inbound text message so the agent can respond
+        inbound = InboundMessage(
+            platform="whatsapp",
+            channel_id=chat_id,
+            sender=SenderInfo(
+                platform="whatsapp",
+                user_id=chat_id,
+                display_name=chat_id,
+            ),
+            content=f"[Incoming {call_type} call]",
+            metadata={"call_id": data.get("call_id", ""), "is_video": is_video},
+        )
+        asyncio.ensure_future(self._bus.publish(inbound))
 
     def latest_qr(self) -> str | None:
         """Return latest QR payload for linking (from whatsapp.qr event)."""
@@ -506,8 +528,19 @@ class WhatsAppPlatformAdapter(PlatformAdapter):
         chat_id = str(data.get("chat_id", ""))
         content = str(data.get("text", ""))
         sender = str(data.get("sender", chat_id))
+        artifact_path = str(data.get("artifact_path", ""))
+        kind = str(data.get("kind", ""))
+
+        # Audio messages have an artifact_path but may have empty text.
+        # Use a placeholder so the agent loop has something to route on;
+        # STTMiddleware will replace it with the transcript if enabled.
+        if not content and artifact_path:
+            content = "[PTT]" if kind == "ptt" else "[Voice message]"
+
         if not chat_id or not content:
             return None
+
+        media: list[str] = [artifact_path] if artifact_path else []
         return InboundMessage(
             platform="whatsapp",
             channel_id=chat_id,
@@ -517,14 +550,29 @@ class WhatsAppPlatformAdapter(PlatformAdapter):
                 display_name=sender,
             ),
             content=content,
+            media=media,
+            metadata={"kind": kind, "is_ptt": data.get("is_ptt", False)},
         )
+
+    @staticmethod
+    def _strip_think(text: str) -> str:
+        """Remove everything up to and including the last </think> tag."""
+        idx = text.rfind("</think>")
+        if idx == -1:
+            return text
+        return text[idx + len("</think>"):].lstrip()
 
     async def send(self, msg: OutboundMessage) -> None:
         meta = msg.metadata or {}
+        # WhatsApp has no edit API — skip all intermediate stream chunks.
+        # Only the final accumulated message (stream_end=True or non-streaming) is sent.
         if meta.get("stream_chunk") and not meta.get("stream_end"):
-            return  # Skip intermediate chunks; send only the final complete message
+            return
+        content = self._strip_think(msg.content or "")
+        if not content:
+            return
         await self._client.request({
             "type": "tool.call",
             "tool": "whatsapp.send_text",
-            "params": {"chat_id": msg.channel_id, "text": msg.content},
+            "params": {"chat_id": msg.channel_id, "text": content},
         })

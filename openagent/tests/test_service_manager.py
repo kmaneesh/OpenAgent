@@ -85,17 +85,17 @@ def test_manifest_from_dict_defaults(tmp_path: Path) -> None:
 def test_manifest_from_dict_full(tmp_path: Path) -> None:
     manifest_path = tmp_path / "service.json"
     data = {
-        "name": "hello",
-        "description": "Greeter",
+        "name": "discord",
+        "description": "Discord connector",
         "version": "1.2.3",
-        "binary": {"darwin/arm64": "bin/hello-darwin-arm64"},
-        "socket": "data/sockets/hello.sock",
+        "binary": {"darwin/arm64": "bin/discord-darwin-arm64"},
+        "socket": "data/sockets/discord.sock",
         "health": {"interval_ms": 3000, "timeout_ms": 500, "restart_backoff_ms": [50, 100]},
-        "tools": [{"name": "hello.reply", "description": "greet", "params": {}}],
+        "tools": [{"name": "discord.send_message", "description": "send", "params": {}}],
         "events": [{"name": "ping"}],
     }
     m = ServiceManifest.from_dict(data, manifest_path)
-    assert m.name == "hello"
+    assert m.name == "discord"
     assert m.version == "1.2.3"
     assert m.health.interval_ms == 3000
     assert m.health.restart_backoff_ms == [50, 100]
