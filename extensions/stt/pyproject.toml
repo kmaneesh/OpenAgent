@@ -23,7 +23,11 @@ test = [
 ]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+packages = ["stt", "stt.providers"]
+package-dir = {"stt" = "src", "stt.providers" = "src/providers"}
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+markers = [
+    "integration: real model + real audio — slow, requires faster-whisper model download",
+]

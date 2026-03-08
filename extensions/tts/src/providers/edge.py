@@ -18,12 +18,23 @@ logger = get_logger(__name__)
 
 
 class EdgeProvider(TTSProvider):
+    def __init__(
+        self,
+        *,
+        voice: str = "en-US-AriaNeural",
+        speed: str = "+0%",
+        volume: str = "+0%",
+    ):
+        self._default_voice = voice
+        self._default_speed = speed
+        self._default_volume = volume
+
     async def generate(self, text: str, **kwargs) -> bytes:
         start = time.perf_counter()
         status = "ok"
-        voice = str(kwargs.get("voice_id", "en-US-AriaNeural"))
-        rate = str(kwargs.get("speed", "+0%"))
-        volume = str(kwargs.get("vol", "+0%"))
+        voice = str(kwargs.get("voice_id", self._default_voice))
+        rate = str(kwargs.get("speed", self._default_speed))
+        volume = str(kwargs.get("vol", self._default_volume))
         timeout_s = float(kwargs.get("timeout_s", 20.0))
         communicator = edge_tts.Communicate(text=text, voice=voice, rate=rate, volume=volume)
         chunks: list[bytes] = []
@@ -60,9 +71,9 @@ class EdgeProvider(TTSProvider):
         start = time.perf_counter()
         status = "ok"
         timeout_s = float(kwargs.get("timeout_s", 20.0))
-        voice = str(kwargs.get("voice_id", "en-US-AriaNeural"))
-        rate = str(kwargs.get("speed", "+0%"))
-        volume = str(kwargs.get("vol", "+0%"))
+        voice = str(kwargs.get("voice_id", self._default_voice))
+        rate = str(kwargs.get("speed", self._default_speed))
+        volume = str(kwargs.get("vol", self._default_volume))
         communicator = edge_tts.Communicate(text=text, voice=voice, rate=rate, volume=volume)
         try:
             async with asyncio.timeout(timeout_s):

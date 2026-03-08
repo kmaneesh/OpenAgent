@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from openagent.platforms.mcplite import McpLiteClient
 from openagent.observability import log_event
 from openagent.observability.logging import get_logger
@@ -112,7 +114,7 @@ class ManagedService:
         self._process: asyncio.subprocess.Process | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "name": self.name,
             "status": self.status.value,
             "restart_count": self.restart_count,
@@ -124,6 +126,16 @@ class ManagedService:
             "socket": self.manifest.socket,
             "runtime": self.manifest.runtime,
         }
+        # Process memory (RSS) in MB when running
+        if self._process and self._process.returncode is None and self._process.pid:
+            try:
+                p = psutil.Process(self._process.pid)
+                out["memory_mb"] = round(p.memory_info().rss / (1024 * 1024), 1)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                out["memory_mb"] = None
+        else:
+            out["memory_mb"] = None
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +171,7 @@ class ServiceManager:
         mgr = ServiceManager(root=ROOT)
         await mgr.start()
         ...
-        client = mgr.get_client("hello")
+        client = mgr.get_client("discord")
         ...
         await mgr.stop()
     """

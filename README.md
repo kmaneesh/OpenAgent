@@ -15,7 +15,7 @@ Python is the control plane (extensions, orchestration, routing). Go services ar
 - **MCP-lite** — Python client + Go SDK (`openagent/platforms/mcplite.py`, `services/sdk-go/mcplite/`)
 - **Heartbeat** — periodic health/summary polling (`openagent/heartbeat/`)
 - **platform adapters** — Discord, Telegram, WhatsApp, Slack (Python MCP-lite clients)
-- **Go/Rust services** — `hello`, `sandbox`, `discord`, `telegram`, `slack`, `whatsapp`
+- **Go/Rust services** — `sandbox`, `discord`, `telegram`, `slack`, `whatsapp`
 - **Web UI** — FastAPI + HTMX (dashboard, chat, logs, extensions, services, config)
 
 **In progress:**
@@ -125,7 +125,6 @@ OpenAgent/
 │
 ├── services/               # Go service daemons
 │   ├── sdk-go/             # Shared MCP-lite Go SDK
-│   ├── hello/              # Reference hello tool service
 │   ├── sandbox/            # Rust — VM-isolated code/shell execution (microsandbox)
 │   ├── discord/            # Discord service
 │   ├── telegram/           # Telegram service
@@ -160,7 +159,6 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 
 | Service | Description | Status |
 |---------|-------------|--------|
-| **hello** | Reference MCP-lite service (`hello.reply`) | Implemented |
 | **sandbox** | VM-isolated code/shell execution (Rust, microsandbox); includes filesystem via shell | Implemented |
 | **discord** | Discord connector service | Implemented |
 | **telegram** | Telegram connector service (gotd/td) | Implemented |

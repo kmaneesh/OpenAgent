@@ -39,7 +39,9 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-3 mb-0.5">
               <span class="font-mono font-semibold text-[#dea584]">{{ svc.name }}</span>
-              <span class="text-xs text-stone-500">v{{ svc.version }}</span>
+              {% if svc.memory_mb is defined and svc.memory_mb is not none %}
+              <span class="text-xs text-stone-500 dark:text-stone-400">{{ svc.memory_mb }} MB</span>
+              {% endif %}
               <span class="inline-flex items-center gap-1.5 text-xs
                            {% if svc.status == 'running' %}text-sage
                            {% elif svc.status == 'error' %}text-red-600 dark:text-red-400
@@ -109,7 +111,9 @@
           <div class="flex-1 min-w-0">
             <div class="flex items-center gap-3 mb-0.5">
               <span class="font-mono font-semibold text-[#dea584]">{{ svc.name }}</span>
-              <span class="text-xs text-stone-500">v{{ svc.version }}</span>
+              {% if svc.memory_mb is defined and svc.memory_mb is not none %}
+              <span class="text-xs text-stone-500 dark:text-stone-400">{{ svc.memory_mb }} MB</span>
+              {% endif %}
               <span class="inline-flex items-center gap-1.5 text-xs
                            {% if svc.status == 'running' or svc.status == 'online' %}text-sage
                            {% elif svc.status == 'error' %}text-red-600 dark:text-red-400

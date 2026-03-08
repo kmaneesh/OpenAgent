@@ -60,3 +60,42 @@ async def test_listen_with_stream_chunks_audio():
     text = await ext.listen(stream=_fake_stream(), chunk_bytes=2)
     assert text == "first second"
     await ext.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_listen_ogg_file_passes_correct_suffix(tmp_path: Path):
+    """OGG files from WhatsApp PTT must use .ogg suffix so ffmpeg detects format."""
+    ogg_path = tmp_path / "voice.ogg"
+    ogg_path.write_bytes(b"fake-ogg-data")
+    ext = STTExtension(config={})
+    await ext.initialize()
+    provider = ext._provider
+    assert provider is not None
+    captured: dict = {}
+    async def _capture(data: bytes, **kwargs) -> str:
+        captured.update(kwargs)
+        return "transcribed"
+    provider.transcribe = _capture  # type: ignore[method-assign]
+    text = await ext.listen(file=ogg_path)
+    assert text == "transcribed"
+    assert captured.get("file_suffix") == ".ogg"
+    await ext.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_listen_file_defaults_suffix_to_wav(tmp_path: Path):
+    """Files without a recognised extension fall back to .wav suffix."""
+    audio_path = tmp_path / "audio"  # no extension
+    audio_path.write_bytes(b"raw-pcm")
+    ext = STTExtension(config={})
+    await ext.initialize()
+    provider = ext._provider
+    assert provider is not None
+    captured: dict = {}
+    async def _capture(data: bytes, **kwargs) -> str:
+        captured.update(kwargs)
+        return "ok"
+    provider.transcribe = _capture  # type: ignore[method-assign]
+    await ext.listen(file=audio_path)
+    assert captured.get("file_suffix") == ".wav"
+    await ext.shutdown()

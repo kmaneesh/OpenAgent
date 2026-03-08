@@ -73,7 +73,10 @@ class STTExtension(BaseAsyncExtension):
             if file is not None:
                 file_path = Path(file)
                 data = await asyncio.to_thread(file_path.read_bytes)
-                text = await provider.transcribe(data, **kwargs)
+                # Pass original extension so temp file gets correct suffix for
+                # ffmpeg format detection (.ogg for WhatsApp PTT/voice, .wav etc.)
+                suffix = file_path.suffix or ".wav"
+                text = await provider.transcribe(data, file_suffix=suffix, **kwargs)
                 self._record_provider_call("listen", "ok", "none")
                 return text
 

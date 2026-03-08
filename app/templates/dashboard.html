@@ -26,8 +26,8 @@
       <thead>
         <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
           <th class="text-left px-4 py-2">Name</th>
-          <th class="text-left px-4 py-2">Version</th>
           <th class="text-left px-4 py-2">Status</th>
+          <th class="text-left px-4 py-2">Memory</th>
         </tr>
       </thead>
       <tbody>
@@ -35,13 +35,13 @@
         {% if svc.status == 'online' or svc.status == 'enabled' %}
         <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
           <td class="px-4 py-2 font-mono text-[#dea584]">{{ svc.name }}</td>
-          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ svc.version }}</td>
           <td class="px-4 py-2">
             <span class="inline-flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
               <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
               {{ svc.status }}
             </span>
           </td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{% if svc.memory_mb is not none %}{{ svc.memory_mb }} MB{% else %}—{% endif %}</td>
         </tr>
         {% endif %}
         {% endfor %}
@@ -65,8 +65,8 @@
       <thead>
         <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
           <th class="text-left px-4 py-2">Name</th>
-          <th class="text-left px-4 py-2">Version</th>
           <th class="text-left px-4 py-2">Status</th>
+          <th class="text-left px-4 py-2">Memory</th>
         </tr>
       </thead>
       <tbody>
@@ -74,13 +74,13 @@
         {% if svc.status == 'online' or svc.status == 'enabled' %}
         <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
           <td class="px-4 py-2 font-mono text-[#dea584]">{{ svc.name }}</td>
-          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ svc.version }}</td>
           <td class="px-4 py-2">
             <span class="inline-flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
               <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
               {{ svc.status }}
             </span>
           </td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{% if svc.memory_mb is not none %}{{ svc.memory_mb }} MB{% else %}—{% endif %}</td>
         </tr>
         {% endif %}
         {% endfor %}
@@ -93,38 +93,38 @@
     {% endif %}
   </div>
 
-  <!-- Right Column (Second Row): Extensions -->
+  <!-- Right Column (Second Row): Python -->
   <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl overflow-hidden shadow-sm dark:shadow-none h-max">
     <div class="px-4 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between">
-      <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Extensions</h2>
-      <span class="text-xs text-stone-500 dark:text-stone-400">From extensions/</span>
+      <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Python</h2>
+      <span class="text-xs text-stone-500 dark:text-stone-400">OpenAgent & Extensions</span>
     </div>
-    {% if extensions %}
+    {% if python_packages %}
     <table class="w-full text-sm">
       <thead>
         <tr class="text-xs text-stone-500 dark:text-stone-400 border-b border-[#DEE2E6] dark:border-stone-700">
           <th class="text-left px-4 py-2">Name</th>
-          <th class="text-left px-4 py-2">Version</th>
           <th class="text-left px-4 py-2">Status</th>
+          <th class="text-left px-4 py-2">Memory</th>
         </tr>
       </thead>
       <tbody>
-        {% for ext in extensions %}
+        {% for pkg in python_packages %}
         <tr class="border-b border-[#DEE2E6] dark:border-stone-700/50 hover:bg-stone-50 dark:hover:bg-stone-700/30 text-stone-900 dark:text-stone-100">
-          <td class="px-4 py-2 font-mono text-[#dea584]">{{ ext.name }}</td>
-          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ ext.version }}</td>
+          <td class="px-4 py-2 font-mono text-[#dea584]">{{ pkg.name }}</td>
           <td class="px-4 py-2">
-            <span class="inline-flex items-center gap-1.5 text-xs text-sage">
+            <span class="inline-flex items-center gap-1.5 text-xs text-stone-500 dark:text-stone-400">
               <span class="w-1.5 h-1.5 rounded-full bg-sage"></span>
-              {{ ext.status }}
+              {{ pkg.status }}
             </span>
           </td>
+          <td class="px-4 py-2 text-stone-500 dark:text-stone-400">{{ pkg.memory_display }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="px-4 py-6 text-sm text-stone-500 text-center">No extensions in <code class="font-mono">extensions/</code>.</p>
+    <p class="px-4 py-6 text-sm text-stone-500 text-center">No Python packages.</p>
     {% endif %}
   </div>
 

@@ -129,9 +129,19 @@ class TTSExtension(BaseAsyncExtension):
 
     def _build_provider(self, provider_name: str) -> TTSProvider:
         if provider_name == "edge":
-            return EdgeProvider()
+            return EdgeProvider(
+                voice=str(self._config.get("voice", "en-US-AriaNeural")),
+                speed=str(self._config.get("speed", "+0%")),
+                volume=str(self._config.get("volume", "+0%")),
+            )
         if provider_name == "minimax":
-            return MiniMaxProvider()
+            return MiniMaxProvider(
+                api_key=self._config.get("api_key") or None,
+                group_id=self._config.get("group_id") or None,
+                voice=str(self._config.get("voice", "Calm_Woman")),
+                speed=float(self._config.get("speed", 1.0)),
+                volume=float(self._config.get("volume", 1.0)),
+            )
         raise ValueError(f"Unsupported TTS provider '{provider_name}'.")
 
     def _record_provider_call(self, operation: str, status: str, error_type: str) -> None:

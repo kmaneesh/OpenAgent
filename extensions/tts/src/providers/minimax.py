@@ -32,11 +32,17 @@ class MiniMaxProvider(TTSProvider):
         api_key: str | None = None,
         group_id: str | None = None,
         api_url: str | None = None,
+        voice: str = DEFAULT_MINIMAX_VOICE,
+        speed: float = 1.0,
+        volume: float = 1.0,
         session: aiohttp.ClientSession | None = None,
     ):
         self.api_key = api_key or os.getenv("MINIMAX_API_KEY")
         self.group_id = group_id or os.getenv("MINIMAX_GROUP_ID")
         self.api_url = api_url or DEFAULT_MINIMAX_API_URL
+        self._default_voice = voice
+        self._default_speed = speed
+        self._default_volume = volume
         self._session = session
 
     async def generate(self, text: str, **kwargs) -> bytes:
@@ -45,9 +51,9 @@ class MiniMaxProvider(TTSProvider):
 
     async def generate_stream(self, text: str, **kwargs) -> AsyncIterator[bytes]:
         self._validate_credentials()
-        voice = str(kwargs.get("voice_id", DEFAULT_MINIMAX_VOICE))
-        speed = kwargs.get("speed", 1.0)
-        vol = kwargs.get("vol", 1.0)
+        voice = str(kwargs.get("voice_id", self._default_voice))
+        speed = kwargs.get("speed", self._default_speed)
+        vol = kwargs.get("vol", self._default_volume)
         stream = bool(kwargs.get("stream", True))
         timeout_s = float(kwargs.get("timeout_s", 20.0))
         retries = int(kwargs.get("retries", 1))

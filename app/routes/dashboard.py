@@ -30,6 +30,7 @@ def _online_services_from_manager(mgr) -> tuple[list[dict[str, Any]], list[dict[
             "name": d["name"],
             "version": d.get("version", "?"),
             "status": "online",
+            "memory_mb": d.get("memory_mb"),
         }
         if d.get("runtime") == "rust":
             rust_services.append(entry)
@@ -71,40 +72,62 @@ def _system_stats() -> dict:
     }
 
 
-def _extensions_from_directory(root: Path) -> list[dict[str, Any]]:
-    """Scan root/extensions/ for Python extension packages (those with pyproject.toml)."""
-    extensions_dir = root / "extensions"
+def _python_packages(root: Path) -> list[dict[str, Any]]:
+    """Build Python packages list: OpenAgent (core) first, then extensions from extensions/."""
     result: list[dict[str, Any]] = []
 
-    if not extensions_dir.exists():
-        return result
+    # Current process memory (RSS) in MB — shared by core + all extensions
+    try:
+        proc = psutil.Process()
+        memory_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        memory_mb = None
 
-    for ext_dir in sorted(extensions_dir.iterdir()):
-        if not ext_dir.is_dir():
-            continue
-        pyproject = ext_dir / "pyproject.toml"
-        if not pyproject.exists():
-            continue
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-            project = data.get("project", {})
-            name = project.get("name", ext_dir.name)
-            version = str(project.get("version", "?"))
-            # Use directory name as display name (e.g. tts, stt)
-            display_name = ext_dir.name
-            result.append({
-                "name": display_name,
-                "package": name,
-                "version": version,
-                "status": "installed",
-            })
-        except (tomllib.TOMLDecodeError, OSError):
-            result.append({
-                "name": ext_dir.name,
-                "package": ext_dir.name,
-                "version": "?",
-                "status": "error",
-            })
+    # OpenAgent core — always first
+    try:
+        import importlib.metadata
+        core_version = importlib.metadata.version("openagent-core")
+    except Exception:
+        core_version = "?"
+    result.append({
+        "name": "OpenAgent",
+        "package": "openagent-core",
+        "version": core_version,
+        "status": "installed",
+        "memory_mb": memory_mb,
+        "memory_display": f"{memory_mb} MB" if memory_mb is not None else "—",
+    })
+
+    # Extensions from extensions/ — run in same process, no separate memory
+    extensions_dir = root / "extensions"
+    if extensions_dir.exists():
+        for ext_dir in sorted(extensions_dir.iterdir()):
+            if not ext_dir.is_dir():
+                continue
+            pyproject = ext_dir / "pyproject.toml"
+            if not pyproject.exists():
+                continue
+            try:
+                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+                project = data.get("project", {})
+                version = str(project.get("version", "?"))
+                result.append({
+                    "name": ext_dir.name,
+                    "package": project.get("name", ext_dir.name),
+                    "version": version,
+                    "status": "installed",
+                    "memory_mb": None,
+                    "memory_display": "extension",
+                })
+            except (tomllib.TOMLDecodeError, OSError):
+                result.append({
+                    "name": ext_dir.name,
+                    "package": ext_dir.name,
+                    "version": "?",
+                    "status": "error",
+                    "memory_mb": None,
+                    "memory_display": "extension",
+                })
 
     return result
 
@@ -123,7 +146,7 @@ async def dashboard(request: Request):
         "request": request,
         "active": "dashboard",
         "stats": _system_stats(),
-        "extensions": _extensions_from_directory(root),
+        "python_packages": _python_packages(root),
         "services": services,
         "rust_services": rust_services,
     })
@@ -143,7 +166,7 @@ async def stats_partial(request: Request):
     return templates.TemplateResponse("_stats_cards.html", {
         "request": request,
         "stats": _system_stats(),
-        "extensions": _extensions_from_directory(root),
+        "python_packages": _python_packages(root),
         "services": services,
         "rust_services": rust_services,
     })

@@ -59,11 +59,30 @@ def _extensions_from_directory(root: Path) -> list[dict[str, Any]]:
     return result
 
 
+def _python_packages_for_page(root: Path) -> list[dict[str, Any]]:
+    """OpenAgent first, then extensions from extensions/ — for Python page."""
+    result: list[dict[str, Any]] = []
+    try:
+        import importlib.metadata
+        core_version = importlib.metadata.version("openagent-core")
+    except Exception:
+        core_version = "?"
+    result.append({
+        "name": "OpenAgent",
+        "package": "openagent-core",
+        "version": core_version,
+        "entry_point": "—",
+        "status": "installed",
+    })
+    result.extend(_extensions_from_directory(root))
+    return result
+
+
 @router.get("/extensions")
 async def extensions_page(request: Request):
     root = getattr(request.app.state, "root", Path.cwd())
     return templates.TemplateResponse("extensions.html", {
         "request": request,
-        "active": "extensions",
-        "extensions": _extensions_from_directory(root),
+        "active": "python",
+        "extensions": _python_packages_for_page(root),
     })

@@ -16,7 +16,7 @@
 #                   Cross-compilation uses `cross` (cargo install cross --locked)
 #                   and requires Docker.  Darwin (arm64 and amd64) builds natively on Mac.
 
-GO_SERVICES := hello discord telegram slack whatsapp
+GO_SERVICES := discord telegram slack whatsapp
 
 PLATFORMS := linux/arm64 linux/amd64 darwin/arm64 darwin/amd64
 

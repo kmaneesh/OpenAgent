@@ -22,8 +22,12 @@ test = [
     "pytest-asyncio>=0.23.0",
 ]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+markers = [
+    "integration: real network call to Edge/MiniMax TTS — requires internet",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["tts", "tts.providers"]
+package-dir = {"tts" = "src", "tts.providers" = "src/providers"}
