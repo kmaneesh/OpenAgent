@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from app.routes import dashboard, chat, logs, extensions, services, config, llm, provider, settings, browser
+from app.routes import dashboard, chat, extensions, services, config, llm, provider, settings, browser
 from openagent.agent.platform_tools import make_platform_tools
 from openagent.agent.skill_tools import make_skill_tools
 from openagent.agent.loop import AgentLoop
@@ -31,7 +29,7 @@ from openagent.heartbeat import (
 )
 from openagent.cron import CronService, CronJob
 from openagent.bus.events import InboundMessage, SenderInfo
-from openagent.observability import configure_logging
+from openagent.observability import configure_logging, setup_otel, shutdown_otel
 from openagent.observability.metrics import render_metrics
 from openagent.providers import get_provider
 from openagent.services.manager import ServiceManager
@@ -47,32 +45,6 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 # ---------------------------------------------------------------------------
-# Global log capture — rolling buffer + per-client SSE queues
-# ---------------------------------------------------------------------------
-
-LOG_BUFFER: deque[str] = deque(maxlen=500)
-LOG_CLIENTS: set[asyncio.Queue[str]] = set()
-LOG_CLIENTS_MAX = 50
-
-
-class _SSELogHandler(logging.Handler):
-    """Feeds Python log records into the SSE broadcast system."""
-
-    def emit(self, record: logging.LogRecord) -> None:
-        msg = self.format(record)
-        LOG_BUFFER.append(msg)
-        for q in LOG_CLIENTS:
-            try:
-                q.put_nowait(msg)
-            except asyncio.QueueFull:
-                pass
-
-
-from openagent.observability.logging import PlainFormatter as _PlainFormatter
-_handler = _SSELogHandler()
-_handler.setFormatter(_PlainFormatter(datefmt="%H:%M:%S"))
-
-# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
@@ -80,14 +52,9 @@ _handler.setFormatter(_PlainFormatter(datefmt="%H:%M:%S"))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(force=True)
-    logging.getLogger().addHandler(_handler)
-    for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(_uvi).addHandler(_handler)
+    setup_otel(service_name="openagent", logs_dir=ROOT / "logs")
     logging.getLogger("openagent").info("Web UI started")
 
-    app.state.log_buffer = LOG_BUFFER
-    app.state.log_clients = LOG_CLIENTS
-    app.state.log_clients_max = LOG_CLIENTS_MAX
     app.state.root = ROOT
 
     # Load extensions (discord, tts, stt, etc.)
@@ -270,9 +237,7 @@ async def lifespan(app: FastAPI):
     await service_manager.stop()
     await cron.stop()
     await heartbeat.stop()
-    logging.getLogger().removeHandler(_handler)
-    for _uvi in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(_uvi).removeHandler(_handler)
+    shutdown_otel()
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +253,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Share templates with routes
 dashboard.templates = templates
 chat.templates = templates
-logs.templates = templates
 extensions.templates = templates
 services.templates = templates
 config.templates = templates
@@ -297,7 +261,6 @@ browser.templates = templates
 
 app.include_router(dashboard.router)
 app.include_router(chat.router)
-app.include_router(logs.router)
 app.include_router(extensions.router)
 app.include_router(services.router)
 app.include_router(config.router)

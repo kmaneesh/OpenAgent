@@ -23,10 +23,12 @@ from typing import Any
 
 from openagent.services.manager import ServiceManager
 from openagent.services import protocol as proto
+from openagent.observability.otel import get_tracer, current_trace_id, current_span_id
 
 NativeHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
+_tracer = get_tracer("openagent.tools", "0.1.0")
 
 _TOOL_CALL_TIMEOUT = 30.0  # seconds
 
@@ -216,19 +218,36 @@ class ToolRegistry:
             logger.warning(msg)
             return msg
 
-        try:
-            frame = await client.request(
-                {"type": "tool.call", "tool": name, "params": arguments},
-                timeout_s=_TOOL_CALL_TIMEOUT,
-            )
-        except TimeoutError:
-            msg = f"[tool error] {name!r} timed out after {_TOOL_CALL_TIMEOUT}s"
-            logger.error(msg)
-            return msg
-        except Exception as exc:
-            msg = f"[tool error] {name!r}: {exc}"
-            logger.error(msg)
-            return msg
+        # Build the MCP-lite frame — include OTEL trace/span IDs for Go/Rust
+        # services to create child spans without a full OTEL propagator.
+        frame_payload: dict[str, Any] = {
+            "type": "tool.call",
+            "tool": name,
+            "params": arguments,
+        }
+        tid = current_trace_id()
+        sid = current_span_id()
+        if tid:
+            frame_payload["trace_id"] = tid
+        if sid:
+            frame_payload["span_id"] = sid
+
+        with _tracer.start_as_current_span(
+            f"tool.call/{name}",
+            attributes={"tool": name, "service": service_name},
+        ) as span:
+            try:
+                frame = await client.request(frame_payload, timeout_s=_TOOL_CALL_TIMEOUT)
+            except TimeoutError:
+                msg = f"[tool error] {name!r} timed out after {_TOOL_CALL_TIMEOUT}s"
+                logger.error(msg)
+                span.record_exception(TimeoutError(msg))
+                return msg
+            except Exception as exc:
+                msg = f"[tool error] {name!r}: {exc}"
+                logger.error(msg)
+                span.record_exception(exc)
+                return msg
 
         if isinstance(frame, proto.ToolResultResponse):
             if frame.error:

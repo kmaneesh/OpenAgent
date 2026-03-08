@@ -57,8 +57,10 @@ from openagent.providers.base import LLMResponse, Message, Provider, StreamEvent
 from openagent.session.manager import SessionManager
 from openagent.agent.tools import ToolRegistry
 from openagent.agent.middlewares import AgentMiddleware
+from openagent.observability.otel import get_tracer, baggage_set
 
 logger = logging.getLogger(__name__)
+_tracer = get_tracer("openagent.loop", "0.1.0")
 
 MAX_ITERATIONS = 10        # default dropped from 40 — tunable per instance
 MAX_TOOL_OUTPUT = 500      # chars; truncate beyond this
@@ -319,6 +321,20 @@ class AgentLoop:
         Returns ``None`` because the final ``OutboundMessage`` is dispatched
         directly here; the session worker's dispatch call is a no-op.
         """
+        with _tracer.start_as_current_span(
+            "agent.process",
+            attributes={
+                "session.key": msg.session_key,
+                "platform": msg.platform,
+                "channel_id": msg.channel_id,
+            },
+        ):
+            # Propagate session context as Baggage so downstream spans inherit it
+            baggage_set("session.key", msg.session_key)
+            baggage_set("platform", msg.platform)
+            return await self._process_inner(msg)
+
+    async def _process_inner(self, msg: InboundMessage) -> OutboundMessage | None:
         # ── Inbound chain ──────────────────────────────────────────────
         for mw in self._inbound_mw:
             try:
@@ -415,35 +431,40 @@ class AgentLoop:
                 accumulated = ""
                 response_tool_calls: list[ToolCall] = []
 
-                try:
-                    # Single code path — stream_with_tools always (Rec 5)
-                    async for event in self._provider.stream_with_tools(
-                        messages, tools=active_schemas
-                    ):
-                        if not isinstance(event, StreamEvent):
-                            continue
-                        if event.content:
-                            accumulated += event.content
-                            # Dispatch every chunk unconditionally (Rec 2)
-                            await self._bus.dispatch(OutboundMessage(
-                                platform=msg.platform,
-                                channel_id=msg.channel_id,
-                                content=accumulated,
-                                session_key=session_key,
-                                metadata={
-                                    **dict(msg.metadata),
-                                    "stream_chunk": True,
-                                    "stream_end": False,
-                                },
-                            ))
-                        if event.tool_calls:
-                            response_tool_calls = event.tool_calls
-                except Exception as exc:
-                    logger.error(
-                        "LLM stream failed on iteration %d: %s", iteration, exc
-                    )
-                    final_content = f"[error] LLM call failed: {exc}"
-                    break
+                with _tracer.start_as_current_span(
+                    "agent.llm_call",
+                    attributes={"iteration": iteration, "session.key": session_key},
+                ) as llm_span:
+                    try:
+                        # Single code path — stream_with_tools always (Rec 5)
+                        async for event in self._provider.stream_with_tools(
+                            messages, tools=active_schemas
+                        ):
+                            if not isinstance(event, StreamEvent):
+                                continue
+                            if event.content:
+                                accumulated += event.content
+                                # Dispatch every chunk unconditionally (Rec 2)
+                                await self._bus.dispatch(OutboundMessage(
+                                    platform=msg.platform,
+                                    channel_id=msg.channel_id,
+                                    content=accumulated,
+                                    session_key=session_key,
+                                    metadata={
+                                        **dict(msg.metadata),
+                                        "stream_chunk": True,
+                                        "stream_end": False,
+                                    },
+                                ))
+                            if event.tool_calls:
+                                response_tool_calls = event.tool_calls
+                    except Exception as exc:
+                        logger.error(
+                            "LLM stream failed on iteration %d: %s", iteration, exc
+                        )
+                        llm_span.record_exception(exc)
+                        final_content = f"[error] LLM call failed: {exc}"
+                        break
 
                 if response_tool_calls:
                     # Append assistant turn with tool call requests
@@ -453,9 +474,16 @@ class AgentLoop:
                         tool_calls=response_tool_calls,
                     ))
                     # Execute tools — per-tool isolation + Deterministic Middle
-                    results = await self._execute_tool_calls(
-                        response_tool_calls, messages, session_key
-                    )
+                    with _tracer.start_as_current_span(
+                        "agent.tool_calls",
+                        attributes={
+                            "session.key": session_key,
+                            "tools": ",".join(tc.name for tc in response_tool_calls),
+                        },
+                    ):
+                        results = await self._execute_tool_calls(
+                            response_tool_calls, messages, session_key
+                        )
                     # Expand ephemeral set with schemas returned by search_tools
                     if "search_tools" in results and active_schemas is not None:
                         try:

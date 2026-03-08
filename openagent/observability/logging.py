@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .context import get_request_id
+from .otel import current_trace_id
 
 
 class JsonFormatter(logging.Formatter):
@@ -25,6 +26,9 @@ class JsonFormatter(logging.Formatter):
         request_id = get_request_id()
         if request_id:
             payload["request_id"] = request_id
+        trace_id = current_trace_id()
+        if trace_id:
+            payload["trace_id"] = trace_id
 
         extra = getattr(record, "openagent_extra", None)
         if isinstance(extra, dict):
@@ -41,7 +45,8 @@ class PlainFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         request_id = get_request_id() or "-"
-        base = f"{self.formatTime(record)} {record.levelname:<8} {record.name} [{request_id}] {record.getMessage()}"
+        trace_id = (current_trace_id() or "")[:8] or "-"
+        base = f"{self.formatTime(record)} {record.levelname:<8} {record.name} [{request_id}] [tr:{trace_id}] {record.getMessage()}"
         extra = getattr(record, "openagent_extra", None)
         if isinstance(extra, dict):
             pairs = " ".join(f"{k}={v}" for k, v in extra.items() if k not in ("component", "operation"))

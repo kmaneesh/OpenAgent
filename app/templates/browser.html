@@ -23,12 +23,6 @@
         </span>
       </button>
     </template>
-    <template x-if="tabs.length === 0">
-      <span class="text-xs text-mutedCharcoal dark:text-steelMist italic px-3 py-2">
-        No open sessions — ask the agent to open a URL
-      </span>
-    </template>
-
     <!-- Refresh button aligned right -->
     <div class="ml-auto flex items-center gap-2 pb-1">
       <span x-show="activeTab" class="text-xs font-mono text-mutedCharcoal dark:text-steelMist truncate max-w-xs"
