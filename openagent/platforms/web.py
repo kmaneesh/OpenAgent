@@ -68,7 +68,7 @@ class WebPlatformAdapter:
         """Deliver msg.content to the WebSocket identified by msg.channel_id."""
         send_fn = self._connections.get(msg.channel_id)
         if send_fn is None:
-            logger.warning("Webplatform: no connection for channel_id=%r", msg.channel_id)
+            logger.debug("Webplatform: no connection for channel_id=%r (client disconnected)", msg.channel_id)
             return
         try:
             meta = msg.metadata or {}

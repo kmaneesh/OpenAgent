@@ -134,6 +134,7 @@ def _python_packages(root: Path) -> list[dict[str, Any]]:
 
 @router.get("/")
 async def dashboard(request: Request):
+    import asyncio
     root = getattr(request.app.state, "root", Path.cwd())
     mgr = getattr(request.app.state, "service_manager", None)
     if mgr:
@@ -142,11 +143,17 @@ async def dashboard(request: Request):
         services = []
         rust_services = []
 
+    # Run blocking psutil + disk I/O in a thread so the event loop stays free
+    stats, packages = await asyncio.gather(
+        asyncio.to_thread(_system_stats),
+        asyncio.to_thread(_python_packages, root),
+    )
+
     return templates.TemplateResponse("dashboard.html", {
         "request": request,
         "active": "dashboard",
-        "stats": _system_stats(),
-        "python_packages": _python_packages(root),
+        "stats": stats,
+        "python_packages": packages,
         "services": services,
         "rust_services": rust_services,
     })
@@ -155,6 +162,7 @@ async def dashboard(request: Request):
 @router.get("/api/stats")
 async def stats_partial(request: Request):
     """Partial for HTMX stat-card polling — returns cards only, no layout."""
+    import asyncio
     root = getattr(request.app.state, "root", Path.cwd())
     mgr = getattr(request.app.state, "service_manager", None)
     if mgr:
@@ -163,10 +171,16 @@ async def stats_partial(request: Request):
         services = []
         rust_services = []
 
+    # Run blocking psutil + disk I/O in a thread so the event loop stays free
+    stats, packages = await asyncio.gather(
+        asyncio.to_thread(_system_stats),
+        asyncio.to_thread(_python_packages, root),
+    )
+
     return templates.TemplateResponse("_stats_cards.html", {
         "request": request,
-        "stats": _system_stats(),
-        "python_packages": _python_packages(root),
+        "stats": stats,
+        "python_packages": packages,
         "services": services,
         "rust_services": rust_services,
     })

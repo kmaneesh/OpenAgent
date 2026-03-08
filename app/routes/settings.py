@@ -156,7 +156,10 @@ async def whatsapp_qr(request: Request):
         elif connected:
             msg = "WhatsApp is already connected — no QR needed."
         else:
-            msg = "Waiting for QR code… WhatsApp is starting up. Refresh in a few seconds."
+            msg = (
+                "Waiting for QR code… This can take 30–60 seconds on first run. "
+                "Ensure WhatsApp service is running (Services page). Click 'Refresh' to retry."
+            )
         return {"qr": None, "connected": connected, "status": status, "message": msg}
 
     # Generate QR image as base64 data URL

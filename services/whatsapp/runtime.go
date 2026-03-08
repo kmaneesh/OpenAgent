@@ -36,6 +36,10 @@ type waRuntime struct {
 	// Buffered channel for outbound event frames to connected clients.
 	// Capacity of 256 absorbs short bursts; overflow is logged and dropped.
 	events chan mcplite.EventFrame
+
+	// disconnected is pulsed (non-blocking send) whenever WhatsApp fires a
+	// Disconnected or LoggedOut event so connectLoop can reconnect promptly.
+	disconnected chan struct{}
 }
 
 func newWaRuntime(dataDir, artifactsDir string) *waRuntime {
@@ -49,6 +53,15 @@ func newWaRuntime(dataDir, artifactsDir string) *waRuntime {
 		dataDir:      dataDir,
 		artifactsDir: artifactsDir,
 		events:       make(chan mcplite.EventFrame, 256),
+		disconnected: make(chan struct{}, 1),
+	}
+}
+
+// signalDisconnected notifies connectLoop that WhatsApp dropped the connection.
+func (r *waRuntime) signalDisconnected() {
+	select {
+	case r.disconnected <- struct{}{}:
+	default: // already pending, no need to queue another
 	}
 }
 
@@ -157,6 +170,7 @@ func (r *waRuntime) registerHandlers(client *whatsmeow.Client) {
 		case *events.Disconnected:
 			r.connected.Store(false)
 			r.emitConnectionStatus()
+			r.signalDisconnected()
 
 		case *events.LoggedOut:
 			r.connected.Store(false)
@@ -164,6 +178,7 @@ func (r *waRuntime) registerHandlers(client *whatsmeow.Client) {
 			r.lastQR = ""
 			r.lastQRMu.Unlock()
 			r.emitConnectionStatus()
+			r.signalDisconnected()
 
 		case *events.CallOffer:
 			// 1:1 incoming call — media type not signalled in this event
@@ -344,11 +359,25 @@ func (r *waRuntime) connectLoop(ctx context.Context, client *whatsmeow.Client) {
 				}
 				continue
 			}
-		}
 
-		<-ctx.Done()
-		client.Disconnect()
-		return
+			// Wait for either a clean shutdown or a server-side disconnect.
+			select {
+			case <-ctx.Done():
+				client.Disconnect()
+				return
+			case <-r.disconnected:
+				// WhatsApp dropped the connection — reconnect after backoff.
+				mcplite.LogEvent("INFO", "whatsapp disconnected — reconnecting in 5s", map[string]any{
+					"service": "whatsapp",
+				})
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				continue
+			}
+		}
 	}
 }
 
