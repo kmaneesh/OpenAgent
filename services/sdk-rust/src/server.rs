@@ -5,9 +5,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 type ToolHandler = Box<dyn Fn(serde_json::Value) -> Result<String> + Send + Sync>;
 
@@ -43,27 +45,49 @@ impl McpLiteServer {
                 id,
                 tools: self.tools.clone(),
             }),
-            Frame::ToolCallRequest { id, tool, params } => {
-                if let Some(handler) = self.handlers.get(&tool) {
+            Frame::ToolCallRequest { id, tool, params, trace_id, span_id } => {
+                // Build a tracing span parented under the Python AgentLoop trace context
+                // propagated via trace_id/span_id MCP-lite fields.
+                let span = tracing::info_span!(
+                    "tool.call",
+                    otel.kind = "SERVER",
+                    tool = %tool,
+                    request_id = %id,
+                    status = tracing::field::Empty,
+                    duration_ms = tracing::field::Empty,
+                );
+                if let (Some(tid), Some(sid)) = (trace_id.as_deref(), span_id.as_deref()) {
+                    if let Some(parent_cx) = crate::otel::context_from_ids(tid, sid) {
+                        span.set_parent(parent_cx);
+                    }
+                }
+                let _enter = span.enter();
+                let start = Instant::now();
+
+                let response = if let Some(handler) = self.handlers.get(&tool) {
                     match handler(params) {
-                        Ok(res) => Ok(Frame::ToolCallResponse {
-                            id,
-                            result: Some(res),
-                            error: None,
-                        }),
-                        Err(err) => Ok(Frame::ToolCallResponse {
-                            id,
-                            result: None,
-                            error: Some(err.to_string()),
-                        }),
+                        Ok(res) => {
+                            span.record("status", "ok");
+                            Frame::ToolCallResponse { id, result: Some(res), error: None }
+                        }
+                        Err(err) => {
+                            span.record("status", "error");
+                            error!(tool = %tool, error = %err, "tool handler error");
+                            Frame::ToolCallResponse { id, result: None, error: Some(err.to_string()) }
+                        }
                     }
                 } else {
-                    Ok(Frame::ErrorResponse {
+                    span.record("status", "not_found");
+                    warn!(tool = %tool, "tool not found");
+                    Frame::ErrorResponse {
                         id,
                         code: "TOOL_NOT_FOUND".to_string(),
                         message: format!("Tool {} not found", tool),
-                    })
-                }
+                    }
+                };
+
+                span.record("duration_ms", start.elapsed().as_millis() as i64);
+                Ok(response)
             }
             _ => anyhow::bail!("Unsupported frame type"),
         }
@@ -74,7 +98,6 @@ impl McpLiteServer {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).context("Failed to create socket directory")?;
         }
-        
         if path.exists() {
             fs::remove_file(path).context("Failed to remove stale socket")?;
         }
@@ -83,7 +106,6 @@ impl McpLiteServer {
         info!("Service listening on {}", socket_path);
 
         let server = Arc::new(self);
-
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
@@ -110,7 +132,6 @@ async fn handle_connection(stream: tokio::net::UnixStream, server: Arc<McpLiteSe
     while let Ok(Some(frame)) = decoder.next_frame().await {
         let server = server.clone();
         let encoder = encoder.clone();
-
         tokio::spawn(async move {
             let id = frame.id().to_string();
             match server.handle_request(frame).await {
@@ -133,6 +154,5 @@ async fn handle_connection(stream: tokio::net::UnixStream, server: Arc<McpLiteSe
             }
         });
     }
-
     Ok(())
 }

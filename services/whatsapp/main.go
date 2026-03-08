@@ -42,6 +42,14 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// OTEL tracing — writes to logs/whatsapp-traces-YYYY-MM-DD.jsonl
+	logsDir := firstNonEmpty(os.Getenv("OPENAGENT_LOGS_DIR"), "logs")
+	if otelShutdown, err := mcplite.SetupOTEL("whatsapp", logsDir); err != nil {
+		log.Printf(`{"level":"WARN","message":"otel init failed","error":%q}`, err.Error())
+	} else {
+		defer func() { _ = otelShutdown(context.Background()) }()
+	}
+
 	socketPath := firstNonEmpty(os.Getenv("OPENAGENT_SOCKET_PATH"), defaultSocketPath)
 	dataDir := firstNonEmpty(
 		os.Getenv("WHATSAPP_DATA_DIR"),

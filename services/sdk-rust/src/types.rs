@@ -12,7 +12,17 @@ pub enum Frame {
     ToolListResponse { id: String, tools: Vec<ToolDefinition> },
 
     #[serde(rename = "tool.call")]
-    ToolCallRequest { id: String, tool: String, params: Value },
+    ToolCallRequest {
+        id: String,
+        tool: String,
+        params: Value,
+        /// Trace ID hex (32 chars) propagated from Python AgentLoop — enables distributed tracing.
+        #[serde(default)]
+        trace_id: Option<String>,
+        /// Parent span ID hex (16 chars) propagated from Python AgentLoop.
+        #[serde(default)]
+        span_id: Option<String>,
+    },
 
     #[serde(rename = "tool.result")]
     ToolCallResponse { id: String, result: Option<String>, error: Option<String> },

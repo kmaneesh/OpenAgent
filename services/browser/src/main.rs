@@ -14,7 +14,7 @@
 //!   BROWSER_ARTIFACTS_DIR   — screenshot root (default: data/artifacts/browser)
 
 use anyhow::{Context, Result};
-use sdk_rust::{McpLiteServer, ToolDefinition};
+use sdk_rust::{setup_otel, McpLiteServer, ToolDefinition};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -983,12 +983,22 @@ fn handle_highlight(params: Value, sessions: SessionMap) -> Result<String> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("browser=info".parse().unwrap()),
-        )
-        .init();
+    let logs_dir = env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
+    // _otel_guard must be kept alive until end of main — drop flushes spans.
+    let _otel_guard = match setup_otel("browser", &logs_dir) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("otel init failed (continuing without file traces): {e}");
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("browser=info".parse().unwrap()),
+                )
+                .try_init()
+                .ok();
+            None
+        }
+    };
 
     let socket_path = env::var("OPENAGENT_SOCKET_PATH")
         .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());

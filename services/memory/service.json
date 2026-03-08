@@ -1,0 +1,63 @@
+{
+    "name": "memory",
+    "description": "Agentic Memory — LanceDB + FastEmbed. LTS stores summaries, STS stores full conversation chains. Local embeddings (BAAI/bge-small-en-v1.5), no external API calls.",
+    "version": "0.1.0",
+    "binary": {
+        "linux/arm64": "bin/memory-linux-arm64",
+        "linux/amd64": "bin/memory-linux-amd64",
+        "darwin/arm64": "bin/memory-darwin-arm64",
+        "darwin/amd64": "bin/memory-darwin-amd64"
+    },
+    "socket": "data/sockets/memory.sock",
+    "health": {
+        "interval_ms": 5000,
+        "timeout_ms": 2000,
+        "restart_backoff_ms": [1000, 2000, 5000, 10000, 30000]
+    },
+    "tools": [
+        {
+            "name": "memory.index_trace",
+            "description": "Index a trace (content + metadata) into LTS (summaries) or STS (full conversation chain). Generates local embedding and inserts into LanceDB.",
+            "params": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "string",
+                        "description": "Content to embed and store"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Optional metadata (e.g. session_id, source)"
+                    },
+                    "store": {
+                        "type": "string",
+                        "enum": ["lts", "sts"],
+                        "description": "Store: lts (summaries) or sts (full chain)"
+                    }
+                },
+                "required": ["content", "store"]
+            }
+        },
+        {
+            "name": "memory.search_memory",
+            "description": "Semantic search over LTS and/or STS. Returns top 5 results as JSON. Uses local embedding.",
+            "params": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Query string for semantic search"
+                    },
+                    "store": {
+                        "type": "string",
+                        "enum": ["lts", "sts", "all"],
+                        "description": "Store to search (default: all)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    ],
+    "events": [],
+    "runtime": "rust"
+}

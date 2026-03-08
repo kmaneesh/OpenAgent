@@ -252,6 +252,13 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	logsDir := firstNonEmpty(os.Getenv("OPENAGENT_LOGS_DIR"), "logs")
+	if otelShutdown, err := mcplite.SetupOTEL("slack", logsDir); err != nil {
+		log.Printf(`{"level":"WARN","message":"otel init failed","error":%q}`, err.Error())
+	} else {
+		defer func() { _ = otelShutdown(context.Background()) }()
+	}
+
 	socketPath := os.Getenv("OPENAGENT_SOCKET_PATH")
 	if socketPath == "" {
 		socketPath = defaultSocketPath

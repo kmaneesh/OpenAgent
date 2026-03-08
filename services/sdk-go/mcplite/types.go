@@ -34,10 +34,12 @@ func (f ToolListRequest) FrameType() string { return f.Type }
 
 // ToolCallRequest is sent by the agent.
 type ToolCallRequest struct {
-	ID     string         `json:"id"`
-	Type   string         `json:"type"`
-	Tool   string         `json:"tool"`
-	Params map[string]any `json:"params"`
+	ID      string         `json:"id"`
+	Type    string         `json:"type"`
+	Tool    string         `json:"tool"`
+	Params  map[string]any `json:"params"`
+	TraceID string         `json:"trace_id,omitempty"`
+	SpanID  string         `json:"span_id,omitempty"`
 }
 
 func (f ToolCallRequest) FrameType() string { return f.Type }
