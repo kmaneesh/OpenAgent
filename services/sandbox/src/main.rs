@@ -14,7 +14,7 @@
 //!   MSB_MEMORY_MB         — VM memory in MB (default 512)
 
 use anyhow::{Context, Result};
-use sdk_rust::{McpLiteServer, ToolDefinition};
+use sdk_rust::{setup_otel, McpLiteServer, ToolDefinition};
 use serde_json::{json, Value};
 use std::env;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -238,12 +238,21 @@ fn handle_shell(params: Value) -> Result<String> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("sandbox=info".parse().unwrap()),
-        )
-        .init();
+    let logs_dir = env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
+    let _otel_guard = match setup_otel("sandbox", &logs_dir) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("otel init failed (continuing without file traces): {e}");
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("sandbox=info".parse().unwrap()),
+                )
+                .try_init()
+                .ok();
+            None
+        }
+    };
 
     let socket_path = env::var("OPENAGENT_SOCKET_PATH")
         .unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());
