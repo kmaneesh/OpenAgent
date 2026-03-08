@@ -6,3 +6,6 @@ pydantic>=2.8.0
 qrcode[pil]>=7.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+# OpenTelemetry — OTLP/JSON file-only tracing, logs, and metrics
+opentelemetry-api>=1.26.0
+opentelemetry-sdk>=1.26.0

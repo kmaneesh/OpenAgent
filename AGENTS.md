@@ -26,8 +26,8 @@ OpenAgent has two distinct planes. Do not mix their responsibilities.
 
 | Plane | Language | Location | Responsibility |
 |---|---|---|---|
-| Control Plane (Brain) | Python | `openagent/`, `extensions/` | LLM interfacing, orchestration, platform integrations |
-| Data Plane (Hands) | Go (or compiled) | `services/` | Long-lived service daemons for compute/data-intensive work |
+| Control Plane (Brain) | Python | `openagent/`, `extensions/` | LLM interfacing, orchestration, platform adapters |
+| Data Plane (Hands) | Go + Rust | `services/` | Platform connectors (Go), sandbox/browser (Rust) |
 
 The two planes communicate via **MCP-lite**: tagged JSON frames over Unix Domain Sockets (`data/sockets/<name>.sock`).
 
@@ -44,16 +44,16 @@ The two planes communicate via **MCP-lite**: tagged JSON frames over Unix Domain
 - Core is responsible for: extension discovery, service discovery, lifecycle management, shared interfaces, message bus, and agent loop orchestration.
 - Do not add domain-specific logic or heavy third-party dependencies to core.
 
-### 2. Python extensions = platform integrations only
-- Extensions under `extensions/<name>/` are for **platforms and media** (WhatsApp, Discord, TTS, STT).
+### 2. Python extensions = media only
+- Extensions under `extensions/<name>/` are for **media** (TTS, STT). Platform connectors (WhatsApp, Discord, etc.) live in `services/` as Go daemons with Python adapters in `openagent/platforms/`.
 - Extensions must be independently installable and register via entry points in `openagent.extensions`.
 - Extensions must be first-class async and event-driven.
 - Do not put CPU/IO-heavy compute in Python extensions — that goes in Go services.
 - **Workflow Orchestrator:** Python acts as a workflow orchestrator. A deterministic chain (e.g. WhatsApp -> STT -> LLM) saves tokens, memory, and latency. The LLM is just one node in Python's workflow graph.
 
-### 3. Go services = compute and data
-- New compute-heavy or data-intensive capabilities go in `services/<name>/`.
-- Each service is a self-contained Go module with a `service.json` manifest.
+### 3. Go/Rust services = compute, data, platforms
+- Platform connectors (discord, telegram, slack, whatsapp) and compute tools go in `services/<name>/`.
+- Go services: self-contained module with `service.json`. Rust services: sandbox, browser.
 - Services communicate with the Python core via MCP-lite (not REST, not gRPC).
 - The Python `ServiceManager` owns the lifecycle: spawn, health-check, restart, shutdown.
 - Services never call back into Python — they only respond to requests and push events.
@@ -87,7 +87,7 @@ The two planes communicate via **MCP-lite**: tagged JSON frames over Unix Domain
 - Editable installs for local development:
   - `pip install -e .`
   - `pip install -e extensions/<name>`
-- `aiohttp` for all external HTTP/API calls — no `requests`, no OpenAI SDK
+- `httpx` for all external HTTP/API calls — no `requests`, no OpenAI SDK
 - `asyncio.to_thread()` when integrating sync libraries inside async flows
 - Pydantic for config and data models
 
@@ -127,7 +127,7 @@ openagent/      # Core Python (minimal)
   tests/             # Core Python tests (including platforms/)
 extensions/         # Python platform integrations (independently installable)
   <name>/tests/      # Extension-local tests (self-contained verticals)
-services/           # Go service daemons (each with go.mod + service.json)
+services/           # Go (discord, telegram, slack, whatsapp) + Rust (sandbox, browser)
 app/                # Minimalist web UI (FastAPI + HTMX, no auth — POC only)
   tests/             # Web UI tests (route-level and app-level)
 data/               # Runtime storage: sessions.db, memory/, sockets/, artifacts/

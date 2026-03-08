@@ -93,3 +93,10 @@ services/sandbox/target
 services/sdk-rust/target
 bin/
 services/browser/target
+
+# ---
+# OpenTelemetry file output
+# ---
+logs/
+services/memory/target
+services/memory/.cargo

@@ -93,14 +93,12 @@ openagent/              # Core Python — orchestration, discovery, interfaces
   tests/                    # Core tests (including platforms/)
 
 extensions/                 # Python platform integrations (independently installable)
-  discord/                  # Discord bot (discord.py + aiohttp)
-  # whatsapp removed — now services/whatsapp (Go/whatsmeow)
   tts/                      # Text-to-speech (EdgeTTS, MiniMax)
   stt/                      # Speech-to-text (faster-whisper, Deepgram)
   <name>/tests/             # Extension-local tests
 
 services/                   # Go or Rust service daemons
-  <name>/                   # Self-contained Go module
+  <name>/                   # Self-contained Go module (discord, telegram, slack, whatsapp)
     main.go                 # UDS server + MCP-lite protocol handler
     service.json            # Service manifest — schema-first declaration
     go.mod
@@ -108,7 +106,8 @@ services/                   # Go or Rust service daemons
       <name>-linux-arm64
       <name>-linux-amd64
       <name>-darwin-arm64
-  sandbox/                  # Rust service — VM-isolated code/shell execution
+  sandbox/                  # Rust — VM-isolated code/shell execution
+  browser/                  # Rust — headless browser automation (Playwright)
     Cargo.toml              # Rust package (uses sdk-rust crate)
     src/main.rs             # MCP-lite server + microsandbox HTTP client
     service.json            # Manifest: sandbox.execute, sandbox.shell tools
@@ -123,7 +122,7 @@ app/                        # Minimalist web UI (FastAPI + HTMX, no auth — POC
   tests/                    # Web UI tests
 
 data/                       # Runtime storage (gitignored)
-  sessions.db               # SQLite session history
+  openagent.db              # SQLite session history, settings, whitelist
   memory/                   # LanceDB vector store
   sockets/                  # Unix domain socket files — <name>.sock
   artifacts/                # Media, downloads, outputs
@@ -357,7 +356,7 @@ Multiple configurable providers per agent. Follow Nanobot's `ProviderSpec` regis
 - Fast/cheap model (e.g. Qwen2.5:7B) → routing and simple tasks
 - Capable model (e.g. Qwen2.5:14B) → complex reasoning
 - All providers: OpenAI-compatible `/v1/chat/completions`
-- All HTTP via `aiohttp` — no sync HTTP, no OpenAI SDK
+- All HTTP via `httpx` — no sync HTTP, no OpenAI SDK
 
 ### Configuration
 
@@ -397,7 +396,7 @@ services:
 
 | Store | Purpose | Path |
 |---|---|---|
-| SQLite | Session history, agent state | `data/sessions.db` |
+| SQLite | Session history, settings, whitelist | `data/openagent.db` |
 | LanceDB | Semantic memory (vector search) | `data/memory/` |
 
 **LanceDB Note:** Vector search uses a direct Python client wrapper to access LanceDB's fast native Rust core. This avoids JSON IPC serialization overhead on massive vector arrays and keeps the single-node setup lean. We only consider decoupling LanceDB into a Go service if rigorous profiling shows it aggressively blocking the `asyncio` event loop.
@@ -418,12 +417,14 @@ A minimalist admin/debug UI for the agent. POC only — **no authentication**, i
 - Server-Sent Events (SSE) for live log streaming
 
 **Pages:**
-- `/` Dashboard — agent status, extension health, service health, system stats
-- `/chat` — Send messages to the agent, stream responses via WebSocket
-- `/logs` — Live log stream via SSE
-- `/extensions` — Loaded Python extensions with status
-- `/services` — Go services with status, restart button
+- `/` Dashboard — agent status, Python packages, Go/Rust services, system stats
+- `/chat` — Send messages to the agent, stream responses via WebSocket; sessions sidebar
+- `/logs` — Live log stream via SSE (capped clients)
+- `/extensions` — Python packages (OpenAgent + extensions) with status
+- `/services` — Go and Rust services with status, restart button
 - `/config` — Read-only view of `config/openagent.yaml`
+- `/settings` — Connectors (enable/disable), provider, whitelist, WhatsApp QR
+- `/browser` — Headless browser sessions (screenshots, agent-driven automation)
 
 **Layout:**
 ```
@@ -431,11 +432,15 @@ app/
   main.py           # FastAPI app instance, mounts all routes
   routes/
     dashboard.py    # GET /
-    chat.py         # GET /chat, WS /ws/chat
+    chat.py         # GET /chat, WS /ws/chat, /api/chat/sessions
     logs.py         # GET /logs, GET /stream/logs (SSE)
-    extensions.py   # GET /extensions
+    extensions.py   # GET /extensions (renamed to Python)
     services.py     # GET /services, POST /services/{name}/restart
     config.py       # GET /config
+    settings.py     # GET /settings, connectors, whitelist, WhatsApp QR
+    llm.py          # Provider/LLM config
+    provider.py     # Provider API
+    browser.py      # GET /browser, browser session API
   templates/
     base.html       # Layout shell (nav sidebar, content area)
     dashboard.html
@@ -444,6 +449,8 @@ app/
     extensions.html
     services.html
     config.html
+  settings.html
+  browser.html
   static/
     app.css         # Minimal overrides on Tailwind
     htmx.min.js     # Vendored HTMX (no CDN dependency on Pi)
@@ -507,11 +514,12 @@ app/
 - **Session manager** — `SessionBackend` protocol, SQLite impl, optional summarisation
 - **Tool registry** — dispatches to Go services via MCP-lite
 - **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx)
-- Extensions: discord, whatsapp, tts (edge + minimax), stt (faster-whisper + deepgram)
-- Go services: discord, telegram, slack, whatsapp
+- Extensions: tts (edge + minimax), stt (faster-whisper + deepgram)
+- Go services: discord, telegram, slack, whatsapp (platform connectors)
+- Rust services: sandbox (VM execution), browser (headless automation)
 - **Rust services: sandbox** — VM-isolated Python/Node/shell execution via microsandbox (v0.2.0; tools: `sandbox.execute`, `sandbox.shell`)
 - Config schema extended: `agents`, `session`, `platforms`, `tools.sandbox` + env overrides
-- Cross-platform build: `make all` / `make local` / `make sandbox`
+- Cross-platform build: `make all` / `make local` / `make sandbox` / `make browser`
 
 ### Next (in order)
 1. **Agent registry** — optional multi-agent (follow `inspire/picoclaw/pkg/agent/registry.go`)

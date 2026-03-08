@@ -6,7 +6,8 @@
 
 The architecture has two planes:
 - **Python Control Plane (Brain)** — LLM interfacing, multi-agent orchestration, platform integrations, stateless async core loop.
-- **Go Services (Hands)** — Long-lived daemon processes for CPU/IO-intensive work. Python spawns, monitors, and manages them. They communicate via MCP-lite (tagged JSON over Unix sockets).
+- **Go Services (Hands)** — Long-lived daemon processes for platform connectors (discord, telegram, slack, whatsapp) and compute. Python spawns, monitors, and manages them. They communicate via MCP-lite (tagged JSON over Unix sockets).
+- **Rust Services (Muscles)** — Performance-critical services: sandbox (VM execution), browser (headless automation).
 
 OpenAgent uses a **custom ReAct loop** and thin provider layer (no framework dependency). Session/memory uses a `SessionBackend` protocol. OpenAgent remains responsible for extension/service orchestration, MCP-lite lifecycle, and deployment constraints for low-power hardware. See `roadmap.md` for rationale.
 
@@ -41,14 +42,15 @@ Key files:
 ```
 openagent/      # Core Python — orchestration, discovery, interfaces ONLY
   tests/         # Core tests (including platform adapters)
-extensions/         # Python platform/media integrations (independently installable)
-  <name>/tests/  # Extension-local tests
-services/           # Go service daemons (compute/data tools)
-app/                # Minimalist web UI — FastAPI 3.x + HTMX, no auth (POC/Pi only)
-  tests/            # Web UI tests
-data/               # Runtime: sessions.db, memory/, sockets/, artifacts/
-config/             # openagent.yaml
-inspire/            # Reference implementations (gitignored)
+extensions/     # Python platform/media integrations (tts, stt)
+  <name>/tests/ # Extension-local tests
+services/       # Go (discord, telegram, slack, whatsapp) + Rust (sandbox, browser)
+app/            # Minimalist web UI — FastAPI 3.x + HTMX, no auth (POC/Pi only)
+  routes/       # dashboard, chat, logs, extensions, services, config, settings, llm, provider, browser
+  tests/        # Web UI tests
+data/           # Runtime: openagent.db, memory/, sockets/, artifacts/
+config/         # openagent.yaml
+inspire/        # Reference implementations (gitignored)
 ```
 
 ## What Lives Where
@@ -61,9 +63,9 @@ inspire/            # Reference implementations (gitignored)
 | Session manager | `openagent/session/` | Python | SessionBackend protocol, SQLite impl |
 | Message bus | `openagent/bus/` | Python | InboundMessage, OutboundMessage, SenderInfo |
 | Service platform adapters (MCP-lite clients) | `openagent/platforms/` | Python | Shared `mcplite.py` + per-service adapter |
-| platform integrations | `extensions/` | Python | AsyncExtension + entry points |
-| Media (TTS, STT) | `extensions/` | Python | Provider pattern |
-| Compute/data tools | `services/` | Go | MCP-lite daemon + service.json |
+| Platform connectors | `services/` (Go) | Go | discord, telegram, slack, whatsapp — MCP-lite |
+| Media (TTS, STT) | `extensions/` | Python | tts, stt — AsyncExtension + entry points |
+| Compute/automation | `services/` | Go + Rust | sandbox (Rust), browser (Rust), filesystem (Go) |
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and build order.
 
@@ -152,7 +154,7 @@ Do not change `openagent/` or any extension when working on a service.
 - `pip install -r requirements.txt` for all extensions
 - Run: `python -m openagent.main` or `openagent`
 - Verify extensions: `python -c "import importlib.metadata as m; print(m.entry_points(group='openagent.extensions'))"`
-- `aiohttp` for HTTP — never `requests` or OpenAI SDK
+- `httpx` for HTTP — never `requests` or OpenAI SDK
 - `asyncio.to_thread()` for sync libs in async context
 
 **Go:**
