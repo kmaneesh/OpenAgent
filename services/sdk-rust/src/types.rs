@@ -1,6 +1,24 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// An unprompted event frame pushed from a service to the Python control plane.
+///
+/// Serialised as `{"type":"event","event":"<name>","data":{...}}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutboundEvent {
+    #[serde(rename = "type")]
+    frame_type: &'static str,
+    pub event: String,
+    pub data: Value,
+}
+
+impl OutboundEvent {
+    /// Create a new event frame with the given event name and JSON data payload.
+    pub fn new(event: impl Into<String>, data: Value) -> Self {
+        Self { frame_type: "event", event: event.into(), data }
+    }
+}
+
 /// MCP-lite protocol frame types (match Go SDK and Python protocol).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]

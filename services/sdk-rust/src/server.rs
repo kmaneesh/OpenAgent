@@ -1,13 +1,13 @@
 use crate::codec::{Decoder, Encoder};
 use crate::error::{Error, Result};
-use crate::types::{Frame, ToolDefinition};
+use crate::types::{Frame, OutboundEvent, ToolDefinition};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::UnixListener;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -16,11 +16,16 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 /// errors never propagate as [`Error`] variants.
 type ToolHandler = Box<dyn Fn(serde_json::Value) -> anyhow::Result<String> + Send + Sync>;
 
-/// MCP-lite server — accepts one Unix socket connection and dispatches tool calls.
+/// MCP-lite server — accepts Unix socket connections and dispatches tool calls.
+///
+/// Also carries a [`broadcast::Sender<OutboundEvent>`] so service code can push
+/// unprompted events to every connected Python client.  Retrieve it with
+/// [`McpLiteServer::event_sender`] before calling [`McpLiteServer::serve`].
 pub struct McpLiteServer {
     tools: Vec<ToolDefinition>,
     handlers: HashMap<String, ToolHandler>,
     status: String,
+    event_tx: broadcast::Sender<OutboundEvent>,
 }
 
 impl std::fmt::Debug for McpLiteServer {
@@ -35,11 +40,23 @@ impl std::fmt::Debug for McpLiteServer {
 
 impl McpLiteServer {
     pub fn new(tools: Vec<ToolDefinition>, status: &str) -> Self {
+        // capacity 256: matches the Go event channel buffer
+        let (event_tx, _) = broadcast::channel(256);
         Self {
             tools,
             handlers: HashMap::new(),
             status: status.to_string(),
+            event_tx,
         }
+    }
+
+    /// Return a sender that broadcasts [`OutboundEvent`] frames to every active connection.
+    ///
+    /// Call this before [`McpLiteServer::serve`] and keep the sender alive for the
+    /// lifetime of the service.  Events sent when no client is connected are
+    /// silently dropped.
+    pub fn event_sender(&self) -> broadcast::Sender<OutboundEvent> {
+        self.event_tx.clone()
     }
 
     /// Register a handler for a named tool.
@@ -163,6 +180,27 @@ async fn handle_connection(stream: tokio::net::UnixStream, server: Arc<McpLiteSe
     let mut decoder = Decoder::new(read_half);
     let encoder = Arc::new(Mutex::new(Encoder::new(write_half)));
 
+    // Subscribe before spawning so no events are missed from this point on.
+    let mut event_rx = server.event_tx.subscribe();
+    let enc_pump = Arc::clone(&encoder);
+    let pump = tokio::spawn(async move {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    let mut enc = enc_pump.lock().await;
+                    if let Err(e) = enc.write_event(&event).await {
+                        warn!(error = %e, "event.write.error");
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(dropped = n, "event.queue.lagged");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     while let Ok(Some(frame)) = decoder.next_frame().await {
         let server = Arc::clone(&server);
         let encoder = Arc::clone(&encoder);
@@ -188,5 +226,7 @@ async fn handle_connection(stream: tokio::net::UnixStream, server: Arc<McpLiteSe
             }
         });
     }
+
+    pump.abort();
     Ok(())
 }

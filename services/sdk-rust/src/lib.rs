@@ -7,4 +7,4 @@ pub mod types;
 pub use error::{Error, Result};
 pub use otel::{setup_otel, OTELGuard};
 pub use server::McpLiteServer;
-pub use types::{Frame, ToolDefinition};
+pub use types::{Frame, OutboundEvent, ToolDefinition};

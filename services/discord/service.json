@@ -5,8 +5,7 @@
     "binary": {
         "linux/arm64": "bin/discord-linux-arm64",
         "linux/amd64": "bin/discord-linux-amd64",
-        "darwin/arm64": "bin/discord-darwin-arm64",
-        "darwin/amd64": "bin/discord-darwin-amd64"
+        "darwin/arm64": "bin/discord-darwin-arm64"
     },
     "socket": "data/sockets/discord.sock",
     "health": {
@@ -89,5 +88,5 @@
         "discord.connection.status",
         "discord.message.received"
     ],
-    "runtime": "go"
+    "runtime": "rust"
 }

@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::types::Frame;
+use crate::types::{Frame, OutboundEvent};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -61,6 +61,20 @@ impl Encoder {
     /// [`crate::Error::Io`] if the write or flush fails.
     pub async fn write_frame(&mut self, frame: &Frame) -> Result<()> {
         let mut data = serde_json::to_vec(frame)?;
+        data.push(b'\n');
+        self.writer.write_all(&data).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+
+    /// Serialize and write an event frame followed by a newline.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Codec`] if serialization fails, or
+    /// [`crate::Error::Io`] if the write or flush fails.
+    pub async fn write_event(&mut self, event: &OutboundEvent) -> Result<()> {
+        let mut data = serde_json::to_vec(event)?;
         data.push(b'\n');
         self.writer.write_all(&data).await?;
         self.writer.flush().await?;

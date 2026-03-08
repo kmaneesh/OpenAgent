@@ -128,10 +128,10 @@ class PlatformAdapter:
 
 
 class DiscordPlatformAdapter(PlatformAdapter):
-    """Adapter for the Discord Go service.
+    """Adapter for the Discord Rust service.
 
     Event data fields (from ``discord.message.received``):
-        id, platform_id, guild_id, author_id, author, content, is_bot
+        id, channel_id, guild_id, author_id, author, content, is_bot
     """
 
     def __init__(self, *, client: McpLiteClient, bus: MessageBus, resolver: IdentityResolver | None = None) -> None:
@@ -146,13 +146,13 @@ class DiscordPlatformAdapter(PlatformAdapter):
     def _to_inbound(self, data: dict[str, Any]) -> InboundMessage | None:
         if data.get("is_bot"):
             return None
-        platform_id = str(data.get("platform_id", ""))
+        channel_id = str(data.get("channel_id", ""))
         content = str(data.get("content", ""))
-        if not platform_id or not content:
+        if not channel_id or not content:
             return None
         return InboundMessage(
             platform="discord",
-            channel_id=platform_id,
+            channel_id=channel_id,
             sender=SenderInfo(
                 platform="discord",
                 user_id=str(data.get("author_id", "")),
@@ -222,7 +222,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
             await self._client.request({
                 "type": "tool.call",
                 "tool": "discord.send_message",
-                "params": {"platform_id": platform_id, "text": text},
+                "params": {"channel_id": platform_id, "text": text},
             })
             return
         # Send first chunk immediately
@@ -230,7 +230,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
         frame = await self._client.request({
             "type": "tool.call",
             "tool": "discord.send_message",
-            "params": {"platform_id": platform_id, "text": current},
+            "params": {"channel_id": platform_id, "text": current},
         })
         msg_id = None
         if hasattr(frame, "result") and frame.result:
@@ -242,7 +242,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                 await self._client.request({
                     "type": "tool.call",
                     "tool": "discord.send_message",
-                    "params": {"platform_id": platform_id, "text": rest},
+                    "params": {"channel_id": platform_id, "text": rest},
                 })
             return
         # Edit progressively (respect Discord ~5 edits/5s rate limit)
@@ -256,7 +256,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                     "type": "tool.call",
                     "tool": "discord.edit_message",
                     "params": {
-                        "platform_id": platform_id,
+                        "channel_id": platform_id,
                         "message_id": msg_id,
                         "text": current,
                     },
@@ -268,7 +268,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                     await self._client.request({
                         "type": "tool.call",
                         "tool": "discord.send_message",
-                        "params": {"platform_id": platform_id, "text": rest},
+                        "params": {"channel_id": platform_id, "text": rest},
                     })
                 break
 
@@ -315,7 +315,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                 frame = await self._client.request({
                     "type": "tool.call",
                     "tool": "discord.send_message",
-                    "params": {"platform_id": msg.channel_id, "text": content},
+                    "params": {"channel_id": msg.channel_id, "text": content},
                 })
                 new_id = self._parse_message_id(
                     getattr(frame, "result", None) if hasattr(frame, "result") else None
@@ -332,7 +332,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                             "type": "tool.call",
                             "tool": "discord.edit_message",
                             "params": {
-                                "platform_id": msg.channel_id,
+                                "channel_id": msg.channel_id,
                                 "message_id": state["msg_id"],
                                 "text": content,
                             },
@@ -356,7 +356,7 @@ class DiscordPlatformAdapter(PlatformAdapter):
                 await self._client.request({
                     "type": "tool.call",
                     "tool": "discord.send_message",
-                    "params": {"platform_id": msg.channel_id, "text": chunk},
+                    "params": {"channel_id": msg.channel_id, "text": chunk},
                 })
 
 
