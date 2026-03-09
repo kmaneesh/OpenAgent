@@ -31,8 +31,8 @@
 # Service lists
 # ---------------------------------------------------------------------------
 
-GO_SERVICES   := telegram slack whatsapp
-RUST_SERVICES := sandbox browser memory tts stt discord
+GO_SERVICES   := whatsapp
+RUST_SERVICES := sandbox browser memory tts stt discord slack telegram
 
 # ---------------------------------------------------------------------------
 # Platform detection

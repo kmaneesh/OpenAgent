@@ -46,7 +46,7 @@ The two planes communicate via **MCP-lite**: tagged JSON frames over Unix Domain
 
 ### 2. Rust-first services = compute, data, platforms
 - Platform connectors (discord, telegram, slack, whatsapp) and compute tools go in `services/<name>/`.
-- **Rust-first** — all new services are Rust (sandbox, discord, stt, tts, browser, memory). Only WhatsApp remains in Go.
+- **Rust-first** — all new services are Rust (sandbox, discord, telegram, slack, stt, tts, browser, memory). Only WhatsApp remains in Go.
 - Services communicate with the Python core via MCP-lite (not REST, not gRPC).
 - The Python `ServiceManager` owns the lifecycle: spawn, health-check, restart, shutdown.
 - Services never call back into Python — they only respond to requests and push events.
@@ -135,7 +135,7 @@ inspire/            # Reference implementations (gitignored)
 
 - **extension** — Python platform/media integration (`extensions/`)
 - **service** — Go (or compiled) long-lived daemon (`services/`)
-- **tool** — Python in-process callable or Go service capability declared in `service.json`
+- **tool** — Python in-process callable or Rust/Go service capability declared in `service.json`
 - **worker** — Python async background task
 - Do NOT use: sidecar, plugin (except `plugin.py` entrypoint convention), engine
 - Keep `plugin.py` as the per-extension entrypoint filename convention

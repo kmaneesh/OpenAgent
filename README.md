@@ -108,18 +108,18 @@ OpenAgent/
 │   ├── interfaces.py       # AsyncExtension protocol
 │   ├── manager.py          # Extension discovery (entry points)
 │   ├── providers/          # LLM provider registry
-│   ├── services/           # ServiceManager — Go daemon lifecycle
+│   ├── services/           # ServiceManager — Rust/Go daemon lifecycle
 │   ├── bus/                # Message bus (platform → agent → response)
 │   ├── heartbeat/          # Periodic health/summary polling
 │   ├── observability/      # Logging, metrics helpers, context
 │   └── tests/              # Core Python tests
 │
-├── services/               # Rust (primary) + Go (WhatsApp, telegram, slack)
+├── services/               # Rust (primary) + Go (WhatsApp only)
 │   ├── sdk-rust/           # Shared MCP-lite Rust SDK
 │   ├── sandbox/            # Rust — VM-isolated code/shell execution (microsandbox)
 │   ├── discord/            # Rust — Discord connector
-│   ├── telegram/           # Go — Telegram connector
-│   ├── slack/              # Go — Slack connector
+│   ├── telegram/           # Rust — Telegram connector (teloxide, Bot API)
+│   ├── slack/              # Rust — Slack connector (slack-morphism)
 │   ├── whatsapp/           # Go — WhatsApp (whatsmeow; only Go service retained)
 │   ├── stt/                # Rust — Speech-to-text
 │   ├── tts/                # Rust — Text-to-speech
@@ -146,8 +146,8 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 |---------|----------|-------------|
 | **sandbox** | Rust | VM-isolated code/shell execution (microsandbox) |
 | **discord** | Rust | Discord connector |
-| **telegram** | Go | Telegram connector |
-| **slack** | Go | Slack connector |
+| **telegram** | Rust | Telegram connector (teloxide, Bot API) |
+| **slack** | Rust | Slack connector (slack-morphism) |
 | **whatsapp** | Go | WhatsApp (whatsmeow) |
 | **stt** | Rust | Speech-to-text |
 | **tts** | Rust | Text-to-speech |

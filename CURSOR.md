@@ -6,8 +6,8 @@
 
 The architecture has two planes:
 - **Python Control Plane (Brain)** — LLM interfacing, multi-agent orchestration, platform integrations, stateless async core loop.
-- **Rust Services (Hands)** — Long-lived daemon processes for platform connectors (discord), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Go** — Only WhatsApp remains in Go (whatsmeow). Telegram and Slack are still Go but will migrate to Rust.
+- **Rust Services (Hands)** — Long-lived daemon processes for platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
+- **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 OpenAgent uses a **custom ReAct loop** and thin provider layer (no framework dependency). Session/memory uses a `SessionBackend` protocol. OpenAgent remains responsible for extension/service orchestration, MCP-lite lifecycle, and deployment constraints for low-power hardware. See `roadmap.md` for rationale.
 
@@ -15,10 +15,10 @@ OpenAgent uses a **custom ReAct loop** and thin provider layer (no framework dep
 
 1. **Communication Protocol** — Whenever the user sends an input where their intention needs clarification or context needs expansion, do not assume the correct path. Ask clarifying questions **one by one**, provide possible options/paths, and record/apply this explicitly in every conversation.
 2. **Deterministic behavior** — Explicit control flow, reproducible execution paths. Aligns with smaller local models where reliability matters more than flexibility.
-3. **Two planes, clear boundary** — Python extensions handle platforms (WhatsApp, Discord) and media (TTS, STT). Go services handle compute and data-intensive work. Never mix them.
+3. **Two planes, clear boundary** — Python extensions handle platforms (WhatsApp, Discord, Telegram, Slack) and media (TTS, STT). Rust/Go services handle compute and data-intensive work. Never mix them.
 4. **Service-first for compute** — New heavy capabilities go in `services/<name>/` as Rust daemons (Rust-first). Only WhatsApp stays in Go.
 5. **First-class async** — Python core and all extensions are async-first. No blocking I/O in Python extension code.
-6. **Tool-oriented** — Capabilities are exposed as tools the LLM can call. Python tools run in-process; Go service tools are declared in `service.json` and proxied through `ServiceManager`.
+6. **Tool-oriented** — Capabilities are exposed as tools the LLM can call. Python tools run in-process; service tools (Rust/Go) are declared in `service.json` and proxied through `ServiceManager`.
 7. **Offline and low-power friendly** — Designed for a 14B local model on Raspberry Pi. Keep core lean, keep context concise, lazy-load everything heavy. Vector search (LanceDB) executes directly via Python to leverage Rust core without JSON IPC serialization tax.
 8. **Workflow Orchestrator (Zero-Copy Artifacts)** — Python acts as a workflow router. Services dump heavy binaries to `data/artifacts/` and return a file path. Python pipes that path as an argument to the next step. LLMs are treated as non-deterministic nodes in a larger deterministic workflow graph. No direct service-to-service (East-West) communication.
 
@@ -42,7 +42,7 @@ Key files:
 ```
 openagent/      # Core Python — orchestration, discovery, interfaces ONLY
   tests/         # Core tests (including platform adapters)
-services/       # Rust (primary) + Go (whatsapp only; telegram, slack in transition)
+services/       # Rust (primary) + Go (whatsapp only)
 app/            # Minimalist web UI — FastAPI 3.x + HTMX, no auth (POC/Pi only)
   routes/       # dashboard, chat, services, settings, llm, provider, browser
   tests/        # Web UI tests
@@ -61,7 +61,7 @@ inspire/        # Reference implementations (gitignored)
 | Session manager | `openagent/session/` | Python | SessionBackend protocol, SQLite impl |
 | Message bus | `openagent/bus/` | Python | InboundMessage, OutboundMessage, SenderInfo |
 | Service platform adapters (MCP-lite clients) | `openagent/platforms/` | Python | Shared `mcplite.py` + per-service adapter |
-| Platform connectors | `services/` | Rust + Go | discord (Rust), telegram/slack/whatsapp (Go; only whatsapp retained) |
+| Platform connectors | `services/` | Rust + Go | discord, telegram, slack (Rust); whatsapp (Go only) |
 | Compute/automation | `services/` | Rust | sandbox, stt, tts, browser, memory |
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and build order.

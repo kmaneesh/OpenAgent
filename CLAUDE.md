@@ -5,8 +5,8 @@
 **OpenAgent** is a deterministic, extension-first agent platform with a **hybrid Python + Rust architecture**:
 
 - **Python Control Plane (the Brain)** — LLM interfacing, multi-agent orchestration, state management, and high-level reasoning. Stateless asyncio core loop. Python is the babysitter.
-- **Rust Services (the Hands)** — Long-lived service daemons for CPU/IO-intensive work: platform connectors (discord; telegram, slack in transition), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services. Telegram and Slack are still Go but will migrate to Rust.
+- **Rust Services (the Hands)** — Long-lived service daemons for CPU/IO-intensive work: platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
+- **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 The two planes communicate via a **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets). Services run as persistent daemons; the agent's `ServiceManager` owns the full lifecycle: spawn, health-check, restart, graceful shutdown.
 
@@ -81,7 +81,7 @@ openagent/              # Core Python — orchestration, discovery, interfaces
   main.py                   # Entry point: asyncio.run(load_extensions())
   agent/                    # Agent loop (ReAct), tool registry
   providers/                # LLM provider registry (Anthropic, OpenAI, OpenAI-compat)
-  services/                 # ServiceManager — Go daemon lifecycle
+  services/                 # ServiceManager — Rust/Go daemon lifecycle
   bus/                      # Message bus (InboundMessage, OutboundMessage)
   session/                  # SessionManager, SessionBackend, SQLite impl
   heartbeat/                # Periodic health/summary polling
@@ -94,8 +94,8 @@ services/                   # Rust (primary) or Go (WhatsApp only) service daemo
     bin/                    # Compiled binaries (gitignored)
   sandbox/                  # Rust — VM-isolated code/shell execution
   discord/                  # Rust — Discord connector
-  telegram/                 # Go — Telegram (migration to Rust planned)
-  slack/                    # Go — Slack (migration to Rust planned)
+  telegram/                 # Rust — Telegram (teloxide, Bot API)
+  slack/                    # Rust — Slack (slack-morphism)
   whatsapp/                 # Go — WhatsApp (whatsmeow; only Go service retained)
   stt/                      # Rust — Speech-to-text
   tts/                      # Rust — Text-to-speech
@@ -174,7 +174,7 @@ InboundMessage (from platform extension)
 - Truncate large tool results to 500 chars (configurable)
 - Strip context tags before saving to history
 - Core loop is stateless — all state lives in `SessionManager`
-- **Zero-Copy Artifact Passing:** When dense data is generated or received by a service (e.g. media), the service writes the raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload, maintaining decoupling without IPC serialization taxes. Python is the absolute central router for all inter-service workflows (no east-west mesh between Go daemons).
+- **Zero-Copy Artifact Passing:** When dense data is generated or received by a service (e.g. media), the service writes the raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload, maintaining decoupling without IPC serialization taxes. Python is the absolute central router for all inter-service workflows (no east-west mesh between Rust/Go daemons).
 
 ### Services Layer — Rust (primary) and Go (WhatsApp only)
 
@@ -469,14 +469,14 @@ app/
 
 ### Built
 - Core: extension discovery, lifecycle, async interfaces
-- **ServiceManager** — spawn/monitor/restart Go daemons, MCP-lite health loop
+- **ServiceManager** — spawn/monitor/restart Rust/Go daemons, MCP-lite health loop
 - **Message bus** — `InboundMessage`, `OutboundMessage`, `SenderInfo`, per-session fanout
 - **Agent loop** — custom ReAct loop (no framework), tool iteration, 40 max iters, 500-char truncation
 - **Session manager** — `SessionBackend` protocol, SQLite impl, optional summarisation
-- **Tool registry** — dispatches to Go services via MCP-lite
+- **Tool registry** — dispatches to Rust/Go services via MCP-lite
 - **Provider layer** — Anthropic, OpenAI, OpenAI-compat (httpx)
 - Rust services: sandbox (VM execution), discord, stt, tts, browser, memory
-- Go services: whatsapp (only), telegram, slack (migration to Rust planned)
+- Go services: whatsapp (only). Rust services: discord, telegram, slack, sandbox, stt, tts, browser, memory
 - **Rust services: sandbox** — VM-isolated Python/Node/shell execution via microsandbox (v0.2.0; tools: `sandbox.execute`, `sandbox.shell`)
 - Config schema extended: `agents`, `session`, `platforms`, `tools.sandbox` + env overrides
 - Cross-platform build: `make all` / `make local` / `make sandbox` / `make browser`
