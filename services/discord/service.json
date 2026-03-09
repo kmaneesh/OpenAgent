@@ -1,6 +1,6 @@
 {
     "name": "discord",
-    "description": "Discord bot service using discordgo over MCP-lite.",
+    "description": "Discord bot service using Serenity (Rust) over MCP-lite.",
     "version": "0.1.0",
     "binary": {
         "linux/arm64": "bin/discord-linux-arm64",

@@ -1,10 +1,10 @@
 # Discord Service
 
-Go service that connects OpenAgent to Discord via the [discordgo](https://github.com/bwmarrin/discordgo) library. Runs as an MCP-lite daemon managed by `ServiceManager`; receives messages from Discord channels and DMs, and can send/edit messages via tools.
+Rust service that connects OpenAgent to Discord via the [serenity](https://github.com/serenity-rs/serenity) library. Runs as an MCP-lite daemon managed by `ServiceManager`; receives messages from Discord channels and DMs, and can send/edit messages via tools.
 
 ## Overview
 
-- **Runtime:** Go (discordgo)
+- **Runtime:** Rust (serenity)
 - **Protocol:** MCP-lite over Unix socket (`data/sockets/discord.sock`)
 - **Events:** `discord.message.received`, `discord.connection.status`
 - **Tools:** `discord.status`, `discord.link_state`, `discord.send_message`, `discord.edit_message`
@@ -168,7 +168,7 @@ The `PlatformManager` subscribes to these events and routes them into the messag
 # From repo root
 make discord
 # or
-cd services/discord && go build -o bin/discord .
+make local
 ```
 
 ---
