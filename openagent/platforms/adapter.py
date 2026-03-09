@@ -366,12 +366,11 @@ class DiscordPlatformAdapter(PlatformAdapter):
 
 
 class TelegramPlatformAdapter(PlatformAdapter):
-    """Adapter for the Telegram Go service.
+    """Adapter for the Telegram Rust service (teloxide, Bot API).
 
-    Telegram replies require ``user_id`` + ``access_hash`` (the MTProto peer
-    identifiers).  These are extracted from the inbound event and stored in
-    ``InboundMessage.metadata`` so the agent loop can propagate them to the
-    ``OutboundMessage.metadata`` that ``send()`` reads.
+    Telegram replies use ``user_id`` (chat_id for private chats). The adapter
+    propagates ``user_id`` and ``access_hash`` from inbound metadata for
+    compatibility; the Rust service uses user_id as chat_id (access_hash ignored).
 
     Expected event data fields (from ``telegram.message.received``):
         from_id, access_hash, from_name, username, text, message_id
@@ -428,7 +427,7 @@ class TelegramPlatformAdapter(PlatformAdapter):
 
 
 class SlackPlatformAdapter(PlatformAdapter):
-    """Adapter for the Slack Go service.
+    """Adapter for the Slack Rust service.
 
     Expected event data fields (from ``slack.message.received``):
         channel_id, user_id, text, ts, team_id

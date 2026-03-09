@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,7 @@ from openagent.agent.middlewares.stt import STTMiddleware
 from openagent.agent.middlewares.tts import TTSMiddleware
 from openagent.agent.middlewares.whitelist import WhitelistMiddleware
 from openagent.agent.tools import ToolRegistry
+from openagent.browser_sessions import BrowserSessionManager
 from openagent.bus.bus import MessageBus
 from openagent.platforms.manager import PlatformManager
 from openagent.platforms.web import WebPlatformAdapter
@@ -152,15 +154,24 @@ async def lifespan(app: FastAPI):
     app.state.session_manager = session_manager
     await session_manager.start()
 
+    # Browser session manager — one Chromium context per agent session, with a
+    # 10-minute idle reaper that calls browser.close on stale contexts.
+    browser_sessions = BrowserSessionManager(session_backend)
+    app.state.browser_sessions = browser_sessions
+
     # Tool registry — tools are registered per-service as each comes online.
     # The on_service_ready callback fires from the watchdog after every successful
     # launch (initial start and restarts), so tools appear incrementally.
-    tool_registry = ToolRegistry(service_manager)
+    tool_registry = ToolRegistry(service_manager, browser_sessions=browser_sessions)
     service_manager.on_service_ready(tool_registry.register_service)
     for name, description, params, fn in make_platform_tools(bus):
         tool_registry.register_native(name, description, params, fn)
     for name, description, params, fn in make_skill_tools():
         tool_registry.register_native(name, description, params, fn)
+
+    # Start idle-browser reaper — closes Chromium contexts inactive for 10 min.
+    browser_reaper_task = browser_sessions.start_reaper(tool_registry.call)
+    app.state.browser_reaper_task = browser_reaper_task
 
     # Middleware — STT and TTS delegate to the Rust service daemons via ToolRegistry.
     # Returns empty string when the service is offline; middleware skips gracefully.
@@ -238,6 +249,8 @@ async def lifespan(app: FastAPI):
             pass
 
     await platform_manager.stop()
+    browser_reaper_task.cancel()
+    await asyncio.gather(browser_reaper_task, return_exceptions=True)
     await agent_loop.stop()
     await session_manager.stop()
     await settings_store.stop()

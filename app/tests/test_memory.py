@@ -21,9 +21,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 # Known Go services from services/
-GO_SERVICES = {"discord", "telegram", "slack", "whatsapp"}
+GO_SERVICES = {"whatsapp"}
 # Known Rust services
-RUST_SERVICES = {"sandbox", "browser"}
+RUST_SERVICES = {"sandbox", "browser", "discord", "slack", "telegram", "memory", "tts", "stt"}
 
 
 def _rss_mb(proc: psutil.Process) -> float | None:

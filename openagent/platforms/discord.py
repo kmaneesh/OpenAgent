@@ -12,7 +12,7 @@ from .mcplite import McpLiteClient
 
 
 class DiscordServicePlatform(McpLiteClient):
-    """Python-side connector for the Discord Go service."""
+    """Python-side connector for the Discord Rust service (Serenity)."""
 
     def __init__(self, *, socket_path: str | Path = "data/sockets/discord.sock"):
         super().__init__(socket_path=socket_path)
@@ -20,7 +20,7 @@ class DiscordServicePlatform(McpLiteClient):
             "running": False,
             "connected": False,
             "authorized": False,
-            "backend": "discordgo",
+            "backend": "serenity",
             "service_socket": str(socket_path),
         }
         self._messages: list[dict[str, Any]] = []
@@ -52,7 +52,7 @@ class DiscordServicePlatform(McpLiteClient):
             {
                 "type": "tool.call",
                 "tool": "discord.send_message",
-                "params": {"platform_id": platform_id, "text": text},
+                "params": {"channel_id": platform_id, "text": text},
             }
         )
         return _decode_tool_result(frame)

@@ -1,9 +1,23 @@
-"""SQLite session backend — aiosqlite, no ORM, atomic writes."""
+"""SQLite session backend — aiosqlite, no ORM, atomic writes.
+
+Schema versioning
+-----------------
+A ``schema_version`` table tracks applied migrations.  On every startup:
+
+1. ``_SCHEMA_SQL`` creates all tables that do not yet exist (idempotent).
+2. ``_apply_migrations`` checks the current version and runs any pending
+   ``_MIGRATIONS`` entries in order, bumping the version after each one.
+
+Adding a new migration:  append a callable to ``_MIGRATIONS``.  Each callable
+receives the open ``aiosqlite.Connection`` and must not commit — the caller
+commits after recording the new version number.
+"""
 
 from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -14,7 +28,18 @@ from .backend import Turn
 
 logger = logging.getLogger(__name__)
 
-_CREATE_SQL = """
+# ---------------------------------------------------------------------------
+# Base schema — all tables in their final form.
+# New databases are created with this schema and immediately stamped at the
+# latest migration version so no migration callbacks need to run.
+# ---------------------------------------------------------------------------
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    id      INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS users (
     user_key    TEXT PRIMARY KEY,
     name        TEXT NOT NULL DEFAULT '',
@@ -24,22 +49,22 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS turns (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_key TEXT    NOT NULL,
-    role        TEXT    NOT NULL,
-    content     TEXT    NOT NULL,
-    tool_call_id TEXT   NOT NULL DEFAULT '',
-    tool_name   TEXT    NOT NULL DEFAULT '',
-    ts          TEXT    NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key  TEXT    NOT NULL,
+    role         TEXT    NOT NULL,
+    content      TEXT    NOT NULL,
+    tool_call_id TEXT    NOT NULL DEFAULT '',
+    tool_name    TEXT    NOT NULL DEFAULT '',
+    ts           TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns (session_key, id);
 
 CREATE TABLE IF NOT EXISTS identity_links (
     platform     TEXT NOT NULL,
     platform_id  TEXT NOT NULL,
-    user_key    TEXT NOT NULL REFERENCES users(user_key) ON DELETE CASCADE,
-    channel_id  TEXT NOT NULL DEFAULT '',
-    last_active TEXT NOT NULL,
+    user_key     TEXT NOT NULL REFERENCES users(user_key) ON DELETE CASCADE,
+    channel_id   TEXT NOT NULL DEFAULT '',
+    last_active  TEXT NOT NULL,
     PRIMARY KEY (platform, platform_id)
 );
 CREATE INDEX IF NOT EXISTS idx_identity_links_user_key ON identity_links (user_key);
@@ -51,8 +76,10 @@ CREATE TABLE IF NOT EXISTS link_pins (
 );
 
 CREATE TABLE IF NOT EXISTS session_metadata (
-    session_key TEXT PRIMARY KEY,
-    hidden_at   TEXT          -- NULL = visible; ISO timestamp = soft-deleted
+    session_key         TEXT PRIMARY KEY,
+    hidden_at           TEXT,  -- NULL = visible; ISO timestamp = soft-deleted
+    browser_session_id  TEXT,  -- NULL = no active browser session
+    browser_last_active TEXT   -- ISO timestamp of last browser tool call
 );
 
 CREATE TABLE IF NOT EXISTS whitelist (
@@ -66,22 +93,54 @@ CREATE TABLE IF NOT EXISTS whitelist (
 );
 
 CREATE TABLE IF NOT EXISTS blacklist (
-    platform    TEXT NOT NULL,
-    channel_id  TEXT NOT NULL,
-    first_seen  TEXT NOT NULL,
-    last_seen   TEXT NOT NULL,
+    platform      TEXT NOT NULL,
+    channel_id    TEXT NOT NULL,
+    first_seen    TEXT NOT NULL,
+    last_seen     TEXT NOT NULL,
     message_count INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (platform, channel_id)
 );
 """
+
+# ---------------------------------------------------------------------------
+# Migrations — ordered list of async callables.
+# Each entry upgrades the schema from version N-1 → N.
+# Migrations must be idempotent (use IF NOT EXISTS / PRAGMA checks).
+# ---------------------------------------------------------------------------
+
+_MigrationFn = Callable[[aiosqlite.Connection], Awaitable[None]]
+
+
+async def _migration_1_add_browser_columns(db: aiosqlite.Connection) -> None:
+    """v0 → v1: add browser session tracking columns to session_metadata."""
+    async with db.execute("PRAGMA table_info(session_metadata)") as cur:
+        cols = {row[1] async for row in cur}
+    if "browser_session_id" not in cols:
+        await db.execute(
+            "ALTER TABLE session_metadata ADD COLUMN browser_session_id TEXT"
+        )
+    if "browser_last_active" not in cols:
+        await db.execute(
+            "ALTER TABLE session_metadata ADD COLUMN browser_last_active TEXT"
+        )
+
+
+_MIGRATIONS: list[_MigrationFn] = [
+    _migration_1_add_browser_columns,  # index 0 → schema version 1
+]
+
+
+# ---------------------------------------------------------------------------
+# Backend
+# ---------------------------------------------------------------------------
 
 
 class SqliteSessionBackend:
     """Async SQLite backend using aiosqlite.
 
     All writes use WAL journal mode for concurrency and fsync safety.
-    When the Go session service is ready, swap this for GoSessionBackend —
-    the SessionManager constructor is the only change required.
+    When a Rust session service is ready, swap this for a socket-backed
+    backend — the SessionManager constructor is the only change required.
     """
 
     def __init__(self, db_path: Path | str) -> None:
@@ -96,16 +155,42 @@ class SqliteSessionBackend:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(str(self._db_path))
         self._db.row_factory = aiosqlite.Row
-        await self._db.executescript(_CREATE_SQL)
+        await self._db.executescript(_SCHEMA_SQL)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
-        await self._db.commit()
+        await self._apply_migrations()
         logger.debug("SqliteSessionBackend opened %s", self._db_path)
 
     async def stop(self) -> None:
         if self._db:
             await self._db.close()
             self._db = None
+
+    async def _apply_migrations(self) -> None:
+        """Run any pending schema migrations and stamp the version."""
+        assert self._db
+        async with self._db.execute(
+            "SELECT version FROM schema_version WHERE id = 1"
+        ) as cur:
+            row = await cur.fetchone()
+        current = row["version"] if row else 0
+
+        for i, migration in enumerate(_MIGRATIONS[current:], start=current + 1):
+            await migration(self._db)
+            await self._db.execute(
+                "INSERT INTO schema_version (id, version) VALUES (1, ?)"
+                " ON CONFLICT(id) DO UPDATE SET version = excluded.version",
+                (i,),
+            )
+            await self._db.commit()
+            logger.info("SqliteSessionBackend: applied migration %d", i)
+
+        if current == 0 and not _MIGRATIONS:
+            # Fresh database — stamp at version 0 so future migrations skip correctly.
+            await self._db.execute(
+                "INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 0)"
+            )
+            await self._db.commit()
 
     # ------------------------------------------------------------------
     # Session history
@@ -140,7 +225,6 @@ class SqliteSessionBackend:
             (session_key, limit),
         ) as cursor:
             rows = await cursor.fetchall()
-        # Reverse so oldest-first
         return [
             Turn(
                 role=r["role"],
@@ -202,6 +286,75 @@ class SqliteSessionBackend:
         await self._db.commit()
 
     # ------------------------------------------------------------------
+    # Browser session tracking
+    # ------------------------------------------------------------------
+
+    async def set_browser_session(
+        self, session_key: str, browser_session_id: str | None
+    ) -> None:
+        """Associate (or clear) a browser session with an agent session."""
+        assert self._db, "backend not started"
+        ts = datetime.now().isoformat() if browser_session_id else None
+        await self._db.execute(
+            "INSERT INTO session_metadata"
+            "  (session_key, browser_session_id, browser_last_active)"
+            " VALUES (?, ?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET"
+            "   browser_session_id  = excluded.browser_session_id,"
+            "   browser_last_active = excluded.browser_last_active",
+            (session_key, browser_session_id, ts),
+        )
+        await self._db.commit()
+
+    async def get_browser_session(self, session_key: str) -> str | None:
+        """Return the browser session ID for an agent session, or None."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT browser_session_id FROM session_metadata WHERE session_key = ?",
+            (session_key,),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return row["browser_session_id"] if row else None
+
+    async def touch_browser_session(self, session_key: str) -> None:
+        """Update the last-active timestamp for a session's browser context."""
+        assert self._db, "backend not started"
+        ts = datetime.now().isoformat()
+        await self._db.execute(
+            "INSERT INTO session_metadata (session_key, browser_last_active)"
+            " VALUES (?, ?)"
+            " ON CONFLICT(session_key) DO UPDATE SET"
+            "   browser_last_active = excluded.browser_last_active",
+            (session_key, ts),
+        )
+        await self._db.commit()
+
+    async def clear_browser_session(self, session_key: str) -> None:
+        """Remove the browser session association (session closed or reaped)."""
+        assert self._db, "backend not started"
+        await self._db.execute(
+            "UPDATE session_metadata"
+            " SET browser_session_id = NULL, browser_last_active = NULL"
+            " WHERE session_key = ?",
+            (session_key,),
+        )
+        await self._db.commit()
+
+    async def get_stale_browser_sessions(
+        self, cutoff: datetime
+    ) -> list[tuple[str, str]]:
+        """Return (session_key, browser_session_id) pairs inactive since cutoff."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT session_key, browser_session_id FROM session_metadata"
+            " WHERE browser_session_id IS NOT NULL"
+            "   AND browser_last_active < ?",
+            (cutoff.isoformat(),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [(r["session_key"], r["browser_session_id"]) for r in rows]
+
+    # ------------------------------------------------------------------
     # Cross-platform identity
     # ------------------------------------------------------------------
 
@@ -218,7 +371,6 @@ class SqliteSessionBackend:
         assert self._db, "backend not started"
         now = datetime.now().isoformat()
 
-        # Fast path: known identity
         async with self._db.execute(
             "SELECT user_key FROM identity_links"
             " WHERE platform = ? AND platform_id = ?",
@@ -236,9 +388,7 @@ class SqliteSessionBackend:
             await self._db.commit()
             return row["user_key"]
 
-        # New identity — create user row + identity link
         new_key = f"user:{uuid.uuid4().hex[:16]}"
-        # Ensure users row exists first (FK constraint)
         await self._db.execute(
             "INSERT OR IGNORE INTO users (user_key, name, email, created_at, last_seen)"
             " VALUES (?, '', '', ?, ?)",
@@ -252,7 +402,6 @@ class SqliteSessionBackend:
         )
         await self._db.commit()
 
-        # Re-select to get the actual winner (handles task-level concurrency)
         async with self._db.execute(
             "SELECT user_key FROM identity_links"
             " WHERE platform = ? AND platform_id = ?",
@@ -261,7 +410,6 @@ class SqliteSessionBackend:
             row = await cur.fetchone()
 
         actual_key = row["user_key"]
-        # Touch last_seen on winner
         await self._db.execute(
             "UPDATE users SET last_seen = ? WHERE user_key = ?", (now, actual_key)
         )
@@ -293,7 +441,6 @@ class SqliteSessionBackend:
         """Create or update a platform identity link for a given user_key."""
         assert self._db, "backend not started"
         now = datetime.now().isoformat()
-        # Ensure users row exists (FK constraint)
         await self._db.execute(
             "INSERT OR IGNORE INTO users (user_key, name, email, created_at, last_seen)"
             " VALUES (?, '', '', ?, ?)",
@@ -315,72 +462,6 @@ class SqliteSessionBackend:
             (platform, platform_id),
         )
         await self._db.commit()
-
-    # ------------------------------------------------------------------
-    # Users
-    # ------------------------------------------------------------------
-
-    async def list_users(self) -> list[dict]:
-        """Return all users, newest-active first."""
-        assert self._db, "backend not started"
-        async with self._db.execute(
-            "SELECT user_key, name, email, created_at, last_seen FROM users"
-            " ORDER BY last_seen DESC"
-        ) as cur:
-            rows = await cur.fetchall()
-        return [
-            {
-                "user_key": r["user_key"],
-                "name": r["name"],
-                "email": r["email"],
-                "created_at": r["created_at"],
-                "last_seen": r["last_seen"],
-            }
-            for r in rows
-        ]
-
-    async def get_user(self, user_key: str) -> dict | None:
-        """Return a single user record or None."""
-        assert self._db, "backend not started"
-        async with self._db.execute(
-            "SELECT user_key, name, email, created_at, last_seen FROM users WHERE user_key = ?",
-            (user_key,),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None:
-            return None
-        return {
-            "user_key": row["user_key"],
-            "name": row["name"],
-            "email": row["email"],
-            "created_at": row["created_at"],
-            "last_seen": row["last_seen"],
-        }
-
-    async def upsert_user(self, user_key: str, name: str = "", email: str = "") -> None:
-        """Create or update a user record."""
-        assert self._db, "backend not started"
-        now = datetime.now().isoformat()
-        await self._db.execute(
-            "INSERT INTO users (user_key, name, email, created_at, last_seen)"
-            " VALUES (?, ?, ?, ?, ?)"
-            " ON CONFLICT(user_key) DO UPDATE SET"
-            "   name = CASE WHEN ? != '' THEN ? ELSE name END,"
-            "   email = CASE WHEN ? != '' THEN ? ELSE email END,"
-            "   last_seen = excluded.last_seen",
-            (user_key, name, email, now, now, name, name, email, email),
-        )
-        await self._db.commit()
-
-    async def delete_user(self, user_key: str) -> None:
-        """Delete a user and all their identity links (CASCADE)."""
-        assert self._db, "backend not started"
-        await self._db.execute("DELETE FROM users WHERE user_key = ?", (user_key,))
-        await self._db.commit()
-
-    # ------------------------------------------------------------------
-    # Cross-platform identity (continued)
-    # ------------------------------------------------------------------
 
     async def get_identity_links(self, user_key: str) -> list[dict]:
         """Return all platform links for a user_key, newest-active first."""
@@ -433,15 +514,106 @@ class SqliteSessionBackend:
         )
         await self._db.commit()
 
+    async def redeem_link_pin(self, redeemer_key: str, pin: str) -> str | None:
+        """Validate pin, merge the two sessions, return winning key.
+
+        The generator's session absorbs the redeemer's history.
+        Returns None if the pin is invalid, expired, already used, or
+        both sides are already the same session.
+        """
+        assert self._db, "backend not started"
+        now = datetime.now().isoformat()
+
+        async with self._db.execute(
+            "SELECT user_key FROM link_pins WHERE pin = ? AND expires_at > ?",
+            (pin, now),
+        ) as cur:
+            row = await cur.fetchone()
+
+        if row is None:
+            return None
+
+        generator_key = row["user_key"]
+        if generator_key == redeemer_key:
+            return None
+
+        await self._db.execute("DELETE FROM link_pins WHERE pin = ?", (pin,))
+        await self._db.commit()
+        return await self.link_user_keys(generator_key, redeemer_key)
+
     # ------------------------------------------------------------------
-    # Whitelist
+    # Users
+    # ------------------------------------------------------------------
+
+    async def list_users(self) -> list[dict]:
+        """Return all users, newest-active first."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT user_key, name, email, created_at, last_seen FROM users"
+            " ORDER BY last_seen DESC"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "user_key": r["user_key"],
+                "name": r["name"],
+                "email": r["email"],
+                "created_at": r["created_at"],
+                "last_seen": r["last_seen"],
+            }
+            for r in rows
+        ]
+
+    async def get_user(self, user_key: str) -> dict | None:
+        """Return a single user record or None."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT user_key, name, email, created_at, last_seen"
+            " FROM users WHERE user_key = ?",
+            (user_key,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "user_key": row["user_key"],
+            "name": row["name"],
+            "email": row["email"],
+            "created_at": row["created_at"],
+            "last_seen": row["last_seen"],
+        }
+
+    async def upsert_user(self, user_key: str, name: str = "", email: str = "") -> None:
+        """Create or update a user record."""
+        assert self._db, "backend not started"
+        now = datetime.now().isoformat()
+        await self._db.execute(
+            "INSERT INTO users (user_key, name, email, created_at, last_seen)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(user_key) DO UPDATE SET"
+            "   name = CASE WHEN ? != '' THEN ? ELSE name END,"
+            "   email = CASE WHEN ? != '' THEN ? ELSE email END,"
+            "   last_seen = excluded.last_seen",
+            (user_key, name, email, now, now, name, name, email, email),
+        )
+        await self._db.commit()
+
+    async def delete_user(self, user_key: str) -> None:
+        """Delete a user and all their identity links (CASCADE)."""
+        assert self._db, "backend not started"
+        await self._db.execute("DELETE FROM users WHERE user_key = ?", (user_key,))
+        await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # Whitelist / blacklist
     # ------------------------------------------------------------------
 
     async def get_whitelist(self) -> list[dict]:
         """Return all whitelist entries."""
         assert self._db, "backend not started"
         async with self._db.execute(
-            "SELECT platform, channel_id, label, added_by, added_at FROM whitelist ORDER BY added_at DESC"
+            "SELECT platform, channel_id, label, added_by, added_at"
+            " FROM whitelist ORDER BY added_at DESC"
         ) as cur:
             rows = await cur.fetchall()
         return [
@@ -481,8 +653,18 @@ class SqliteSessionBackend:
         )
         await self._db.commit()
 
+    async def is_whitelisted(self, platform: str, channel_id: str) -> bool:
+        """Check if (platform, channel_id) is in the whitelist."""
+        assert self._db, "backend not started"
+        async with self._db.execute(
+            "SELECT 1 FROM whitelist WHERE platform = ? AND channel_id = ?",
+            (platform, channel_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return row is not None
+
     async def record_seen_sender(self, platform: str, channel_id: str) -> None:
-        """Upsert a blocked-but-seen sender (call from WhitelistMiddleware)."""
+        """Upsert a blocked-but-seen sender (called from WhitelistMiddleware)."""
         assert self._db, "backend not started"
         now = datetime.now().isoformat()
         await self._db.execute(
@@ -495,7 +677,7 @@ class SqliteSessionBackend:
         )
         await self._db.commit()
 
-    async def get_seen_senders(self) -> list[dict]:  # kept for API compat
+    async def get_seen_senders(self) -> list[dict]:
         """Return all seen-but-not-whitelisted senders, most-recent first."""
         assert self._db, "backend not started"
         async with self._db.execute(
@@ -518,43 +700,3 @@ class SqliteSessionBackend:
             }
             for r in rows
         ]
-
-    async def is_whitelisted(self, platform: str, channel_id: str) -> bool:
-        """Check if (platform, channel_id) is in the whitelist."""
-        assert self._db, "backend not started"
-        async with self._db.execute(
-            "SELECT 1 FROM whitelist WHERE platform = ? AND channel_id = ?",
-            (platform, channel_id),
-        ) as cur:
-            row = await cur.fetchone()
-        return row is not None
-
-    async def redeem_link_pin(self, redeemer_key: str, pin: str) -> str | None:
-        """Validate pin, merge the two sessions, return winning key.
-
-        The generator's session absorbs the redeemer's history.
-        Returns None if the pin is invalid, expired, already used, or
-        both sides are already the same session.
-        """
-        assert self._db, "backend not started"
-        now = datetime.now().isoformat()
-
-        async with self._db.execute(
-            "SELECT user_key FROM link_pins WHERE pin = ? AND expires_at > ?",
-            (pin, now),
-        ) as cur:
-            row = await cur.fetchone()
-
-        if row is None:
-            return None
-
-        generator_key = row["user_key"]
-        if generator_key == redeemer_key:
-            return None  # can't link a session to itself
-
-        # Consume pin — one-time use
-        await self._db.execute("DELETE FROM link_pins WHERE pin = ?", (pin,))
-        await self._db.commit()
-
-        # Generator's session wins; redeemer's history moves into it
-        return await self.link_user_keys(generator_key, redeemer_key)

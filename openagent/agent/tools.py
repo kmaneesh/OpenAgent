@@ -21,6 +21,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from openagent.browser_sessions import BrowserSessionManager
 from openagent.services.manager import ServiceManager
 from openagent.services import protocol as proto
 from openagent.observability.otel import get_tracer, current_trace_id, current_span_id
@@ -44,8 +45,14 @@ class ToolRegistry:
     Native Python tools (not backed by a Go service) survive service restarts.
     """
 
-    def __init__(self, service_manager: ServiceManager) -> None:
+    def __init__(
+        self,
+        service_manager: ServiceManager,
+        *,
+        browser_sessions: BrowserSessionManager | None = None,
+    ) -> None:
         self._mgr = service_manager
+        self._browser_sessions = browser_sessions
         # tool_name → service_name for routing (Go service tools)
         self._tool_to_service: dict[str, str] = {}
         # Per-service schema lists — keyed by service name for easy replacement on restart
@@ -197,6 +204,20 @@ class ToolRegistry:
         instead of raising — the agent loop injects this into the conversation
         so the LLM can react gracefully.
         """
+        # Automatic browser session binding — one Chromium context per agent session.
+        # Inject session_id so the LLM never needs to track it manually.
+        if name.startswith("browser.") and self._browser_sessions is not None and session_key:
+            arguments = dict(arguments)  # don't mutate the caller's dict
+            if "session_id" not in arguments:
+                arguments["session_id"] = await self._browser_sessions.get_or_create(
+                    session_key
+                )
+            else:
+                # LLM supplied its own session_id — record the mapping so the reaper
+                # can manage it, then keep the LLM's choice.
+                self._browser_sessions.record(session_key, arguments["session_id"])
+            self._browser_sessions.touch(session_key)
+
         # Native tools take priority (no network hop)
         if name in self._native_handlers:
             try:

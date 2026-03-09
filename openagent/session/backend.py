@@ -82,6 +82,34 @@ class SessionBackend(Protocol):
         ...
 
     # ------------------------------------------------------------------
+    # Browser session tracking
+    # ------------------------------------------------------------------
+
+    async def set_browser_session(
+        self, session_key: str, browser_session_id: str | None
+    ) -> None:
+        """Associate (or clear) a browser session ID with an agent session."""
+        ...
+
+    async def get_browser_session(self, session_key: str) -> str | None:
+        """Return the browser session ID for an agent session, or None."""
+        ...
+
+    async def touch_browser_session(self, session_key: str) -> None:
+        """Update the last-active timestamp for a session's browser context."""
+        ...
+
+    async def clear_browser_session(self, session_key: str) -> None:
+        """Disassociate the browser session (closed or reaped)."""
+        ...
+
+    async def get_stale_browser_sessions(
+        self, cutoff: "datetime"
+    ) -> "list[tuple[str, str]]":
+        """Return (session_key, browser_session_id) pairs inactive since cutoff."""
+        ...
+
+    # ------------------------------------------------------------------
     # Users
     # ------------------------------------------------------------------
 
