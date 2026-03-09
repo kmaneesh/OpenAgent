@@ -132,6 +132,60 @@ unused_result_ok = "warn"
 literal_string_with_formatting_args = "allow"
 ```
 
+## OpenAgent Service Patterns
+
+Conventions established across OpenAgent Rust services (`services/discord`, `services/sandbox`, etc.).
+
+### Mutex choice
+- `std::sync::Mutex` — preferred when the lock is **not** held across `.await`
+- `tokio::sync::Mutex` — only when the lock must cross an `.await` point
+- Never hold a `std::sync::Mutex` guard across `.await`; it deadlocks the executor thread
+
+### Atomic ordering for connection flags
+- `Ordering::Acquire` on load / `Ordering::Release` on store for `connected`/`authorized` booleans
+- Establishes the happens-before relationship so tool handlers see the latest gateway state
+
+### Sync tool handlers calling async (block_in_place pattern)
+SDK tool handlers are `Fn(Value) -> anyhow::Result<String>` (sync). To call an async Serenity HTTP method from inside one, use:
+```rust
+// Handle::current().block_on() bridges sync handler → async Serenity HTTP.
+use tokio::runtime::Handle;
+tokio::task::block_in_place(|| Handle::current().block_on(some_async_fn()))
+```
+Requires `rt-multi-thread` in tokio features.
+
+### Tokio features — minimal set for service binaries
+```toml
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+```
+Never use `features = ["full"]` — it pulls in test-util, io-std, and other unneeded weight.
+
+### Graceful Serenity shutdown
+Capture `shard_manager` before spawning the client task; call `shutdown_all()` on exit so Discord sees a clean gateway close:
+```rust
+let shard_manager = Arc::clone(&client.shard_manager); // field, not method in serenity 0.12
+let handle = tokio::spawn(async move { client.start().await });
+server.serve(&socket_path).await;
+shard_manager.shutdown_all().await;
+handle.abort();
+```
+
+### Bot message filtering
+Always filter `msg.author.bot` before emitting `message.received` events. Forwarding a bot's own messages causes the agent to process its own output and loop.
+
+### Param extraction in tool handlers
+Prefer `filter` + `ok_or_else` over `unwrap_or("").is_empty()`:
+```rust
+let channel_id = params["channel_id"]
+    .as_str()
+    .filter(|v| !v.is_empty())
+    .ok_or_else(|| anyhow::anyhow!("channel_id is required"))?
+    .to_string();
+```
+
+### `running` flag in status responses
+Don't store a `started: AtomicBool`. If the tool handler is executing, the service is running. Hardcode `"running": true` in `status_json()`.
+
 ## References
 
 - [universal.md](references/universal.md) — Universal guidelines (logging, panic, names, static verification)
