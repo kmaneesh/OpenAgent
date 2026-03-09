@@ -18,14 +18,14 @@
 //! - `OPENAGENT_SOCKET_PATH` (default: `data/sockets/discord.sock`)
 //! - `OPENAGENT_LOGS_DIR`    (default: `logs`)
 
-mod handler;
+mod dispatch;
 mod handlers;
 mod metrics;
 mod state;
 mod tools;
 
 use anyhow::Context as _;
-use handler::Handler;
+use dispatch::Handler;
 use metrics::DiscordTelemetry;
 use mimalloc::MiMalloc;
 use sdk_rust::McpLiteServer;

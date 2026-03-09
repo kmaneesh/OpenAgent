@@ -87,7 +87,6 @@ async fn main() -> anyhow::Result<()> {
             *state.team_id.lock().expect("team_id poisoned") = auth.team_id.value().to_string();
             *state.client.lock().expect("client poisoned") = Some(client.clone());
             *state.bot_token.lock().expect("bot_token poisoned") = Some(token.clone());
-            state.started.store(true, Ordering::Release);
             state.connected.store(true, Ordering::Release);
             state.authorized.store(true, Ordering::Release);
             state.set_error("");

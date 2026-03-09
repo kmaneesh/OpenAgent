@@ -1,4 +1,4 @@
-//! Serenity event handler — wires gateway events into the MCP-lite event stream.
+//! Serenity event dispatcher — wires gateway events into the MCP-lite event stream.
 
 use crate::state::DiscordState;
 use serenity::{

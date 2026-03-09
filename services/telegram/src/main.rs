@@ -73,7 +73,6 @@ async fn main() -> anyhow::Result<()> {
     match bot.get_me().await {
         Ok(me) => {
             *state.bot.lock().expect("bot poisoned") = Some(bot.clone());
-            state.started.store(true, Ordering::Release);
             state.connected.store(true, Ordering::Release);
             state.authorized.store(true, Ordering::Release);
             state.set_error("");

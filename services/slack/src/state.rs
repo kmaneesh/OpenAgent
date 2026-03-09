@@ -13,7 +13,6 @@ const BACKEND: &str = "slack-morphism";
 /// Always accessed through `Arc<SlackState>`.
 #[derive(Debug)]
 pub struct SlackState {
-    pub started: AtomicBool,
     pub connected: AtomicBool,
     pub authorized: AtomicBool,
     pub last_error: Mutex<String>,
@@ -29,7 +28,6 @@ pub struct SlackState {
 impl SlackState {
     pub fn new(event_tx: tokio::sync::broadcast::Sender<OutboundEvent>) -> Arc<Self> {
         Arc::new(Self {
-            started: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             authorized: AtomicBool::new(false),
             last_error: Mutex::new(String::new()),
@@ -72,7 +70,8 @@ impl SlackState {
 
     pub fn status_json(&self) -> serde_json::Value {
         let mut v = serde_json::json!({
-            "running":    self.started.load(Ordering::Acquire),
+            // Always true: if this handler is executing, the service is running.
+            "running":    true,
             "connected":  self.connected.load(Ordering::Acquire),
             "authorized": self.authorized.load(Ordering::Acquire),
             "backend":    BACKEND,

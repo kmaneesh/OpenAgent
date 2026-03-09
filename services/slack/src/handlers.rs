@@ -13,7 +13,7 @@ use opentelemetry::KeyValue;
 use rvstruct::ValueStruct;
 use serde_json::Value;
 use slack_morphism::prelude::*;
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::runtime::Handle;
 use tracing::{error, info, info_span};
@@ -23,18 +23,16 @@ pub fn handle_send_message(
     state: Arc<SlackState>,
     tel: Arc<SlackTelemetry>,
 ) -> Result<String> {
-    let channel_id = params["channel_id"].as_str().unwrap_or("").to_string();
-    let text = params["text"].as_str().unwrap_or("").to_string();
-
-    if channel_id.is_empty() {
-        anyhow::bail!("channel_id is required");
-    }
-    if text.is_empty() {
-        anyhow::bail!("text is required");
-    }
-    if !state.started.load(Ordering::Acquire) {
-        anyhow::bail!("slack runtime is not started");
-    }
+    let channel_id = params["channel_id"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("channel_id is required"))?
+        .to_string();
+    let text = params["text"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("text is required"))?
+        .to_string();
 
     // ── Pillar: Baggage ───────────────────────────────────────────────────────
     let _cx_guard = SlackTelemetry::attach_context(

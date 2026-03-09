@@ -39,12 +39,13 @@ pub fn handle_send_message(
         .ok_or_else(|| anyhow::anyhow!("user_id is required"))?;
     let user_id = parse_i64(user_id)?;
 
-    let text = params["text"].as_str().unwrap_or("").to_string();
-    if text.is_empty() {
-        anyhow::bail!("text is required");
-    }
-    if !state.started.load(Ordering::Acquire) {
-        anyhow::bail!("telegram runtime is not started");
+    let text = params["text"]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("text is required"))?
+        .to_string();
+    if !state.connected.load(Ordering::Acquire) {
+        anyhow::bail!("telegram not connected");
     }
 
     // ── Pillar: Baggage ───────────────────────────────────────────────────────

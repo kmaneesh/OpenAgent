@@ -13,7 +13,6 @@ const BACKEND: &str = "teloxide";
 /// and the main task.  Access is always through `Arc<TelegramState>`.
 #[derive(Debug)]
 pub struct TelegramState {
-    pub started: AtomicBool,
     pub connected: AtomicBool,
     pub authorized: AtomicBool,
     pub last_error: Mutex<String>,
@@ -24,7 +23,6 @@ pub struct TelegramState {
 impl TelegramState {
     pub fn new(event_tx: tokio::sync::broadcast::Sender<OutboundEvent>) -> Arc<Self> {
         Arc::new(Self {
-            started: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             authorized: AtomicBool::new(false),
             last_error: Mutex::new(String::new()),
@@ -56,7 +54,8 @@ impl TelegramState {
 
     pub fn status_json(&self) -> serde_json::Value {
         let mut v = serde_json::json!({
-            "running":    self.started.load(Ordering::Acquire),
+            // Always true: if this handler is executing, the service is running.
+            "running":    true,
             "connected":  self.connected.load(Ordering::Acquire),
             "authorized": self.authorized.load(Ordering::Acquire),
             "backend":    BACKEND,

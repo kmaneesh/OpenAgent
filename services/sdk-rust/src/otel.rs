@@ -45,6 +45,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 // ---------------------------------------------------------------------------
 
 /// Thread-safe file writer that rotates daily and keeps 1 day of logs.
+///
+/// `Clone` is a shallow clone — the underlying file handle is shared.
+#[derive(Clone)]
 pub struct DailyFileWriter {
     logs_dir: PathBuf,
     prefix: String,
