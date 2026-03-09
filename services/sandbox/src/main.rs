@@ -40,25 +40,13 @@ static GLOBAL: MiMalloc = MiMalloc;
 async fn main() -> Result<()> {
     let logs_dir = env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
 
-    // ── Pillar: Traces + Logs — initialise OTEL bridge ───────────────────────
-    // Writes sandbox-traces-YYYY-MM-DD.jsonl; bridges tracing! → OTEL spans.
-    let _otel_guard = match setup_otel("sandbox", &logs_dir) {
-        Ok(g) => Some(g),
-        Err(e) => {
-            eprintln!("otel init failed (continuing without file traces): {e}");
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive("sandbox=info".parse().expect("valid log directive")),
-                )
-                .try_init()
-                .ok();
-            None
-        }
-    };
-
-    // ── Pillar: Metrics — daily JSONL writer ──────────────────────────────────
-    // Writes sandbox-metric-YYYY-MM-DD.jsonl; one line per tool invocation.
+    // Initialise all three OTEL pillars: traces, logs, metrics.
+    // Writes sandbox-{traces,logs,metrics}-YYYY-MM-DD.jsonl; bridges tracing! macros
+    // → OTEL spans (FileSpanExporter) and log records (FileLogExporter).
+    // Guard must be held for the process lifetime — drop flushes all three providers.
+    let _otel_guard = setup_otel("sandbox", &logs_dir)
+        .inspect_err(|e| eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}"))
+        .ok();
     let tel = Arc::new(SandboxTelemetry::new(&logs_dir)?);
 
     let socket_path =

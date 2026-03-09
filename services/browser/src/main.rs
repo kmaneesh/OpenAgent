@@ -47,9 +47,9 @@ pub const SESSION_ID_LEN: usize = 12;
 async fn main() -> anyhow::Result<()> {
     let logs_dir = env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
 
-    if let Err(e) = setup_otel("browser", &logs_dir) {
-        eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}");
-    }
+    let _otel_guard = setup_otel("browser", &logs_dir)
+        .inspect_err(|e| eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}"))
+        .ok();
 
     let tel = Arc::new(BrowserTelemetry::new(&logs_dir)?);
 

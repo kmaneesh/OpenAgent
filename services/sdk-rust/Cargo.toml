@@ -13,12 +13,17 @@ futures-util    = "0.3"
 hex             = "0.4"
 
 # OpenTelemetry — OTLP/JSON file tracing + standard OTLP/HTTP export to Jaeger
-opentelemetry        = { version = "0.27", features = ["trace"] }
-opentelemetry_sdk    = { version = "0.27", features = ["trace", "rt-tokio"] }
+# logs + metrics features add the respective SDK pillars alongside traces.
+opentelemetry        = { version = "0.27", features = ["trace", "logs", "metrics"] }
+opentelemetry_sdk    = { version = "0.27", features = ["trace", "logs", "metrics", "rt-tokio"] }
 # opentelemetry-otlp: standard OTLP/HTTP exporter for Jaeger / any collector.
 # reqwest-rustls: async reqwest with rustls TLS — no openssl dep, works on musl.
-opentelemetry-otlp   = { version = "0.27", default-features = false, features = ["trace", "http-proto", "reqwest-rustls"] }
+# logs feature: OTLP log export (traces+logs share the same HTTP transport).
+opentelemetry-otlp   = { version = "0.27", default-features = false, features = ["trace", "logs", "http-proto", "reqwest-rustls"] }
+# Bridge: routes tracing events (info!/warn!/error!) into the OTEL LoggerProvider.
+opentelemetry-appender-tracing = { version = "0.27", default-features = false }
 
+async-trait          = "0.1"
 tracing-opentelemetry = "0.28"
 tracing-subscriber   = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender     = "0.2"

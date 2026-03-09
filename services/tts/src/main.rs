@@ -34,9 +34,9 @@ async fn main() -> Result<()> {
     let logs_dir =
         env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| DEFAULT_LOGS_DIR.to_string());
 
-    if let Err(e) = setup_otel("tts", &logs_dir) {
-        eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}");
-    }
+    let _otel_guard = setup_otel("tts", &logs_dir)
+        .inspect_err(|e| eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}"))
+        .ok();
 
     let socket_path =
         env::var("OPENAGENT_SOCKET_PATH").unwrap_or_else(|_| DEFAULT_SOCKET_PATH.to_string());

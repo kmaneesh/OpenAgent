@@ -61,9 +61,9 @@ async fn main() -> anyhow::Result<()> {
     let logs_dir =
         std::env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
 
-    if let Err(e) = setup_otel("slack", &logs_dir) {
-        eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}");
-    }
+    let _otel_guard = setup_otel("slack", &logs_dir)
+        .inspect_err(|e| eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}"))
+        .ok();
 
     let tel = Arc::new(
         SlackTelemetry::new(&logs_dir).context("failed to init slack telemetry")?,

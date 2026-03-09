@@ -1,33 +1,51 @@
-//! OTEL tracing for Rust MCP-lite services — dual export: file + optional Jaeger.
+//! OTEL tracing, logging, and metrics for Rust MCP-lite services.
 //!
-//! Each service calls [`setup_otel`] at startup to initialise a TracerProvider
-//! that writes spans as OTLP-compatible JSON to:
+//! Each service calls [`setup_otel`] at startup to initialise **three** OTEL
+//! providers that write to daily-rotating JSONL files under `logs_dir`:
 //!
-//!   `<logs_dir>/<service_name>-traces-YYYY-MM-DD.jsonl`
+//! | Pillar   | File pattern                           | Destination              |
+//! |----------|----------------------------------------|--------------------------|
+//! | Traces   | `<svc>-traces-YYYY-MM-DD.jsonl`        | file + OTLP (if set)     |
+//! | Logs     | `<svc>-logs-YYYY-MM-DD.jsonl`          | file + OTLP (if set)     |
+//! | Metrics  | `<svc>-metrics-YYYY-MM-DD.jsonl`       | file only                |
+//!
+//! `tracing` macros (`info!`, `warn!`, `error!`, `debug!`) are bridged to
+//! both the OTEL `LoggerProvider` (structured OTLP) **and** a human-readable
+//! fmt sink on stderr.  Spans are bridged to the `TracerProvider` as before.
 //!
 //! If `OTEL_EXPORTER_OTLP_ENDPOINT` is set (e.g. `http://localhost:4318`),
-//! spans are also exported to a Jaeger/collector via `opentelemetry-otlp`
-//! (standard OTLP/HTTP with protobuf, retry, and proper headers).
-//! File export always runs regardless of whether the collector is reachable.
-//!
-//! Daily rotation and 1-day retention are managed by [`DailyFileWriter`].
+//! traces **and** logs are also exported via OTLP/HTTP to Jaeger / any
+//! compatible collector.  File export always runs regardless.
 //!
 //! # Usage
 //! ```ignore
-//! use sdk_rust::otel::setup_otel;
-//!
 //! #[tokio::main]
-//! async fn main() {
-//!     let _guard = setup_otel("browser", "logs").expect("otel init");
-//!     // spans from tracing! macros are forwarded to OTEL + file (+ Jaeger if configured)
+//! async fn main() -> anyhow::Result<()> {
+//!     let _otel = sdk_rust::setup_otel("my-svc", "logs")
+//!         .inspect_err(|e| eprintln!("otel init failed: {e}"))
+//!         .ok();  // hold until end of main — drops flush all three providers
+//!
+//!     info!("service started");   // → logs file + stderr + OTLP (if configured)
+//!     // … instrument spans with #[tracing::instrument] or tracing::span!
+//!     Ok(())
 //! }
 //! ```
 
+use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::trace::Status as TraceStatus;
 use opentelemetry_sdk::{
-    export::trace::{ExportResult, SpanData, SpanExporter},
+    export::{
+        logs::{LogBatch, LogExporter},
+        trace::{ExportResult, SpanData, SpanExporter},
+    },
+    logs::{LogResult, LoggerProvider},
+    metrics::{
+        data::{Gauge, Histogram, ResourceMetrics, Sum},
+        exporter::PushMetricExporter,
+        MetricResult, PeriodicReader, SdkMeterProvider, Temporality,
+    },
     runtime,
     trace::TracerProvider,
     Resource,
@@ -67,18 +85,14 @@ impl std::fmt::Debug for DailyFileWriter {
     }
 }
 
-struct DailyWriterInner {
-    file: File,
-    current_date: String,
+#[derive(Debug)]
+pub(crate) struct DailyWriterInner {
+    pub(crate) file: File,
+    pub(crate) current_date: String,
 }
 
 impl DailyFileWriter {
     /// Create a new daily-rotating file writer under `logs_dir`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::Io`] if the directory cannot be created or the
-    /// initial log file cannot be opened.
     pub fn new(logs_dir: impl Into<PathBuf>, prefix: impl Into<String>) -> crate::Result<Self> {
         let logs_dir = logs_dir.into();
         let prefix = prefix.into();
@@ -96,10 +110,6 @@ impl DailyFileWriter {
     }
 
     /// Append a line to today's log file, rotating if the date has changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::Error::Io`] if the file cannot be opened, written, or flushed.
     pub fn write_line(&self, line: &str) -> crate::Result<()> {
         let mut guard = self.inner.lock().expect("log file mutex poisoned");
         let today = today_str();
@@ -139,7 +149,6 @@ impl DailyFileWriter {
             }
         }
     }
-
 }
 
 fn open_file(dir: &PathBuf, prefix: &str, date: &str) -> std::io::Result<File> {
@@ -158,7 +167,6 @@ fn today_str() -> String {
     format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
-/// Returns an approximate days-since-epoch value for comparison only.
 fn approx_date(s: &str) -> Option<u64> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 3 {
@@ -179,25 +187,14 @@ fn days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 // ---------------------------------------------------------------------------
-// Custom file span exporter
+// Trace file exporter  (unchanged behaviour, uses DailyFileWriter directly)
 // ---------------------------------------------------------------------------
 
-/// Exports OTEL spans to a daily-rotating JSONL file.
-///
-/// Jaeger / collector export is handled by a separate `opentelemetry-otlp`
-/// exporter added alongside this one in [`setup_otel_inner`].
+#[derive(Debug)]
 struct FileSpanExporter {
     inner: Arc<Mutex<DailyWriterInner>>,
     logs_dir: PathBuf,
     prefix: String,
-}
-
-impl fmt::Debug for FileSpanExporter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FileSpanExporter")
-            .field("prefix", &self.prefix)
-            .finish()
-    }
 }
 
 impl SpanExporter for FileSpanExporter {
@@ -208,7 +205,7 @@ impl SpanExporter for FileSpanExporter {
         let prefix = self.prefix.clone();
 
         Box::pin(async move {
-            let mut guard = inner.lock().expect("log file mutex poisoned");
+            let mut guard = inner.lock().expect("trace file mutex poisoned");
             let today = today_str();
             if guard.current_date != today {
                 match open_file(&logs_dir, &prefix, &today) {
@@ -232,8 +229,302 @@ impl SpanExporter for FileSpanExporter {
     }
 }
 
-/// Serialize a span's core fields into a JSON `Value` (no OTLP envelope).
-/// Used by both [`serialize_span`] (file) and [`batch_to_otlp_json`] (Jaeger).
+// ---------------------------------------------------------------------------
+// Log file exporter  (new: routes OTEL log records to daily JSONL)
+// ---------------------------------------------------------------------------
+
+/// Exports OTEL log records (bridged from `tracing` macros) to a daily JSONL.
+///
+/// Each line is an OTLP-envelope JSON record matching the log signal shape.
+#[derive(Debug)]
+struct FileLogExporter {
+    writer: DailyFileWriter,
+}
+
+#[async_trait]
+impl LogExporter for FileLogExporter {
+    async fn export(&mut self, batch: LogBatch<'_>) -> LogResult<()> {
+        for (record, scope) in batch.iter() {
+            let line = serialize_log_record(record, scope);
+            let _ = self.writer.write_line(&line);
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Metrics file exporter  (new: routes OTEL metric data points to daily JSONL)
+// ---------------------------------------------------------------------------
+
+/// Exports OTEL metric data points to a daily-rotating JSONL file.
+///
+/// Uses `PushMetricExporter` so services can record counters/histograms via
+/// `opentelemetry::global::meter("my-svc").u64_counter("requests").init()`.
+#[derive(Debug)]
+struct FileMetricsExporter {
+    writer: DailyFileWriter,
+}
+
+#[async_trait]
+impl PushMetricExporter for FileMetricsExporter {
+    async fn export(&self, metrics: &mut ResourceMetrics) -> MetricResult<()> {
+        let line = serialize_metrics(metrics);
+        let _ = self.writer.write_line(&line);
+        Ok(())
+    }
+
+    async fn force_flush(&self) -> MetricResult<()> {
+        Ok(())
+    }
+
+    fn shutdown(&self) -> MetricResult<()> {
+        Ok(())
+    }
+
+    fn temporality(&self) -> Temporality {
+        Temporality::Cumulative
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OTEL setup
+// ---------------------------------------------------------------------------
+
+/// Guard returned by [`setup_otel`].
+///
+/// **Must be held for the lifetime of the process** — typically `let _otel =
+/// setup_otel(...).ok()` at the top of `main`.  Dropping it flushes and
+/// shuts down all three providers (traces, logs, metrics).
+pub struct OTELGuard {
+    tracer_provider: TracerProvider,
+    logger_provider: LoggerProvider,
+    meter_provider: SdkMeterProvider,
+    _log_guard: tracing_appender::non_blocking::WorkerGuard,
+}
+
+impl OTELGuard {
+    /// Returns a [`opentelemetry::metrics::Meter`] from the service's
+    /// `SdkMeterProvider`.  Prefer `opentelemetry::global::meter(name)` for
+    /// convenience; both refer to the same underlying provider.
+    pub fn meter(&self, name: &'static str) -> opentelemetry::metrics::Meter {
+        use opentelemetry::metrics::MeterProvider as _;
+        self.meter_provider.meter(name)
+    }
+}
+
+impl fmt::Debug for OTELGuard {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OTELGuard").finish_non_exhaustive()
+    }
+}
+
+impl Drop for OTELGuard {
+    fn drop(&mut self) {
+        // Flush traces
+        for result in self.tracer_provider.force_flush() {
+            if let Err(e) = result {
+                eprintln!("otel tracer flush error: {e}");
+            }
+        }
+        // Flush logs
+        for result in self.logger_provider.force_flush() {
+            if let Err(e) = result {
+                eprintln!("otel logger flush error: {e}");
+            }
+        }
+        // Flush metrics
+        if let Err(e) = self.meter_provider.force_flush() {
+            eprintln!("otel meter flush error: {e}");
+        }
+        let _ = self.logger_provider.shutdown();
+        let _ = self.meter_provider.shutdown();
+    }
+}
+
+/// Initialise all three OTEL providers and bridge `tracing` macros into them.
+///
+/// Returns an [`OTELGuard`] that must be held for the process lifetime.
+///
+/// # Errors
+/// Returns [`crate::Error::OtelSetup`] if the log directory cannot be created,
+/// a file cannot be opened, or the subscriber cannot be installed.
+pub fn setup_otel(service_name: &str, logs_dir: &str) -> crate::Result<OTELGuard> {
+    setup_otel_inner(service_name, logs_dir)
+        .map_err(|e| crate::Error::OtelSetup(e.to_string()))
+}
+
+#[allow(clippy::too_many_lines)] // intentional: single coherent setup function
+fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGuard> {
+    let logs_path = PathBuf::from(logs_dir);
+    fs::create_dir_all(&logs_path)?;
+
+    let resource = Resource::new(vec![
+        KeyValue::new("service.name", service_name.to_owned()),
+        KeyValue::new("telemetry.sdk.language", "rust"),
+    ]);
+
+    // -----------------------------------------------------------------------
+    // Traces
+    // -----------------------------------------------------------------------
+    let trace_prefix = format!("{service_name}-traces");
+    let today = today_str();
+    let trace_file = open_file(&logs_path, &trace_prefix, &today)?;
+    let trace_inner = Arc::new(Mutex::new(DailyWriterInner {
+        file: trace_file,
+        current_date: today.clone(),
+    }));
+    let file_span_exporter = FileSpanExporter {
+        inner: trace_inner,
+        logs_dir: logs_path.clone(),
+        prefix: trace_prefix,
+    };
+
+    let mut trace_builder = TracerProvider::builder()
+        .with_batch_exporter(file_span_exporter, runtime::Tokio)
+        .with_resource(resource.clone());
+
+    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        use opentelemetry_otlp::WithExportConfig as _;
+        let url = format!("{}/v1/traces", ep.trim_end_matches('/'));
+        match opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .with_endpoint(url)
+            .build()
+        {
+            Ok(otlp) => {
+                trace_builder = trace_builder.with_batch_exporter(otlp, runtime::Tokio);
+            }
+            Err(e) => eprintln!("OTLP span exporter init failed (Jaeger disabled): {e}"),
+        }
+    }
+
+    let tracer_provider = trace_builder.build();
+    let tracer = tracer_provider.tracer(service_name.to_owned());
+
+    // -----------------------------------------------------------------------
+    // Logs  (FileLogExporter + optional OTLP)
+    // -----------------------------------------------------------------------
+    let log_writer =
+        DailyFileWriter::new(logs_path.clone(), format!("{service_name}-logs"))?;
+    let file_log_exporter = FileLogExporter { writer: log_writer };
+
+    let mut log_builder = LoggerProvider::builder()
+        .with_batch_exporter(file_log_exporter, runtime::Tokio)
+        .with_resource(resource.clone());
+
+    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+        use opentelemetry_otlp::WithExportConfig as _;
+        let url = format!("{}/v1/logs", ep.trim_end_matches('/'));
+        match opentelemetry_otlp::LogExporter::builder()
+            .with_http()
+            .with_endpoint(url)
+            .build()
+        {
+            Ok(otlp) => {
+                log_builder = log_builder.with_batch_exporter(otlp, runtime::Tokio);
+            }
+            Err(e) => eprintln!("OTLP log exporter init failed (Jaeger logs disabled): {e}"),
+        }
+    }
+
+    let logger_provider = log_builder.build();
+
+    // -----------------------------------------------------------------------
+    // Metrics  (FileMetricsExporter via PeriodicReader)
+    // -----------------------------------------------------------------------
+    let metrics_writer =
+        DailyFileWriter::new(logs_path.clone(), format!("{service_name}-metrics"))?;
+    let file_metrics_exporter = FileMetricsExporter { writer: metrics_writer };
+
+    let meter_provider = SdkMeterProvider::builder()
+        .with_reader(
+            PeriodicReader::builder(file_metrics_exporter, runtime::Tokio).build(),
+        )
+        .with_resource(resource)
+        .build();
+
+    // Make the meter provider globally accessible so services can call
+    // `opentelemetry::global::meter("my-svc")` without passing OTELGuard.
+    opentelemetry::global::set_meter_provider(meter_provider.clone());
+
+    // -----------------------------------------------------------------------
+    // tracing subscriber
+    //
+    // Layers (in order of evaluation):
+    //   1. EnvFilter          — level gating (RUST_LOG, default INFO)
+    //   2. OpenTelemetryLayer — tracing spans → TracerProvider → file + OTLP
+    //   3. OtelTracingBridge  — tracing events (info!/warn!/error!) → LoggerProvider → file + OTLP
+    //   4. fmt stderr layer   — human-readable output to stderr for debugging
+    //   5. fmt JSON file layer— structured JSON to rolling file (human-readable fmt)
+    // -----------------------------------------------------------------------
+    let otel_log_bridge =
+        opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider);
+
+    let file_appender = tracing_appender::rolling::daily(
+        logs_dir,
+        format!("{service_name}-logs"),
+    );
+    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with(OpenTelemetryLayer::new(tracer))
+        .with(otel_log_bridge)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(non_blocking),
+        )
+        .try_init()
+        .ok(); // "already set" on repeated calls in tests — not an error
+
+    Ok(OTELGuard {
+        tracer_provider,
+        logger_provider,
+        meter_provider,
+        _log_guard: log_guard,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Trace context extraction from MCP-lite frames
+// ---------------------------------------------------------------------------
+
+/// Extract a remote span context from trace_id / span_id hex strings
+/// propagated in a MCP-lite `ToolCallRequest` frame.
+pub fn context_from_ids(trace_id_hex: &str, span_id_hex: &str) -> Option<opentelemetry::Context> {
+    use opentelemetry::trace::{
+        SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+    };
+
+    if trace_id_hex.len() != 32 || span_id_hex.len() != 16 {
+        return None;
+    }
+    let tid_bytes = hex::decode(trace_id_hex).ok()?;
+    let sid_bytes = hex::decode(span_id_hex).ok()?;
+    if tid_bytes.len() != 16 || sid_bytes.len() != 8 {
+        return None;
+    }
+    let mut tid_arr = [0u8; 16];
+    let mut sid_arr = [0u8; 8];
+    tid_arr.copy_from_slice(&tid_bytes);
+    sid_arr.copy_from_slice(&sid_bytes);
+
+    let sc = SpanContext::new(
+        TraceId::from_bytes(tid_arr),
+        SpanId::from_bytes(sid_arr),
+        TraceFlags::SAMPLED,
+        true,
+        TraceState::default(),
+    );
+    Some(opentelemetry::Context::new().with_remote_span_context(sc))
+}
+
+// ---------------------------------------------------------------------------
+// Serialisation helpers — traces
+// ---------------------------------------------------------------------------
+
 fn span_to_value(span: &SpanData) -> Value {
     let ctx = &span.span_context;
     let trace_id = format!("{:032x}", ctx.trace_id());
@@ -247,7 +538,7 @@ fn span_to_value(span: &SpanData) -> Value {
     let attrs: Vec<Value> = span
         .attributes
         .iter()
-        .map(|kv| json!({"key": kv.key.as_str(), "value": kv_to_json(&kv.value)}))
+        .map(|kv| json!({"key": kv.key.as_str(), "value": otel_kv_to_json(&kv.value)}))
         .collect();
 
     let events: Vec<Value> = span
@@ -257,7 +548,7 @@ fn span_to_value(span: &SpanData) -> Value {
             let ev_attrs: Vec<Value> = e
                 .attributes
                 .iter()
-                .map(|kv| json!({"key": kv.key.as_str(), "value": kv_to_json(&kv.value)}))
+                .map(|kv| json!({"key": kv.key.as_str(), "value": otel_kv_to_json(&kv.value)}))
                 .collect();
             json!({
                 "timeUnixNano": e.timestamp.duration_since(std::time::UNIX_EPOCH)
@@ -301,7 +592,6 @@ fn span_to_value(span: &SpanData) -> Value {
     })
 }
 
-/// Serialize a single span into an OTLP-envelope JSON string (for file export).
 fn serialize_span(span: &SpanData) -> String {
     let svc = span.instrumentation_scope.name();
     let obj = json!({
@@ -318,7 +608,7 @@ fn serialize_span(span: &SpanData) -> String {
     obj.to_string()
 }
 
-fn kv_to_json(v: &opentelemetry::Value) -> Value {
+fn otel_kv_to_json(v: &opentelemetry::Value) -> Value {
     match v {
         opentelemetry::Value::String(s) => json!({ "stringValue": s.as_str() }),
         opentelemetry::Value::Bool(b) => json!({ "boolValue": b }),
@@ -329,138 +619,210 @@ fn kv_to_json(v: &opentelemetry::Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// OTEL setup
+// Serialisation helpers — logs
 // ---------------------------------------------------------------------------
 
-/// Guard returned by [`setup_otel`]. Drop this to flush and shut down the tracer.
-pub struct OTELGuard {
-    provider: TracerProvider,
-    _log_guard: tracing_appender::non_blocking::WorkerGuard,
+fn serialize_log_record(
+    record: &opentelemetry_sdk::logs::LogRecord,
+    scope: &opentelemetry::InstrumentationScope,
+) -> String {
+    use std::time::UNIX_EPOCH;
+
+    let timestamp_ns = record
+        .timestamp
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().to_string());
+
+    let observed_ns = record
+        .observed_timestamp
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().to_string());
+
+    let severity = record
+        .severity_text
+        .map(|s| s.to_owned())
+        .or_else(|| record.severity_number.map(|n| format!("{n:?}")));
+
+    let body = record.body.as_ref().map(anyvalue_to_json);
+
+    let attrs: Vec<Value> = record
+        .attributes_iter()
+        .map(|(k, v)| json!({"key": k.as_str(), "value": anyvalue_to_json(v)}))
+        .collect();
+
+    let trace_ctx = record.trace_context.as_ref().map(|tc| {
+        json!({
+            "traceId": format!("{:032x}", tc.trace_id),
+            "spanId":  format!("{:016x}", tc.span_id),
+            "traceFlags": tc.trace_flags.map(|f| f.to_u8()),
+        })
+    });
+
+    let obj = json!({
+        "resourceLogs": [{
+            "resource": { "attributes": [{"key": "service.name", "value": {"stringValue": scope.name()}}] },
+            "scopeLogs": [{
+                "scope": { "name": scope.name() },
+                "logRecords": [{
+                    "timeUnixNano":         timestamp_ns,
+                    "observedTimeUnixNano": observed_ns,
+                    "severityText":  severity,
+                    "body":          body,
+                    "attributes":    attrs,
+                    "traceContext":  trace_ctx,
+                    "eventName":     record.event_name,
+                    "target":        record.target.as_deref(),
+                }]
+            }]
+        }]
+    });
+    obj.to_string()
 }
 
-impl std::fmt::Debug for OTELGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OTELGuard").finish_non_exhaustive()
-    }
-}
-
-impl Drop for OTELGuard {
-    fn drop(&mut self) {
-        for result in self.provider.force_flush() {
-            if let Err(e) = result {
-                eprintln!("otel flush error: {e}");
-            }
+fn anyvalue_to_json(v: &opentelemetry::logs::AnyValue) -> Value {
+    use opentelemetry::logs::AnyValue;
+    match v {
+        AnyValue::Int(i) => json!({ "intValue": i }),
+        AnyValue::Double(f) => json!({ "doubleValue": f }),
+        AnyValue::String(s) => json!({ "stringValue": s.as_ref() }),
+        AnyValue::Boolean(b) => json!({ "boolValue": b }),
+        AnyValue::Bytes(b) => json!({ "bytesValue": hex::encode(b.as_slice()) }),
+        AnyValue::ListAny(items) => {
+            let arr: Vec<Value> = items.iter().map(anyvalue_to_json).collect();
+            json!({ "arrayValue": arr })
         }
-    }
-}
-
-/// Initialise a global `TracerProvider` and bridge `tracing` → OpenTelemetry.
-///
-/// Writes spans as OTLP-compatible JSON to
-/// `<logs_dir>/<service_name>-traces-YYYY-MM-DD.jsonl`.
-///
-/// Returns a guard that flushes and shuts down the tracer on drop.
-///
-/// # Errors
-///
-/// Returns [`crate::Error::OtelSetup`] if the log directory cannot be created,
-/// the initial trace file cannot be opened, or the subscriber cannot be
-/// installed.
-pub fn setup_otel(service_name: &str, logs_dir: &str) -> crate::Result<OTELGuard> {
-    setup_otel_inner(service_name, logs_dir)
-        .map_err(|e| crate::Error::OtelSetup(e.to_string()))
-}
-
-fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGuard> {
-    let logs_path = PathBuf::from(logs_dir);
-    fs::create_dir_all(&logs_path)?;
-    let prefix = format!("{}-traces", service_name);
-    let today = today_str();
-    let file = open_file(&logs_path, &prefix, &today)?;
-    let inner = Arc::new(Mutex::new(DailyWriterInner {
-        file,
-        current_date: today,
-    }));
-
-    let file_exporter = FileSpanExporter { inner, logs_dir: logs_path, prefix };
-
-    let resource = Resource::new(vec![
-        KeyValue::new("service.name", service_name.to_owned()),
-        KeyValue::new("telemetry.sdk.language", "rust"),
-    ]);
-
-    // Always write spans to daily-rotating JSONL files.
-    // If OTEL_EXPORTER_OTLP_ENDPOINT is set, also export via standard OTLP/HTTP
-    // to Jaeger or any compatible collector (retry, headers, compression included).
-    let mut builder = TracerProvider::builder()
-        .with_batch_exporter(file_exporter, runtime::Tokio)
-        .with_resource(resource);
-
-    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-        use opentelemetry_otlp::WithExportConfig as _;
-        let url = format!("{}/v1/traces", ep.trim_end_matches('/'));
-        match opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_endpoint(url)
-            .build()
-        {
-            Ok(otlp_exporter) => {
-                builder = builder.with_batch_exporter(otlp_exporter, runtime::Tokio);
-            }
-            Err(e) => eprintln!("OTLP span exporter init failed — Jaeger disabled: {e}"),
+        AnyValue::Map(m) => {
+            let entries: Vec<Value> = m
+                .iter()
+                .map(|(k, v)| json!({"key": k.as_str(), "value": anyvalue_to_json(v)}))
+                .collect();
+            json!({ "kvlistValue": entries })
         }
+        // non-exhaustive — future AnyValue variants
+        _ => json!({ "stringValue": format!("{v:?}") }),
     }
-
-    let provider = builder.build();
-
-    let tracer = provider.tracer(service_name.to_owned());
-
-    // File appender for standard tracing logs
-    let file_appender = tracing_appender::rolling::daily(logs_dir, format!("{}-logs", service_name));
-    let (non_blocking_appender, log_guard) = tracing_appender::non_blocking(file_appender);
-
-    // Bridge tracing → OTEL
-    tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with(OpenTelemetryLayer::new(tracer))
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .with(tracing_subscriber::fmt::layer().json().with_writer(non_blocking_appender))
-        .try_init()
-        .ok(); // ignore "already set" on repeated calls in tests
-
-    Ok(OTELGuard { provider, _log_guard: log_guard })
 }
 
 // ---------------------------------------------------------------------------
-// Trace context extraction from MCP-lite frames
+// Serialisation helpers — metrics
 // ---------------------------------------------------------------------------
 
-/// Extract a remote span context from trace_id / span_id hex strings
-/// propagated in a MCP-lite ToolCallRequest frame.
-///
-/// Returns an OTEL `Context` with the remote parent set if IDs are valid.
-pub fn context_from_ids(trace_id_hex: &str, span_id_hex: &str) -> Option<opentelemetry::Context> {
-    use opentelemetry::trace::{SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState};
+fn serialize_metrics(rm: &ResourceMetrics) -> String {
+    let mut scope_arr: Vec<Value> = Vec::new();
 
-    if trace_id_hex.len() != 32 || span_id_hex.len() != 16 {
-        return None;
+    for sm in &rm.scope_metrics {
+        let mut metric_arr: Vec<Value> = Vec::new();
+        for m in &sm.metrics {
+            let data_val = serialize_aggregation(m.data.as_ref());
+            metric_arr.push(json!({
+                "name":        m.name.as_ref(),
+                "description": m.description.as_ref(),
+                "unit":        m.unit.as_ref(),
+                "data":        data_val,
+            }));
+        }
+        scope_arr.push(json!({
+            "scope":   sm.scope.name(),
+            "metrics": metric_arr,
+        }));
     }
-    let tid_bytes = hex::decode(trace_id_hex).ok()?;
-    let sid_bytes = hex::decode(span_id_hex).ok()?;
-    if tid_bytes.len() != 16 || sid_bytes.len() != 8 {
-        return None;
-    }
-    let mut tid_arr = [0u8; 16];
-    let mut sid_arr = [0u8; 8];
-    tid_arr.copy_from_slice(&tid_bytes);
-    sid_arr.copy_from_slice(&sid_bytes);
 
-    let sc = SpanContext::new(
-        TraceId::from_bytes(tid_arr),
-        SpanId::from_bytes(sid_arr),
-        TraceFlags::SAMPLED,
-        true, // remote
-        TraceState::default(),
-    );
-    Some(opentelemetry::Context::new().with_remote_span_context(sc))
+    json!({ "resourceMetrics": [{ "scopeMetrics": scope_arr }] }).to_string()
+}
+
+fn serialize_aggregation(
+    agg: &dyn opentelemetry_sdk::metrics::data::Aggregation,
+) -> Value {
+    // Gauge variants
+    if let Some(g) = agg.as_any().downcast_ref::<Gauge<f64>>() {
+        let pts: Vec<Value> = g
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "gauge_f64", "dataPoints": pts});
+    }
+    if let Some(g) = agg.as_any().downcast_ref::<Gauge<i64>>() {
+        let pts: Vec<Value> = g
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "gauge_i64", "dataPoints": pts});
+    }
+    if let Some(g) = agg.as_any().downcast_ref::<Gauge<u64>>() {
+        let pts: Vec<Value> = g
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "gauge_u64", "dataPoints": pts});
+    }
+    // Sum (counter) variants
+    if let Some(s) = agg.as_any().downcast_ref::<Sum<u64>>() {
+        let pts: Vec<Value> = s
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "sum_u64", "monotonic": s.is_monotonic, "dataPoints": pts});
+    }
+    if let Some(s) = agg.as_any().downcast_ref::<Sum<i64>>() {
+        let pts: Vec<Value> = s
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "sum_i64", "monotonic": s.is_monotonic, "dataPoints": pts});
+    }
+    if let Some(s) = agg.as_any().downcast_ref::<Sum<f64>>() {
+        let pts: Vec<Value> = s
+            .data_points
+            .iter()
+            .map(|dp| json!({"value": dp.value, "attributes": metric_attrs(&dp.attributes)}))
+            .collect();
+        return json!({"type": "sum_f64", "monotonic": s.is_monotonic, "dataPoints": pts});
+    }
+    // Histogram variants
+    if let Some(h) = agg.as_any().downcast_ref::<Histogram<f64>>() {
+        let pts: Vec<Value> = h
+            .data_points
+            .iter()
+            .map(|dp| {
+                json!({
+                    "count":        dp.count,
+                    "sum":          dp.sum,
+                    "bounds":       dp.bounds,
+                    "bucketCounts": dp.bucket_counts,
+                    "attributes":   metric_attrs(&dp.attributes),
+                })
+            })
+            .collect();
+        return json!({"type": "histogram_f64", "dataPoints": pts});
+    }
+    if let Some(h) = agg.as_any().downcast_ref::<Histogram<u64>>() {
+        let pts: Vec<Value> = h
+            .data_points
+            .iter()
+            .map(|dp| {
+                json!({
+                    "count":        dp.count,
+                    "sum":          dp.sum,
+                    "bounds":       dp.bounds,
+                    "bucketCounts": dp.bucket_counts,
+                    "attributes":   metric_attrs(&dp.attributes),
+                })
+            })
+            .collect();
+        return json!({"type": "histogram_u64", "dataPoints": pts});
+    }
+
+    json!({"type": "unknown"})
+}
+
+fn metric_attrs(attrs: &[opentelemetry::KeyValue]) -> Vec<Value> {
+    attrs
+        .iter()
+        .map(|kv| json!({"key": kv.key.as_str(), "value": otel_kv_to_json(&kv.value)}))
+        .collect()
 }
