@@ -1477,7 +1477,9 @@ name = "telegram"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "mimalloc",
+ "opentelemetry",
  "sdk-rust",
  "serde_json",
  "teloxide",
