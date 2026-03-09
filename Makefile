@@ -58,25 +58,22 @@ endif
 HOST_SUFFIX := $(HOST_OS)-$(HOST_ARCH)
 
 # ---------------------------------------------------------------------------
-# TTS: espeak-ng (required by kokoros / espeak-rs-sys)
+# TTS darwin exclusion
 #
-# On macOS, espeak-rs-sys cmake fails on case-insensitive HFS+ (phoneme
-# filenames get truncated).  Point it at the Homebrew system library instead:
-#   brew install espeak-ng
+# espeak-rs-sys (bundled by kokoros) builds espeak-ng from source via cmake.
+# The espeak-ng phoneme compiler has a bug that truncates filenames when the
+# build directory sits on a case-insensitive filesystem (macOS HFS+/APFS).
+# There is no env-var bypass — the build script always runs cmake from source.
 #
-# Use ?= so the user can still override with env vars if needed.
-# These vars are ignored by all other Rust services.
+# Workaround: skip the native darwin binary for tts and rely on `cross`
+# (Docker, Linux targets) for deployable binaries.  Rust + kokoros runtime
+# itself works fine on macOS once the binary is cross-compiled.
 # ---------------------------------------------------------------------------
-ifeq ($(HOST_OS),darwin)
-  ESPEAK_NG_LIB_DIR     ?= /opt/homebrew/opt/espeak-ng/lib
-  ESPEAK_NG_INCLUDE_DIR ?= /opt/homebrew/opt/espeak-ng/include
-  export ESPEAK_NG_LIB_DIR
-  export ESPEAK_NG_INCLUDE_DIR
-endif
+TTS_SKIP_DARWIN := true
 
 BIN := bin
 
-.PHONY: all local clean test-go test-rust test-py help \
+.PHONY: all local clean test-go test-rust test-py download-models help \
         $(GO_SERVICES) $(RUST_SERVICES)
 
 # Default: cross-compile everything
@@ -108,6 +105,10 @@ $(1):
 	@echo "==> services/$(1) (Rust)"
 	@mkdir -p $(BIN)
 ifeq ($(HOST_OS),darwin)
+ifeq ($(1),tts)
+	@echo "   Skipping darwin native build for tts (espeak-rs-sys cmake fails on HFS+/APFS)."
+	@echo "   Deploy via linux cross targets below, or build on Linux/Docker."
+else
 	cd services/$(1) && cargo build --release --target aarch64-apple-darwin
 	cp services/$(1)/target/aarch64-apple-darwin/release/$(1) \
 	   $(BIN)/$(1)-darwin-arm64
@@ -118,6 +119,7 @@ ifeq ($(HOST_OS),darwin)
 	else \
 	  echo "   Skipping darwin/amd64 (run: rustup target add x86_64-apple-darwin)"; \
 	fi
+endif
 else
 	cd services/$(1) && cargo build --release
 	cp services/$(1)/target/release/$(1) $(BIN)/$(1)-$(HOST_SUFFIX)
@@ -153,13 +155,14 @@ local:
 	done
 	@echo "--- Rust services ---"
 ifeq ($(HOST_OS),darwin)
-	@for svc in $(RUST_SERVICES); do \
+	@for svc in $(filter-out tts,$(RUST_SERVICES)); do \
 	  echo "  → $$svc"; \
 	  (cd services/$$svc && \
 	    cargo build --release --target aarch64-apple-darwin && \
 	    cp target/aarch64-apple-darwin/release/$$svc \
 	       ../../$(BIN)/$$svc-$(HOST_SUFFIX)) || exit 1; \
 	done
+	@echo "  → tts (skipped on macOS — espeak-rs-sys cmake fails on HFS+/APFS; use cross for linux targets)"
 else
 	@for svc in $(RUST_SERVICES); do \
 	  echo "  → $$svc"; \
@@ -170,6 +173,33 @@ else
 	done
 endif
 	@echo "Done — binaries in $(BIN)/*-$(HOST_SUFFIX)"
+	@if [ ! -d "data/models/models--Xenova--bge-small-en-v1.5" ]; then \
+	  echo ""; \
+	  echo "  NOTE: embedding model not cached."; \
+	  echo "  Run 'make download-models' before starting the memory service,"; \
+	  echo "  or it will download on first start (~70 MB, may take a while)."; \
+	  echo ""; \
+	fi
+
+# ---------------------------------------------------------------------------
+# Model cache check — prints status and download command if model is missing
+# ---------------------------------------------------------------------------
+
+MEMORY_BIN := $(BIN)/memory-$(HOST_SUFFIX)
+EMBED_MODEL_MARKER := data/models/models--Xenova--bge-small-en-v1.5
+
+.PHONY: download-models
+download-models:
+	@echo "==> Embedding model cache check (BAAI/bge-small-en-v1.5)"
+	@if [ -d "$(EMBED_MODEL_MARKER)" ]; then \
+	  echo "   ✓ Model cached at $(EMBED_MODEL_MARKER)"; \
+	else \
+	  echo "   ✗ Model not found. To download (~70 MB), run:"; \
+	  echo ""; \
+	  echo "     OPENAGENT_DOWNLOAD_ONLY=1 OPENAGENT_EMBED_CACHE_PATH=data/models $(MEMORY_BIN)"; \
+	  echo ""; \
+	  echo "   (build the memory binary first if needed: make memory)"; \
+	fi
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -221,8 +251,12 @@ help:
 	@echo "  make test-py      Run Python tests"
 	@echo "  make clean        Remove all binaries from $(BIN)/"
 	@echo ""
+	@echo "  make download-models  Check embedding model cache; prints download command if missing"
+	@echo ""
 	@echo "  Binaries:   $(BIN)/"
 	@echo "  Models:     data/models/whisper-ggml-small.bin  kokoro-v1.0.onnx  voices-v1.0.bin"
+	@echo "              data/models/models--Xenova--bge-small-en-v1.5  (embedding, via download-models)"
 	@echo "  Sandbox:    msb server start --dev"
-	@echo "  TTS/macOS:  brew install espeak-ng  (auto-detected; override with ESPEAK_NG_LIB_DIR)"
+	@echo "  TTS/macOS:  native darwin build skipped (espeak-rs-sys cmake HFS+ bug)."
+	@echo "              Linux targets still built via cross (Docker).  Deploy to Pi directly."
 	@echo ""

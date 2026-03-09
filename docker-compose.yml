@@ -1,0 +1,42 @@
+# OpenAgent + Jaeger observability stack
+#
+# Usage:
+#   docker compose up -d
+#   # Open Jaeger UI: http://localhost:16686
+#
+# Set OTEL_EXPORTER_OTLP_ENDPOINT for services to send traces to Jaeger:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317  # gRPC (from host)
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317    # gRPC (from other containers)
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: openagent-jaeger
+    ports:
+      # Jaeger UI
+      - "16686:16686"
+      # OTLP gRPC receiver (traces, metrics, logs)
+      - "4317:4317"
+      # OTLP HTTP receiver
+      - "4318:4318"
+      # Zipkin HTTP (/api/v1/spans, /api/v2/spans)
+      - "9411:9411"
+      # Jaeger Thrift compact (legacy)
+      - "6831:6831/udp"
+      # Jaeger Thrift binary
+      - "6832:6832/udp"
+      # Jaeger Thrift over HTTP (legacy)
+      - "14268:14268"
+      # Jaeger admin/metrics
+      - "14269:14269"
+      # Jaeger gRPC (legacy)
+      - "14250:14250"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - openagent
+    restart: unless-stopped
+
+networks:
+  openagent:
+    driver: bridge

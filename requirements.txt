@@ -4,6 +4,8 @@ pydantic>=2.8.0
 qrcode[pil]>=7.0.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
-# OpenTelemetry — OTLP/JSON file-only tracing, logs, and metrics
+# OpenTelemetry — file + optional OTLP/HTTP export (Jaeger etc.)
+# Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 to enable Jaeger export.
 opentelemetry-api>=1.26.0
 opentelemetry-sdk>=1.26.0
+opentelemetry-exporter-otlp-proto-http>=1.26.0
