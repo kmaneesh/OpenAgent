@@ -27,10 +27,12 @@ Python is the control plane (orchestration, routing). Rust services are the data
 ```
 Python Control Plane (Brain)          Rust Services (Hands)
 ─────────────────────────────         ────────────────────
- Provider calls + orchestration ──JSON──► Long-lived daemons
- Message bus + health/heartbeat ◄─UDS──  Compute/data integrations
+ Orchestration + tool calls ──UDS+JSON──► Long-lived daemons
+ Message bus + health/heartbeat ◄─UDS+JSON──  Compute/data integrations
                                           Managed by ServiceManager
 ```
+
+(LLM provider calls use HTTP/JSON over TCP — separate from service IPC.)
 
 Two clear planes, one socket each, no REST overhead:
 - **Python** — control plane, orchestration, platform adapters
