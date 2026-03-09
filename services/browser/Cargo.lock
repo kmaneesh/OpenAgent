@@ -39,13 +39,14 @@ name = "browser"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "hex",
  "mimalloc",
+ "opentelemetry",
  "sdk-rust",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
