@@ -11,8 +11,17 @@ fi
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-RELOAD="${RELOAD:-true}"
+RELOAD="${RELOAD:-false}"
 JAEGER="${JAEGER:-true}"   # set JAEGER=false to skip docker compose
+
+for arg in "$@"; do
+  case $arg in
+    --reload)
+      RELOAD="true"
+      shift
+      ;;
+  esac
+done
 
 # ---------------------------------------------------------------------------
 # Docker Compose (Jaeger) — start if available and not disabled
@@ -62,12 +71,17 @@ trap _shutdown INT TERM
 
 echo "Starting OpenAgent UI on http://${HOST}:${PORT}"
 
-uv run uvicorn app.main:app \
-  --host "$HOST" \
-  --port "$PORT" \
-  $( [ "$RELOAD" = "true" ] && echo "--reload" ) \
-  --reload-dir "$ROOT/app" \
-  --reload-dir "$ROOT/openagent" &
+UVICORN_ARGS=(
+  "--host" "$HOST"
+  "--port" "$PORT"
+)
+
+if [ "$RELOAD" = "true" ]; then
+  echo "  Hot-reloading enabled"
+  UVICORN_ARGS+=("--reload" "--reload-dir" "$ROOT/app" "--reload-dir" "$ROOT/openagent")
+fi
+
+uv run uvicorn app.main:app "${UVICORN_ARGS[@]}" &
 
 UVICORN_PID=$!
 wait "$UVICORN_PID"

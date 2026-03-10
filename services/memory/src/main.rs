@@ -86,10 +86,14 @@ async fn main() -> Result<()> {
     let model = TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::BGESmallENV15)
             .with_cache_dir(embed_cache.into())
-            .with_show_download_progress(!embed_offline),
+            .with_show_download_progress(!embed_offline)
+            .with_execution_providers(vec![
+                ort::ep::CoreML::default().build(),
+                ort::ep::CPU::default().build(),
+            ]),
     )?;
     let model = Arc::new(Mutex::new(model));
-    info!(load_ms = t_model.elapsed().as_millis(), "embedding model loaded");
+    info!(load_ms = t_model.elapsed().as_millis(), "embedding model loaded (execution providers: CoreML, CPU fallback)");
 
     // Warm-up: force ONNX session init before first real request
     let t_warm = Instant::now();

@@ -72,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
     let ctx = WhisperContext::new_with_params(&model_path, WhisperContextParameters::default())
         .map_err(|e| anyhow::anyhow!("failed to load whisper model {model_path:?}: {e:?}"))?;
 
+    info!("whisper model loaded via whisper.cpp (Apple Metal GPU acceleration enabled by default)");
+
     let ctx = Arc::new(Mutex::new(ctx));
 
     let mut server = McpLiteServer::new(tools::make_tools(), "ready");

@@ -466,8 +466,15 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
     );
     let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(format!(
+            "{}=debug,sdk_rust=debug,info",
+            service_name.replace('-', "_")
+        ))
+    });
+
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+        .with(env_filter)
         .with(OpenTelemetryLayer::new(tracer))
         .with(otel_log_bridge)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
