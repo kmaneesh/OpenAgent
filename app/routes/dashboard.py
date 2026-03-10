@@ -40,10 +40,32 @@ def _online_services_from_manager(mgr) -> tuple[list[dict[str, Any]], list[dict[
     return go_services, rust_services
 
 
+def _get_vram_gb() -> tuple[float | None, float | None]:
+    import sys
+    import subprocess
+    import re
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["ioreg", "-l"], capture_output=True, timeout=1).stdout
+            m = re.search(br'"Alloc system memory"=(\d+)', out)
+            if m:
+                used_gb = int(m.group(1)) / (1024**3)
+                total_gb = psutil.virtual_memory().total / (1024**3)
+                return round(used_gb, 1), round(total_gb, 1)
+        except Exception:
+            pass
+    return None, None
+
 def _system_stats() -> dict:
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    vram_used, vram_total = _get_vram_gb()
+    
+    # Calculate percentage if we have vram stats, else None
+    vram_pct = None
+    if vram_used is not None and vram_total and vram_total > 0:
+        vram_pct = round((vram_used / vram_total) * 100, 1)
+
     temp: float | None = None
     try:
         temps = psutil.sensors_temperatures()
@@ -64,12 +86,13 @@ def _system_stats() -> dict:
         "ram_pct": ram.percent,
         "ram_used_mb": ram.used // (1024 * 1024),
         "ram_total_mb": ram.total // (1024 * 1024),
-        "disk_pct": disk.percent,
-        "disk_used_gb": disk.used // (1024 ** 3),
-        "disk_total_gb": disk.total // (1024 ** 3),
+        "vram_pct": vram_pct,
+        "vram_used_gb": vram_used,
+        "vram_total_gb": vram_total,
         "temp_c": round(temp, 1) if temp is not None else None,
         "uptime": f"{h:02d}:{m:02d}:{s:02d}",
     }
+
 
 
 def _python_packages(root: Path) -> list[dict[str, Any]]:

@@ -43,18 +43,23 @@
 </div>
 {% endfor %}
 
-<!-- Disk -->
+<!-- VRAM -->
 <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl p-4 shadow-sm dark:shadow-none flex items-center justify-between">
   <div>
-    <p class="text-xs text-stone-500 dark:text-stone-400 mb-1">Disk</p>
-    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">{{ stats.disk_pct }} %</p>
-    <p class="text-xs text-stone-400 dark:text-stone-500 mt-0.5">{{ stats.disk_used_gb }} / {{ stats.disk_total_gb }} GB</p>
+    <p class="text-xs text-stone-500 dark:text-stone-400 mb-1">VRAM</p>
+    {% if stats.vram_pct is not none %}
+    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">{{ stats.vram_pct }} %</p>
+    <p class="text-xs text-stone-400 dark:text-stone-500 mt-0.5">{{ stats.vram_used_gb }} / {{ stats.vram_total_gb }} GB</p>
+    {% else %}
+    <p class="text-2xl font-bold text-stone-900 dark:text-stone-100">N/A</p>
+    <p class="text-xs text-stone-400 dark:text-stone-500 mt-0.5">Apple Silicon Only</p>
+    {% endif %}
   </div>
   <div class="text-[#dea584] opacity-80">
     <svg class="w-8 h-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-      <ellipse cx="12" cy="5" rx="9" ry="3"/>
-      <path d="M21 5v6c0 1.657-4.03 3-9 3S3 12.657 3 11V5"/>
-      <path d="M21 11v6c0 1.657-4.03 3-9 3s-9-1.343-9-3v-6"/>
+      <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+      <rect x="9" y="9" width="6" height="6"/>
+      <path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"/>
     </svg>
   </div>
 </div>
