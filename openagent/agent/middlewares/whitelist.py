@@ -41,7 +41,7 @@ class WhitelistMiddleware:
             msg.channel_id,
         )
         async with self._lock:
-            allowed = (msg.platform, msg.channel_id) in self._allowed
+            allowed = msg.platform == "web" or (msg.platform, msg.channel_id) in self._allowed
         if not allowed:
             logger.info(
                 "Whitelist blocked — JID=%s (add to Settings → Whitelist: %s:%s)",
