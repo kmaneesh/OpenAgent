@@ -1,0 +1,70 @@
+"""Integration tests for the running memory service (Rust/LanceDB) via MCP-lite socket."""
+
+import pytest
+from pathlib import Path
+from openagent.platforms.mcplite import McpLiteClient
+
+
+@pytest.mark.asyncio
+async def test_memory_via_socket() -> None:
+    """Connect directly to the memory service socket and invoke its tools.
+    
+    This test expects the memory service to already be running (e.g. via `make local`
+    and `OPENAGENT_SOCKET_PATH=data/sockets/memory.sock ./bin/memory-darwin-arm64`).
+    """
+    root = Path(__file__).parent.parent.parent
+    socket_path = root / "data" / "sockets" / "memory.sock"
+    
+    if not socket_path.exists():
+        print("error memory service not running")
+        pytest.fail("error memory service not running")
+        
+    client = McpLiteClient(socket_path=socket_path)
+    
+    try:
+        await client.start()
+        
+        # 1. Test ping
+        ping_resp = await client.request({"type": "ping"}, timeout_s=2.0)
+        assert ping_resp.type == "pong"
+        assert ping_resp.status == "ready"
+        
+        # 2. List tools to verify memory exposes index_trace and search_memory
+        tools_resp = await client.request({"type": "tools.list"}, timeout_s=2.0)
+        assert tools_resp.type == "tools.list.ok"
+        tool_names = [t.name for t in tools_resp.tools]
+        assert "memory.index_trace" in tool_names
+        assert "memory.search_memory" in tool_names
+        
+        # 3. Index a test trace into LTS
+        index_args = {
+            "content": "pytest memory socket integration test content",
+            "store": "lts"
+        }
+        index_resp = await client.request({
+            "type": "tool.call",
+            "tool": "memory.index_trace",
+            "params": index_args
+        }, timeout_s=10.0)
+        
+        assert index_resp.type == "tool.result"
+        assert index_resp.error is None
+        assert "id" in index_resp.result
+        
+        # 4. Search for the content
+        search_args = {
+            "query": "pytest memory socket",
+            "store": "lts"
+        }
+        search_resp = await client.request({
+            "type": "tool.call",
+            "tool": "memory.search_memory",
+            "params": search_args
+        }, timeout_s=10.0)
+        
+        assert search_resp.type == "tool.result"
+        assert search_resp.error is None
+        assert "pytest memory socket integration test content" in search_resp.result
+        
+    finally:
+        await client.stop()
