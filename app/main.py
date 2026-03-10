@@ -18,7 +18,7 @@ from openagent.agent.middlewares.stt import STTMiddleware
 from openagent.agent.middlewares.tts import TTSMiddleware
 from openagent.agent.middlewares.whitelist import WhitelistMiddleware
 from openagent.agent.tools import ToolRegistry
-from openagent.browser_sessions import BrowserSessionManager
+from openagent.session.browser import BrowserSessionManager
 from openagent.bus.bus import MessageBus
 from openagent.platforms.manager import PlatformManager
 from openagent.platforms.web import WebPlatformAdapter

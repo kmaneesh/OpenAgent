@@ -21,7 +21,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from openagent.browser_sessions import BrowserSessionManager
+from openagent.session.browser import BrowserSessionManager
 from openagent.services.manager import ServiceManager
 from openagent.services import protocol as proto
 from openagent.observability.otel import get_tracer, current_trace_id, current_span_id
