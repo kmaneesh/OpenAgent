@@ -36,7 +36,7 @@ from openagent.observability.metrics import render_metrics
 from openagent.providers import get_provider
 from openagent.services.manager import ServiceManager
 from openagent.session import SessionManager, SqliteSessionBackend
-from openagent.settings_store import SettingsStore
+from openagent.session.settings import SettingsStore
 
 # ---------------------------------------------------------------------------
 # Paths
