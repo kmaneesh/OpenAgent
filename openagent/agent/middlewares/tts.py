@@ -69,12 +69,4 @@ def _is_audio(path: str) -> bool:
 
 
 def _lazy_tts() -> TTSFn | None:
-    """Resolve TTS extension at call time (fallback when tts_fn not injected)."""
-    try:
-        from openagent.manager import get_extension
-        ext = get_extension("tts")
-        if ext is not None:
-            return ext.speak
-    except Exception:
-        pass
     return None

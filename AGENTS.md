@@ -133,13 +133,11 @@ inspire/            # Reference implementations (gitignored)
 
 ## Naming Rules
 
-- **extension** — Python platform/media integration (`extensions/`)
 - **service** — Go (or compiled) long-lived daemon (`services/`)
 - **tool** — Python in-process callable or Rust/Go service capability declared in `service.json`
 - **worker** — Python async background task
-- Do NOT use: sidecar, plugin (except `plugin.py` entrypoint convention), engine
-- Keep `plugin.py` as the per-extension entrypoint filename convention
-- In core: prefer `load_extensions`, `ServiceManager`, extension-oriented naming
+- Do NOT use: sidecar, plugin (except `plugin.py` conventions if any), engine
+- In core: prefer `ServiceManager` and capability-oriented naming
 
 ## Agent File Rule
 
@@ -168,8 +166,7 @@ inspire/            # Reference implementations (gitignored)
 
 ## Change Discipline
 
-- Do not break entry-point based extension discovery
-- Do not hard-code extension names or service names in core
+- Do not hard-code service names in core
 - `service.json` is the only contract — core must not know service internals
 - Prefer backward-compatible interface evolution
 - If deviating from OpenClaw/Nanobot patterns, document why in comments or PR notes

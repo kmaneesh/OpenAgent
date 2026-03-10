@@ -74,7 +74,7 @@ class TestDiscordPlatformAdapter:
     def test_to_inbound_basic(self):
         msg = self.adapter._to_inbound({
             "id": "m1",
-            "platform_id": "chan1",
+            "channel_id": "chan1",
             "guild_id": "guild1",
             "author_id": "user1",
             "author": "Alice",
@@ -120,7 +120,7 @@ class TestDiscordPlatformAdapter:
                     self.client,
                     _make_event("discord.message.received", {
                         "id": "m2",
-                        "platform_id": "chan2",
+                        "channel_id": "chan2",
                         "author_id": "u2",
                         "author": "Bob",
                         "content": "hey",
@@ -146,7 +146,7 @@ class TestDiscordPlatformAdapter:
         self.client.request.assert_called_once()
         call_args = self.client.request.call_args[0][0]
         assert call_args["tool"] == "discord.send_message"
-        assert call_args["params"]["platform_id"] == "chan3"
+        assert call_args["params"]["channel_id"] == "chan3"
         assert call_args["params"]["text"] == "reply"
 
 
@@ -235,7 +235,7 @@ class TestSlackPlatformAdapter:
 
         asyncio.run(run())
         params = self.client.request.call_args[0][0]["params"]
-        assert params["platform_id"] == "C999"
+        assert params["channel_id"] == "C999"
         assert params["text"] == "yo"
 
 
@@ -372,7 +372,7 @@ class TestIdentityResolver:
             client=self.client, bus=self.bus, resolver=fake_resolver
         )
         event = _make_event("discord.message.received", {
-            "platform_id": "C1",
+            "channel_id": "C1",
             "author_id": "U1",
             "author": "alice",
             "content": "hello",
@@ -392,7 +392,7 @@ class TestIdentityResolver:
         """Without a resolver the adapter publishes with user_key == '' (fallback key)."""
         adapter = DiscordPlatformAdapter(client=self.client, bus=self.bus)
         event = _make_event("discord.message.received", {
-            "platform_id": "C2",
+            "channel_id": "C2",
             "author_id": "U2",
             "author": "bob",
             "content": "hi",
@@ -416,7 +416,7 @@ class TestIdentityResolver:
             client=self.client, bus=self.bus, resolver=bad_resolver
         )
         event = _make_event("discord.message.received", {
-            "platform_id": "C3",
+            "channel_id": "C3",
             "author_id": "U3",
             "author": "carol",
             "content": "test",

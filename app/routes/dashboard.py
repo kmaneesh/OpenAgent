@@ -98,37 +98,6 @@ def _python_packages(root: Path) -> list[dict[str, Any]]:
         "memory_display": f"{memory_mb} MB" if memory_mb is not None else "—",
     })
 
-    # Extensions from extensions/ — run in same process, no separate memory
-    extensions_dir = root / "extensions"
-    if extensions_dir.exists():
-        for ext_dir in sorted(extensions_dir.iterdir()):
-            if not ext_dir.is_dir():
-                continue
-            pyproject = ext_dir / "pyproject.toml"
-            if not pyproject.exists():
-                continue
-            try:
-                data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-                project = data.get("project", {})
-                version = str(project.get("version", "?"))
-                result.append({
-                    "name": ext_dir.name,
-                    "package": project.get("name", ext_dir.name),
-                    "version": version,
-                    "status": "installed",
-                    "memory_mb": None,
-                    "memory_display": "extension",
-                })
-            except (tomllib.TOMLDecodeError, OSError):
-                result.append({
-                    "name": ext_dir.name,
-                    "package": ext_dir.name,
-                    "version": "?",
-                    "status": "error",
-                    "memory_mb": None,
-                    "memory_display": "extension",
-                })
-
     return result
 
 

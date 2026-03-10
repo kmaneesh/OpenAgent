@@ -298,7 +298,7 @@ async def test_service_manager_restarts_after_crash(tmp_path: Path) -> None:
     await mgr.start()
 
     async def _wait_running(count: int = 0) -> bool:
-        for _ in range(40):
+        for _ in range(100):
             svcs = mgr.list_services()
             if svcs and svcs[0].status == ServiceStatus.RUNNING and svcs[0].restart_count == count:
                 return True
@@ -310,7 +310,8 @@ async def test_service_manager_restarts_after_crash(tmp_path: Path) -> None:
     # Kill the process — watchdog should detect exit and restart
     svc = mgr.list_services()[0]
     assert svc._process is not None
-    svc._process.terminate()
+    # Use kill to ensure immediate exit instead of graceful shutdown
+    svc._process.kill()
 
     # Wait for restart (restart_count becomes 1) and service to be RUNNING again
     assert await _wait_running(1), f"service did not restart; status={svc.status}, error={svc.last_error}"

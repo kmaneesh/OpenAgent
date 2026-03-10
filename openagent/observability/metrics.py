@@ -1,21 +1,6 @@
-"""Prometheus metrics registry and helpers for OpenAgent."""
-
 from __future__ import annotations
 
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
-
-EXTENSION_LIFECYCLE_TOTAL = Counter(
-    "openagent_extension_lifecycle_total",
-    "Extension lifecycle operations by extension and status.",
-    labelnames=("extension", "operation", "status"),
-)
-
-EXTENSION_OPERATION_SECONDS = Histogram(
-    "openagent_extension_operation_seconds",
-    "Duration of extension operations in seconds.",
-    labelnames=("extension", "provider", "operation", "status"),
-    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30),
-)
 
 MCP_REQUEST_TOTAL = Counter(
     "openagent_mcplite_request_total",
@@ -38,14 +23,14 @@ MCP_EVENTS_TOTAL = Counter(
 
 PROVIDER_CALL_TOTAL = Counter(
     "openagent_provider_call_total",
-    "Provider call outcomes by extension/provider/operation/status.",
-    labelnames=("extension", "provider", "operation", "status", "error_type"),
+    "Provider call outcomes by provider/operation/status.",
+    labelnames=("provider", "operation", "status", "error_type"),
 )
 
 PROVIDER_CALL_SECONDS = Histogram(
     "openagent_provider_call_seconds",
     "Provider call latency in seconds.",
-    labelnames=("extension", "provider", "operation", "status"),
+    labelnames=("provider", "operation", "status"),
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30),
 )
 

@@ -76,12 +76,4 @@ def _is_audio(path: str) -> bool:
 
 
 def _lazy_stt() -> STTFn | None:
-    """Resolve STT extension at call time (fallback when stt_fn not injected)."""
-    try:
-        from openagent.manager import get_extension
-        ext = get_extension("stt")
-        if ext is not None:
-            return ext.listen
-    except Exception:
-        pass
     return None

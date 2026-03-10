@@ -23,7 +23,6 @@ from openagent.bus.bus import MessageBus
 from openagent.platforms.manager import PlatformManager
 from openagent.platforms.web import WebPlatformAdapter
 from openagent.config import build_service_env_extras, load_config
-from openagent.manager import load_extensions
 from openagent.heartbeat import (
     HeartbeatService,
     heartbeat_enabled_from_env,
@@ -58,10 +57,6 @@ async def lifespan(app: FastAPI):
     logging.getLogger("openagent").info("Web UI started")
 
     app.state.root = ROOT
-
-    # Load extensions (whatsapp, etc.)
-    loaded_extensions = await load_extensions()
-    app.state.extensions = {e.name: e.instance for e in loaded_extensions}
 
     # Full config — provider, agents, session, platforms, tools
     cfg = load_config(ROOT / "config" / "openagent.yaml")
@@ -250,13 +245,6 @@ async def lifespan(app: FastAPI):
     await platform_manager.start()
 
     yield
-
-    # Shutdown extensions
-    for ext in getattr(app.state, "extensions", {}).values():
-        try:
-            await ext.shutdown()
-        except Exception:
-            pass
 
     await platform_manager.stop()
     browser_reaper_task.cancel()
