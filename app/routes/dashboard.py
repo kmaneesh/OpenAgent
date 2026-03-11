@@ -129,14 +129,20 @@ def _get_latest_log_content(root: Path, max_lines: int = 1000) -> str:
     logs_dir = root / "logs"
     if not logs_dir.exists() or not logs_dir.is_dir():
         return ""
-    
-    # Find the most recently modified .log file
-    log_files = list(logs_dir.glob("*.log"))
+
+    log_files = [
+        f for f in logs_dir.iterdir()
+        if f.is_file()
+        and (
+            f.suffix in {".log", ".jsonl"}
+            or ".logs." in f.name
+        )
+    ]
     if not log_files:
         return ""
-    
+
     latest_log_file = max(log_files, key=lambda f: f.stat().st_mtime)
-    
+
     try:
         # Read the file and return the last N lines
         with open(latest_log_file, "r", encoding="utf-8") as f:

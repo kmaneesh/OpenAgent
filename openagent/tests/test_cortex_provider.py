@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openagent.providers.base import Message
+from openagent.llm import Message
 from openagent.providers.cortex import CortexProvider, _render_transcript
 from openagent.services.protocol import ToolResultResponse
 

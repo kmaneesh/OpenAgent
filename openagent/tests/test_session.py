@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 
 from openagent.session import SessionManager, SqliteSessionBackend, Turn
-from openagent.providers.base import Message
+from openagent.llm import Message
 
 
 # ---------------------------------------------------------------------------

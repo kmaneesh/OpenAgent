@@ -6,8 +6,8 @@ import json
 from collections.abc import Callable
 from typing import Any, AsyncIterator
 
+from openagent.llm import LLMResponse, Message, StreamEvent
 from openagent.platforms.mcplite import McpLiteClient
-from openagent.providers.base import LLMResponse, Message, StreamEvent
 from openagent.services import protocol as proto
 
 

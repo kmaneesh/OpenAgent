@@ -20,25 +20,33 @@
   <div class="bg-white dark:bg-stone-800 border border-[#DEE2E6] dark:border-stone-700 rounded-xl overflow-hidden shadow-sm dark:shadow-none flex-1 flex flex-col min-h-0">
     <div class="px-4 py-3 border-b border-[#DEE2E6] dark:border-stone-700 flex items-center justify-between shrink-0">
       <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">{{ selected_file or "No file selected" }}</h2>
-      <span class="text-xs text-stone-500 dark:text-stone-400">Latest 2000 lines</span>
+      <span class="text-xs text-stone-500 dark:text-stone-400">
+        {% if log_entries %}
+          {{ log_entries|length }} records
+        {% else %}
+          Latest 2000 records
+        {% endif %}
+      </span>
     </div>
-    <div class="flex-1 overflow-auto bg-stone-50 dark:bg-stone-900 p-0 m-0 relative">
-      <pre class="font-mono text-[11px] leading-snug text-stone-600 dark:text-stone-300 whitespace-pre-wrap p-4 m-0 min-h-full" id="logs-container">{% if log_content %}{{ log_content }}{% else %}No logs found.{% endif %}</pre>
+    <div class="flex-1 overflow-auto bg-stone-50 dark:bg-stone-900 p-3 space-y-2 relative" id="logs-container">
+      {% if log_entries %}
+        {% for entry in log_entries %}
+          <details class="group rounded-lg border border-[#DEE2E6] dark:border-stone-700 bg-white dark:bg-stone-800 overflow-hidden shadow-sm dark:shadow-none" {% if loop.last %}open{% endif %}>
+            <summary class="cursor-pointer px-3 py-2.5 text-xs font-mono text-stone-700 dark:text-stone-200 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/60">
+              <span class="inline-flex items-start gap-3">
+                <span class="mt-0.5 text-stone-400 group-open:rotate-90 transition-transform">▶</span>
+                <span class="text-stone-400">{{ loop.index }}.</span>
+                <span class="whitespace-pre-wrap break-all">{{ entry.summary }}</span>
+              </span>
+            </summary>
+            <pre class="border-t border-[#DEE2E6] dark:border-stone-700 bg-stone-100 dark:bg-stone-950 font-mono text-[11px] leading-snug text-stone-700 dark:text-stone-300 whitespace-pre-wrap p-4 m-0">{{ entry.pretty }}</pre>
+          </details>
+        {% endfor %}
+      {% else %}
+        <div class="px-4 py-6 text-sm text-stone-500 dark:text-stone-400">No logs found.</div>
+      {% endif %}
     </div>
   </div>
 
 </div>
-
-<script>
-  (function() {
-    var preElement = document.getElementById('logs-container');
-    var container = preElement ? preElement.parentElement : null;
-    if (container) {
-        // Simple trick to scroll the container to the bottom 
-        setTimeout(function() {
-            container.scrollTop = container.scrollHeight;
-        }, 10);
-    }
-  })();
-</script>
 {% endblock %}

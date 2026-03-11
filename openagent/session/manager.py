@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Awaitable, Literal
 
-from openagent.providers.base import Message
+from openagent.llm import Message
 
 from .backend import SessionBackend, Turn
 

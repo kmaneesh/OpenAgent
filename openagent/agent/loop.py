@@ -53,7 +53,7 @@ from typing import Any
 
 from openagent.bus.bus import MessageBus
 from openagent.bus.events import InboundMessage, OutboundMessage
-from openagent.providers.base import LLMResponse, Message, Provider, StreamEvent, ToolCall
+from openagent.llm import LLMResponse, Message, Provider, StreamEvent, ToolCall
 from openagent.session.manager import SessionManager
 from openagent.agent.tools import ToolRegistry
 from openagent.agent.middlewares import AgentMiddleware

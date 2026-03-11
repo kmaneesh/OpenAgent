@@ -15,7 +15,7 @@ from openagent.agent.loop import AgentLoop, MAX_ITERATIONS, MAX_TOOL_OUTPUT
 from openagent.agent.tools import ToolRegistry, _to_openai_schema
 from openagent.bus.bus import MessageBus
 from openagent.bus.events import InboundMessage, SenderInfo
-from openagent.providers.base import LLMResponse, Message, StreamEvent, ToolCall
+from openagent.llm import LLMResponse, Message, StreamEvent, ToolCall
 from openagent.services import protocol as proto
 from openagent.session import SessionManager, SqliteSessionBackend
 

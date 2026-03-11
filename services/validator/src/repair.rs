@@ -17,17 +17,6 @@ impl Default for RepairMode {
     }
 }
 
-impl RepairMode {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::JsonObject => "json_object",
-            Self::JsonArray => "json_array",
-        }
-    }
-}
-
 pub trait RepairBackend: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &'static str;
     fn repair(&self, text: &str) -> Result<String>;
@@ -61,11 +50,6 @@ pub struct RepairEngine<B: RepairBackend> {
 impl<B: RepairBackend> RepairEngine<B> {
     pub fn new(backend: B) -> Self {
         Self { backend }
-    }
-
-    #[must_use]
-    pub fn backend_name(&self) -> &'static str {
-        self.backend.name()
     }
 
     pub fn repair_json(&self, text: &str, mode: RepairMode) -> Result<RepairOutcome> {

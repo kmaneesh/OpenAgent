@@ -36,12 +36,16 @@ async fn main() -> Result<()> {
             &params,
             vec![opentelemetry::KeyValue::new("tool", "validator.repair_json")],
         );
-        let mode = params.get("mode").and_then(Value::as_str).unwrap_or("auto");
+        let mode = params
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string();
         let input_len = params.get("text").and_then(Value::as_str).map_or(0, str::len);
         let span = info_span!(
             "validator.repair_json",
             backend = "llm_json",
-            mode = mode,
+            mode = mode.as_str(),
             input_len = input_len,
             status = tracing::field::Empty,
             was_repaired = tracing::field::Empty,
@@ -75,7 +79,7 @@ async fn main() -> Result<()> {
                 if ok {
                     info!(
                         backend = "llm_json",
-                        mode,
+                        mode = mode.as_str(),
                         input_len,
                         output_len,
                         was_repaired,
@@ -86,20 +90,20 @@ async fn main() -> Result<()> {
                 } else {
                     info!(
                         backend = "llm_json",
-                        mode,
+                        mode = mode.as_str(),
                         input_len,
                         output_len,
                         was_repaired,
                         changed,
                         duration_ms,
-                        error = parsed.get("error").and_then(Value::as_str).unwrap_or("unable_to_repair"),
-                        message = parsed.get("message").and_then(Value::as_str).unwrap_or("repair failed"),
+                        error = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("unable_to_repair"),
+                        message = parsed.get("message").and_then(|v| v.as_str()).unwrap_or("repair failed"),
                         "validator.repair.unable_to_repair"
                     );
                 }
 
                 telemetry.record(&repair_metric(
-                    mode,
+                    mode.as_str(),
                     status,
                     was_repaired,
                     changed,
@@ -117,7 +121,7 @@ async fn main() -> Result<()> {
 
                 error!(
                     backend = "llm_json",
-                    mode,
+                    mode = mode.as_str(),
                     input_len,
                     duration_ms,
                     error = %err,
@@ -125,7 +129,7 @@ async fn main() -> Result<()> {
                 );
 
                 telemetry.record(&repair_metric(
-                    mode,
+                    mode.as_str(),
                     "error",
                     false,
                     false,
