@@ -9,7 +9,7 @@ description = "Agentic Operating System — Rust-based agent loop and orchestrat
 sdk-rust = { path = "../sdk-rust" }
 
 # Runtime
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "time"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

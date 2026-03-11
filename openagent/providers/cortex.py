@@ -54,7 +54,7 @@ class CortexProvider:
         if not session_key:
             raise RuntimeError("cortex provider requires session_key")
 
-        user_input = _render_transcript(messages)
+        user_input = _latest_user_input(messages)
         payload: dict[str, Any] = {
             "type": "tool.call",
             "tool": "cortex.step",
@@ -87,17 +87,12 @@ class CortexProvider:
             yield StreamEvent(content=response.content)
 
 
-def _render_transcript(messages: list[Message]) -> str:
-    """Flatten message history into a deterministic text transcript for Phase 1."""
-    parts: list[str] = []
-    for message in messages:
-        if message.role == "system":
+def _latest_user_input(messages: list[Message]) -> str:
+    """Return only the latest user turn for stateless Cortex Phase 1."""
+    for message in reversed(messages):
+        if message.role != "user":
             continue
-        role = message.role.upper()
-        if message.role == "tool" and message.tool_name:
-            role = f"TOOL:{message.tool_name}"
         content = message.content.strip()
-        if not content:
-            continue
-        parts.append(f"{role}: {content}")
-    return "\n\n".join(parts).strip()
+        if content:
+            return content
+    raise RuntimeError("cortex provider requires at least one user message")

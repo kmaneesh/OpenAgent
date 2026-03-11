@@ -11,7 +11,7 @@
 #   OPENAGENT_API_KEY         — API key / bearer token
 #   OPENAGENT_MODEL           — concrete model name (required by Cortex)
 #   OPENAGENT_LLM_TIMEOUT     — request timeout in seconds (float)
-#   OPENAGENT_LOG_RAW_LLM_RESPONSE — 1/true to log full raw provider response in Cortex
+#   OPENAGENT_DEBUG_LLM      — 1/true to log outbound request and raw provider response in Cortex
 #
 # ── Platform env vars (preferred over storing secrets in YAML) ─────────────
 #   DISCORD_TOKEN             — Discord bot token
@@ -41,7 +41,7 @@ provider:
   model: qwen2.5-7b-instruct
   timeout: 60.0
   max_tokens: 2048
-  log_raw_response: false   # debug only; logs the full provider body from Cortex
+  debug_llm: false     # debug only; logs outbound request and raw provider response from Cortex
 
   # Option B: Anthropic Claude
   # kind: anthropic

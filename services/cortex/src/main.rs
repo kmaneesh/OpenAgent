@@ -3,6 +3,7 @@ mod handlers;
 mod llm;
 mod metrics;
 mod tools;
+mod validator;
 
 use anyhow::Result;
 use metrics::CortexTelemetry;

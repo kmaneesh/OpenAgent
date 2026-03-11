@@ -24,28 +24,37 @@ pub struct StepOutput {
 pub async fn complete(provider: &ProviderConfig, prompt: &StepPrompt) -> Result<StepOutput> {
     let requested_model = requested_model(provider)?;
     let client = build_client(provider);
+    let debug_request = build_debug_request(provider, prompt);
     let chat_req = ChatRequest::new(vec![ChatMessage::user(prompt.user_input.clone())])
         .with_system(prompt.system_prompt.clone());
     let chat_options = ChatOptions::default()
         .with_max_tokens(provider.max_tokens)
         .with_capture_raw_body(true)
         .with_normalize_reasoning_content(true);
+    if provider.debug_llm {
+        info!(
+            provider_kind = %provider.kind,
+            model = %requested_model,
+            llm_http_request = %debug_request,
+            "cortex.llm.http.request"
+        );
+    }
     let chat_res = client
         .exec_chat(&requested_model, chat_req, Some(&chat_options))
         .await?;
-    if provider.log_raw_response {
+    if provider.debug_llm {
         if let Some(raw) = chat_res.captured_raw_body.as_ref() {
             info!(
                 provider_kind = %provider.kind,
                 model = %requested_model,
-                raw_llm_response = %raw,
-                "cortex.llm.raw_response"
+                llm_http_response = %raw,
+                "cortex.llm.http.response"
             );
         } else {
             info!(
                 provider_kind = %provider.kind,
                 model = %requested_model,
-                "cortex.llm.raw_response.unavailable"
+                "cortex.llm.http.response.unavailable"
             );
         }
     }
@@ -220,6 +229,35 @@ fn raw_model_name(provider: &ProviderConfig) -> String {
     provider.model.trim().to_string()
 }
 
+fn build_debug_request(provider: &ProviderConfig, prompt: &StepPrompt) -> Value {
+    let base_url = normalize_base_url(&provider.base_url);
+    let path = match adapter_kind_for(provider) {
+        AdapterKind::Anthropic => "messages",
+        AdapterKind::OpenAI => "chat/completions",
+        _ => "chat/completions",
+    };
+
+    let url = if base_url.is_empty() {
+        path.to_string()
+    } else {
+        format!("{base_url}{path}")
+    };
+
+    json!({
+        "method": "POST",
+        "url": url,
+        "payload": {
+            "model": raw_model_name(provider),
+            "messages": [
+                {"role": "system", "content": prompt.system_prompt},
+                {"role": "user", "content": prompt.user_input}
+            ],
+            "stream": false,
+            "max_tokens": provider.max_tokens,
+        }
+    })
+}
+
 fn normalize_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim();
     if trimmed.is_empty() {
@@ -274,7 +312,7 @@ mod tests {
             model: "qwen2.5-7b-instruct".to_string(),
             timeout: 60.0,
             max_tokens: 2048,
-            log_raw_response: false,
+            debug_llm: false,
         };
         assert_eq!(
             requested_model(&provider).expect("model should resolve"),
@@ -291,6 +329,29 @@ mod tests {
         assert_eq!(
             normalize_base_url("http://localhost:1234/v1/"),
             "http://localhost:1234/v1/"
+        );
+    }
+
+    #[test]
+    fn build_debug_request_uses_openai_chat_completions_endpoint() {
+        let provider = ProviderConfig {
+            kind: "openai_compat".to_string(),
+            base_url: "http://localhost:1234/v1".to_string(),
+            api_key: String::new(),
+            model: "qwen2.5-7b-instruct".to_string(),
+            timeout: 60.0,
+            max_tokens: 2048,
+            debug_llm: true,
+        };
+        let prompt = StepPrompt {
+            system_prompt: "system".to_string(),
+            user_input: "user".to_string(),
+        };
+
+        let request = build_debug_request(&provider, &prompt);
+        assert_eq!(
+            request.get("url").and_then(Value::as_str),
+            Some("http://localhost:1234/v1/chat/completions")
         );
     }
 

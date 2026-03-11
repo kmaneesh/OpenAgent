@@ -30,7 +30,7 @@ pub struct ProviderConfig {
     #[serde(default = "default_provider_max_tokens")]
     pub max_tokens: u32,
     #[serde(default)]
-    pub log_raw_response: bool,
+    pub debug_llm: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,7 +67,7 @@ impl Default for ProviderConfig {
             model: String::new(),
             timeout: default_provider_timeout(),
             max_tokens: default_provider_max_tokens(),
-            log_raw_response: false,
+            debug_llm: false,
         }
     }
 }
@@ -161,8 +161,8 @@ fn apply_provider_env_overrides(provider: &mut ProviderConfig) {
             provider.timeout = parsed;
         }
     }
-    if let Ok(value) = env::var("OPENAGENT_LOG_RAW_LLM_RESPONSE") {
-        provider.log_raw_response = matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES");
+    if let Ok(value) = env::var("OPENAGENT_DEBUG_LLM") {
+        provider.debug_llm = matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES");
     }
 }
 

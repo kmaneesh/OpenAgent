@@ -1,6 +1,7 @@
 use crate::config::CortexConfig;
 use crate::llm::{build_prompt, complete, prompt_preview};
 use crate::metrics::{elapsed_ms, step_err, step_ok, CortexTelemetry};
+use crate::validator::maybe_validate_response;
 use anyhow::{anyhow, Result};
 use opentelemetry::KeyValue;
 use serde_json::{json, Value};
@@ -107,7 +108,13 @@ pub fn handle_step(params: Value, tel: Arc<CortexTelemetry>) -> Result<String> {
     });
 
     match result {
-        Ok(output) => {
+        Ok(mut output) => {
+            let validation = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(async { maybe_validate_response(&output.content).await })
+            })?;
+            let validator_repaired = validation.was_repaired;
+            output.content = validation.content;
             let duration_ms = elapsed_ms(started);
             span.record("status", "ok");
             span.record("duration_ms", duration_ms);
@@ -118,6 +125,7 @@ pub fn handle_step(params: Value, tel: Arc<CortexTelemetry>) -> Result<String> {
                 model = %output.model,
                 duration_ms,
                 output_len = output.content.len(),
+                validator_repaired,
                 "cortex.step.ok"
             );
             tel.record(&step_ok(
