@@ -1,6 +1,7 @@
 """Integration tests for the running memory service (Rust/LanceDB) via MCP-lite socket."""
 
 import pytest
+import json
 from pathlib import Path
 from openagent.platforms.mcplite import McpLiteClient
 
@@ -33,17 +34,18 @@ async def test_memory_via_socket() -> None:
         tools_resp = await client.request({"type": "tools.list"}, timeout_s=2.0)
         assert tools_resp.type == "tools.list.ok"
         tool_names = [t.name for t in tools_resp.tools]
-        assert "memory.index_trace" in tool_names
-        assert "memory.search_memory" in tool_names
+        assert "memory.index" in tool_names
+        assert "memory.search" in tool_names
+        assert "memory.delete" in tool_names
         
         # 3. Index a test trace into LTS
         index_args = {
             "content": "pytest memory socket integration test content",
-            "store": "lts"
+            "store": "ltm"
         }
         index_resp = await client.request({
             "type": "tool.call",
-            "tool": "memory.index_trace",
+            "tool": "memory.index",
             "params": index_args
         }, timeout_s=10.0)
         
@@ -54,17 +56,39 @@ async def test_memory_via_socket() -> None:
         # 4. Search for the content
         search_args = {
             "query": "pytest memory socket",
-            "store": "lts"
+            "store": "ltm"
         }
         search_resp = await client.request({
             "type": "tool.call",
-            "tool": "memory.search_memory",
+            "tool": "memory.search",
             "params": search_args
         }, timeout_s=10.0)
         
         assert search_resp.type == "tool.result"
         assert search_resp.error is None
         assert "pytest memory socket integration test content" in search_resp.result
+        
+        # 5. Hybrid search with specialized keyword
+        keyword_content = "The elusive pink-spotted-giraffe lives in the savanna."
+        await client.request({
+            "type": "tool.call",
+            "tool": "memory.index",
+            "params": {"content": keyword_content, "store": "stm"}
+        }, timeout_s=10.0)
+        
+        search_res = await client.request({
+            "type": "tool.call",
+            "tool": "memory.search",
+            "params": {"query": "pink-spotted-giraffe", "store": "all"}
+        }, timeout_s=10.0)
+        
+        results = json.loads(search_res.result)
+        # Verify that the keyword-matched document is top and has FTS metadata
+        assert any(keyword_content in r['content'] for r in results)
+        top_hit = results[0]
+        assert "rrf_score" in top_hit
+        assert "fts_rank" in top_hit
+        assert top_hit["fts_rank"] > 0
         
     finally:
         await client.stop()

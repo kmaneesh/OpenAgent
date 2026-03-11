@@ -6,6 +6,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use lancedb::connection::Connection;
+use lancedb::index::{scalar::FtsIndexBuilder, Index};
 use serde_json::json;
 use std::sync::Arc;
 use tracing::info;
@@ -22,10 +23,10 @@ pub const DEFAULT_SOCKET_PATH: &str = "data/sockets/memory.sock";
 pub const DEFAULT_EMBED_CACHE: &str = "data/models";
 /// Default logs directory — relative to project root.
 pub const DEFAULT_LOGS_DIR: &str = "logs";
-/// Long-term summary store table name.
-pub const LTS_TABLE: &str = "lts";
-/// Short-term conversation chain table name.
-pub const STS_TABLE: &str = "sts";
+/// Long-term memory store table name.
+pub const LTS_TABLE: &str = "ltm";
+/// Short-term memory store table name.
+pub const STS_TABLE: &str = "stm";
 
 /// Build the canonical Arrow schema for both memory tables.
 pub fn table_schema() -> Arc<Schema> {
@@ -45,12 +46,28 @@ pub fn table_schema() -> Arc<Schema> {
     ]))
 }
 
-/// Ensure `name` table exists in `db`, creating it (empty) if absent.
+/// Ensure `name` table exists in `db`.
+///
+/// If the table is absent it is created empty and immediately given a BM25
+/// full-text search index on the `content` column.  This means every table
+/// is born with hybrid (dense + keyword) search capability from the first
+/// document insert — no retroactive index rebuild ever needed.
 pub async fn ensure_table(db: &Connection, name: &str) -> Result<()> {
     let names = db.table_names().execute().await?;
     if !names.contains(&name.to_string()) {
-        db.create_empty_table(name.to_string(), table_schema()).execute().await?;
+        // Create the empty table with the canonical schema.
+        db.create_empty_table(name.to_string(), table_schema())
+            .execute()
+            .await?;
         info!(table = name, "created memory table");
+
+        // Immediately create a BM25 full-text search index on `content`.
+        // Using the default `simple` tokenizer with English stemming/stopwords.
+        let tbl = db.open_table(name).execute().await?;
+        tbl.create_index(&["content"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await?;
+        info!(table = name, "created BM25 FTS index on content column");
     }
     Ok(())
 }

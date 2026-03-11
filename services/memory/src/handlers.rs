@@ -13,6 +13,7 @@ use arrow_array::{ArrayRef, Float32Array, StringArray};
 use fastembed::TextEmbedding;
 use futures::TryStreamExt as _;
 use lancedb::connection::Connection;
+use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use opentelemetry::KeyValue;
 use serde_json::{json, Value};
@@ -21,7 +22,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-pub fn handle_index_trace(
+pub fn handle_index(
     params: Value,
     db: Arc<Connection>,
     model: Arc<Mutex<TextEmbedding>>,
@@ -39,9 +40,9 @@ pub fn handle_index_trace(
         return Err(anyhow::anyhow!("{}", err_json("content is required")));
     }
     let table_name: &str = match store.as_str() {
-        "lts" => LTS_TABLE,
-        "sts" => STS_TABLE,
-        _ => return Err(anyhow::anyhow!("{}", err_json("store must be 'lts' or 'sts'"))),
+        "ltm" => LTS_TABLE,
+        "stm" => STS_TABLE,
+        _ => return Err(anyhow::anyhow!("{}", err_json("store must be 'ltm' or 'stm'"))),
     };
 
     let content_len = content.len();
@@ -70,7 +71,7 @@ pub fn handle_index_trace(
     let _enter = op_span.enter();
 
     // ── Pillar: Logs ─────────────────────────────────────────────────────────
-    info!(index = %store, content_len, "memory.index_trace start");
+    info!(index = %store, content_len, "memory.index start");
 
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
@@ -132,7 +133,7 @@ pub fn handle_index_trace(
     result
 }
 
-pub fn handle_search_memory(
+pub fn handle_search(
     params: Value,
     db: Arc<Connection>,
     model: Arc<Mutex<TextEmbedding>>,
@@ -148,13 +149,13 @@ pub fn handle_search_memory(
         return Err(anyhow::anyhow!("{}", err_json("query is required")));
     }
     let tables: Vec<&str> = match store.as_str() {
-        "lts" => vec![LTS_TABLE],
-        "sts" => vec![STS_TABLE],
+        "ltm" => vec![LTS_TABLE],
+        "stm" => vec![STS_TABLE],
         "all" => vec![LTS_TABLE, STS_TABLE],
         _ => {
             return Err(anyhow::anyhow!(
                 "{}",
-                err_json("store must be 'lts', 'sts', or 'all'")
+                err_json("store must be 'ltm', 'stm', or 'all'")
             ))
         }
     };
@@ -167,7 +168,7 @@ pub fn handle_search_memory(
     let _cx_guard = MemoryTelemetry::attach_context(
         &params,
         vec![
-            KeyValue::new("tool", "memory.search_memory"),
+            KeyValue::new("tool", "memory.search"),
             KeyValue::new("store", store.clone()),
         ],
     );
@@ -180,17 +181,15 @@ pub fn handle_search_memory(
         embed_ms = tracing::field::Empty,
         search_ms = tracing::field::Empty,
         result_count = tracing::field::Empty,
-        top_score = tracing::field::Empty,
+        top_rrf = tracing::field::Empty,
         status = tracing::field::Empty,
     );
     let _enter = op_span.enter();
-
-    // ── Pillar: Logs ─────────────────────────────────────────────────────────
-    info!(index = %store, query_len, "memory.search_memory start");
+    info!(index = %store, query_len, "memory.search start (hybrid: dense + BM25 + RRF)");
 
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current().block_on(async {
-            // ── Embed query ────────────────────────────────────────────────────
+            // ── 1. Embed query for dense ANN ──────────────────────────────────
             let t_embed = Instant::now();
             let embeddings = model
                 .lock()
@@ -201,33 +200,38 @@ pub fn handle_search_memory(
             let query_vec = embeddings
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("{}", err_json("no embedding returned")))?;
-
             op_span.record("embed_ms", embed_ms);
             info!(embed_ms = embed_ms, query_len = query_len, "embedded query");
 
-            // ── Search per index, collect hits for global ranking ──────────────
+            // ── 2. Per-table: dense ANN + BM25, annotate with FTS rank ────────
             let t_search = Instant::now();
 
-            struct Hit {
-                distance: f32,
-                id: String,
-                content: String,
-                metadata: String,
+            struct RawHit {
+                id:         String,
+                content:    String,
+                metadata:   String,
                 created_at: String,
-                index: String,
+                index:      String,
+                distance:   f32,
+                fts_rank:   usize,
             }
 
-            let mut hits: Vec<Hit> = Vec::new();
+            let get_str = |col: Option<&ArrayRef>, fallback: &str, i: usize| -> String {
+                col.and_then(|c| c.as_any().downcast_ref::<StringArray>())
+                    .map(|a| a.value(i).to_string())
+                    .unwrap_or_else(|| fallback.to_string())
+            };
+
+            let mut all_hits: Vec<RawHit> = Vec::new();
 
             for table_name in &tables {
                 let tbl = match db.open_table(table_name.to_string()).execute().await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warn!(index = table_name, error = %e, "open table failed");
-                        continue;
-                    }
+                    Ok(t)  => t,
+                    Err(e) => { warn!(index = table_name, error = %e, "open table failed"); continue; }
                 };
-                let stream = match tbl
+
+                // Dense ANN
+                let dense_batches: Vec<arrow_array::RecordBatch> = match tbl
                     .query()
                     .nearest_to(query_vec.as_slice())
                     .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -235,89 +239,167 @@ pub fn handle_search_memory(
                     .execute()
                     .await
                 {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!(index = table_name, error = %e, "search failed");
-                        continue;
-                    }
+                    Ok(s)  => s.try_collect().await.map_err(|e| anyhow::anyhow!("{e}"))?,
+                    Err(e) => { warn!(index = table_name, error = %e, "dense search failed"); vec![] }
                 };
 
-                let batches: Vec<arrow_array::RecordBatch> =
-                    stream.try_collect().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                // BM25 FTS
+                let fts_batches: Vec<arrow_array::RecordBatch> = match tbl
+                    .query()
+                    .full_text_search(FullTextSearchQuery::new(query_owned.clone()))
+                    .limit(TOP_K)
+                    .execute()
+                    .await
+                {
+                    Ok(s)  => s.try_collect().await.map_err(|e| anyhow::anyhow!("{e}"))?,
+                    Err(e) => { warn!(index = table_name, error = %e, "fts search failed"); vec![] }
+                };
 
-                for batch in &batches {
-                    let id_col = batch.column_by_name("id");
+                // FTS id→rank map (1-based)
+                let mut fts_rank_map: std::collections::HashMap<String, usize> =
+                    std::collections::HashMap::new();
+                let mut fts_pos: usize = 1;
+                for batch in &fts_batches {
+                    if let Some(id_col) = batch.column_by_name("id") {
+                        for i in 0..id_col.len() {
+                            let id = id_col
+                                .as_any()
+                                .downcast_ref::<StringArray>()
+                                .map(|a| a.value(i).to_string())
+                                .unwrap_or_default();
+                            fts_rank_map.entry(id).or_insert(fts_pos);
+                            fts_pos += 1;
+                        }
+                    }
+                }
+
+                // Collect dense hits, annotate with FTS rank
+                for batch in &dense_batches {
+                    let id_col      = batch.column_by_name("id");
                     let content_col = batch.column_by_name("content");
-                    let meta_col = batch.column_by_name("metadata");
-                    let ts_col = batch.column_by_name("created_at");
-                    let dist_col = batch.column_by_name("_distance");
+                    let meta_col    = batch.column_by_name("metadata");
+                    let ts_col      = batch.column_by_name("created_at");
+                    let dist_col    = batch.column_by_name("_distance");
 
                     for i in 0..id_col.map(|c| c.len()).unwrap_or(0) {
-                        let get_str = |col: Option<&ArrayRef>, fallback: &str| -> String {
-                            col.and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                                .map(|a| a.value(i).to_string())
-                                .unwrap_or_else(|| fallback.to_string())
-                        };
+                        let id = get_str(id_col, "", i);
+                        let fts_rank = *fts_rank_map.get(&id).unwrap_or(&0);
                         let distance = dist_col
                             .and_then(|c| c.as_any().downcast_ref::<Float32Array>())
                             .map(|a| a.value(i))
                             .unwrap_or(f32::MAX);
-
-                        hits.push(Hit {
-                            distance,
-                            id: get_str(id_col, ""),
-                            content: get_str(content_col, ""),
-                            metadata: get_str(meta_col, "{}"),
-                            created_at: get_str(ts_col, ""),
-                            index: table_name.to_string(),
+                        all_hits.push(RawHit {
+                            id, fts_rank, distance,
+                            content:    get_str(content_col, "",   i),
+                            metadata:   get_str(meta_col,    "{}", i),
+                            created_at: get_str(ts_col,      "",   i),
+                            index:      table_name.to_string(),
                         });
+                    }
+                }
+
+                // FTS-only hits not in dense results
+                let dense_ids: std::collections::HashSet<String> =
+                    all_hits.iter().map(|h| h.id.clone()).collect();
+                for batch in &fts_batches {
+                    let id_col      = batch.column_by_name("id");
+                    let content_col = batch.column_by_name("content");
+                    let meta_col    = batch.column_by_name("metadata");
+                    let ts_col      = batch.column_by_name("created_at");
+                    for i in 0..id_col.map(|c| c.len()).unwrap_or(0) {
+                        let id = get_str(id_col, "", i);
+                        if !dense_ids.contains(&id) {
+                            let fts_rank = *fts_rank_map.get(&id).unwrap_or(&(TOP_K + 1));
+                            all_hits.push(RawHit {
+                                id, fts_rank,
+                                distance:   f32::MAX,
+                                content:    get_str(content_col, "",   i),
+                                metadata:   get_str(meta_col,    "{}", i),
+                                created_at: get_str(ts_col,      "",   i),
+                                index:      table_name.to_string(),
+                            });
+                        }
                     }
                 }
             }
 
             let search_ms = t_search.elapsed().as_secs_f64() * 1000.0;
 
-            hits.sort_by(|a, b| {
-                a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal)
-            });
-            hits.truncate(TOP_K);
+            // ── 3. RRF fusion: score = 1/(dr+k) + 1/(fr+k),  k=60 ────────────
+            const K: f32 = 60.0;
+            let n = all_hits.len();
 
-            let top_score = hits.first().map(|h| (1.0_f32 - h.distance).clamp(0.0, 1.0));
-            let result_count = hits.len();
+            let mut dense_order: Vec<usize> = (0..n).collect();
+            dense_order.sort_by(|&a, &b| {
+                all_hits[a].distance
+                    .partial_cmp(&all_hits[b].distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let mut dense_rank = vec![TOP_K + 1; n];
+            for (rank, &idx) in dense_order.iter().enumerate() {
+                if all_hits[idx].distance < f32::MAX {
+                    dense_rank[idx] = rank + 1;
+                }
+            }
+
+            let rrf_scores: Vec<f32> = (0..n)
+                .map(|i| {
+                    let dr = dense_rank[i] as f32;
+                    let fr = if all_hits[i].fts_rank > 0 {
+                        all_hits[i].fts_rank as f32
+                    } else {
+                        (TOP_K + 1) as f32
+                    };
+                    1.0 / (dr + K) + 1.0 / (fr + K)
+                })
+                .collect();
+
+            let mut order: Vec<usize> = (0..n).collect();
+            order.sort_by(|&a, &b| {
+                rrf_scores[b].partial_cmp(&rrf_scores[a]).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            order.truncate(TOP_K);
+
+            let top_rrf = order.first().map(|&i| rrf_scores[i]);
+            let result_count = order.len();
 
             op_span.record("search_ms", search_ms);
             op_span.record("result_count", result_count as i64);
             op_span.record("status", "ok");
-            if let Some(s) = top_score {
-                op_span.record("top_score", f64::from(s));
-            }
-
+            if let Some(s) = top_rrf { op_span.record("top_rrf", f64::from(s)); }
             info!(
                 index = %store_owned, embed_ms = embed_ms, search_ms = search_ms,
-                result_count = result_count, top_score = top_score.unwrap_or(0.0),
-                "search complete"
+                result_count = result_count, top_rrf = top_rrf.unwrap_or(0.0),
+                "hybrid search complete"
             );
 
-            let results: Vec<Value> = hits
+            let results: Vec<Value> = order
                 .iter()
-                .map(|h| {
-                    let score = (1.0_f32 - h.distance).clamp(0.0, 1.0);
+                .map(|&i| {
+                    let h = &all_hits[i];
+                    let dense_score = if h.distance < f32::MAX {
+                        (1.0_f32 - h.distance).clamp(0.0, 1.0)
+                    } else { 0.0 };
                     json!({
-                        "id": h.id, "content": h.content, "metadata": h.metadata,
-                        "created_at": h.created_at, "store": h.index,
-                        "score":    round3(f64::from(score)),
-                        "distance": round3(f64::from(h.distance)),
+                        "id":          h.id,
+                        "content":     h.content,
+                        "metadata":    h.metadata,
+                        "created_at":  h.created_at,
+                        "store":       h.index,
+                        "rrf_score":   round3(f64::from(rrf_scores[i])),
+                        "dense_score": round3(f64::from(dense_score)),
+                        "dense_rank":  dense_rank[i],
+                        "fts_rank":    h.fts_rank,
                     })
                 })
                 .collect();
 
-            // Metrics
             tel.record(&json!({
                 "ts_ms": ts_ms(), "service": "memory", "op": "search", "status": "ok",
                 "index": store_owned, "query_len": query_len,
                 "embed_ms": round1(embed_ms), "search_ms": round1(search_ms),
                 "result_count": result_count,
-                "top_score": top_score.map(|s| round3(f64::from(s))),
+                "top_rrf": top_rrf.map(|s| round3(f64::from(s))),
             }));
 
             Ok::<_, anyhow::Error>(
@@ -332,6 +414,149 @@ pub fn handle_search_memory(
         tel.record(&json!({
             "ts_ms": ts_ms(), "service": "memory", "op": "search", "status": "error",
             "index": store, "query_len": query_len,
+        }));
+    }
+    result
+}
+
+
+pub fn handle_delete(
+    params: Value,
+    db: Arc<Connection>,
+    tel: Arc<MemoryTelemetry>,
+) -> Result<String> {
+    let p = params
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{}", err_json("params must be an object")))?;
+    let store = p.get("store").and_then(|v| v.as_str()).unwrap_or("").trim().to_lowercase();
+    let id_opt: Option<String> = p.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+
+    let table_name: &str = match store.as_str() {
+        "ltm" => LTS_TABLE,
+        "stm" => STS_TABLE,
+        _ => return Err(anyhow::anyhow!("{}", err_json("store must be 'ltm' or 'stm'"))),
+    };
+
+    let store_owned = store.clone();
+
+    let op_span = tracing::info_span!(
+        "memory.delete",
+        index = %store,
+        by_id = id_opt.is_some(),
+        status = tracing::field::Empty,
+    );
+    let _enter = op_span.enter();
+
+    match &id_opt {
+        Some(id) => info!(index = %store, doc_id = %id, "memory.delete by id"),
+        None      => info!(index = %store, "memory.delete purge all"),
+    }
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let tbl = db.open_table(table_name).execute().await?;
+            let predicate = match &id_opt {
+                Some(id) => format!("id = '{}'", id.replace('\'', "''")),
+                None     => "true".to_string(),   // matches every row — full purge
+            };
+            tbl.delete(&predicate).await?;
+            op_span.record("status", "ok");
+
+            match &id_opt {
+                Some(id) => info!(index = %table_name, doc_id = %id, "document deleted"),
+                None     => info!(index = %table_name, "store purged"),
+            }
+
+            tel.record(&json!({
+                "ts_ms": ts_ms(), "service": "memory", "op": "delete", "status": "ok",
+                "index": store_owned,
+                "by_id": id_opt.is_some(),
+            }));
+
+            let msg = match &id_opt {
+                Some(id) => format!("deleted document {id} from {table_name}"),
+                None     => format!("purged all documents from {table_name}"),
+            };
+            Ok::<_, anyhow::Error>(json!({ "ok": true, "message": msg }).to_string())
+        })
+    });
+
+    if let Err(ref e) = result {
+        op_span.record("status", "error");
+        error!(index = %store, error = %e, "delete failed");
+        tel.record(&json!({
+            "ts_ms": ts_ms(), "service": "memory", "op": "delete", "status": "error",
+            "index": store,
+        }));
+    }
+    result
+}
+
+/// Prune stale documents from STS (short-term store).
+///
+/// Deletes every row whose `created_at` Unix-second timestamp is older than
+/// `max_age_secs` (default: 86400 s = 24 h).  Returns the number of rows removed.
+pub fn handle_prune(
+    params: Value,
+    db: Arc<Connection>,
+    tel: Arc<MemoryTelemetry>,
+) -> Result<String> {
+    let p = params.as_object().ok_or_else(|| anyhow::anyhow!("{}", err_json("params must be an object")))?;
+
+    // Optional override; defaults to 24 h
+    let max_age_secs: u64 = p
+        .get("max_age_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(86_400);
+
+    let op_span = tracing::info_span!(
+        "memory.prune",
+        index = STS_TABLE,
+        max_age_secs = max_age_secs,
+        pruned = tracing::field::Empty,
+        status = tracing::field::Empty,
+    );
+    let _enter = op_span.enter();
+    info!(index = STS_TABLE, max_age_secs, "memory.prune start");
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            let cutoff: u64 = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+                .saturating_sub(max_age_secs);
+
+            // Count rows before deletion so we can report pruned count
+            let tbl = db.open_table(STS_TABLE).execute().await?;
+            let stale_predicate = format!("CAST(created_at AS BIGINT) < {cutoff}");
+            let pruned: usize = tbl.count_rows(Some(stale_predicate.clone())).await?;
+
+            // Delete the stale rows
+            tbl.delete(&stale_predicate).await?;
+
+            op_span.record("pruned", pruned as i64);
+            op_span.record("status", "ok");
+            info!(index = STS_TABLE, pruned, cutoff, "prune complete");
+
+            tel.record(&json!({
+                "ts_ms": ts_ms(), "service": "memory", "op": "prune", "status": "ok",
+                "index": STS_TABLE, "max_age_secs": max_age_secs,
+                "pruned": pruned, "cutoff": cutoff,
+            }));
+
+            Ok::<_, anyhow::Error>(
+                json!({ "ok": true, "pruned": pruned, "cutoff_unix": cutoff }).to_string(),
+            )
+        })
+    });
+
+    if let Err(ref e) = result {
+        op_span.record("status", "error");
+        error!(index = STS_TABLE, error = %e, "prune failed");
+        tel.record(&json!({
+            "ts_ms": ts_ms(), "service": "memory", "op": "prune", "status": "error",
+            "index": STS_TABLE, "max_age_secs": max_age_secs,
         }));
     }
     result

@@ -1,0 +1,40 @@
+{
+  "name": "validator",
+  "description": "Repair malformed JSON from LLM output into compact canonical JSON. Targets common LLM mistakes like trailing commas, single quotes, unquoted keys, comments, wrappers, and incomplete brackets.",
+  "version": "0.1.0",
+  "binary": {
+    "linux/arm64": "bin/validator-linux-arm64",
+    "linux/amd64": "bin/validator-linux-amd64",
+    "darwin/arm64": "bin/validator-darwin-arm64",
+    "darwin/amd64": "bin/validator-darwin-amd64"
+  },
+  "socket": "data/sockets/validator.sock",
+  "health": {
+    "interval_ms": 5000,
+    "timeout_ms": 2000,
+    "restart_backoff_ms": [1000, 2000, 5000, 10000, 30000]
+  },
+  "tools": [
+    {
+      "name": "validator.repair_json",
+      "description": "Repair malformed JSON and return compact canonical JSON. Use mode json_object or json_array to enforce the expected top-level shape, or auto to accept any valid JSON value.",
+      "params": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Raw malformed JSON or LLM output containing JSON."
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["auto", "json_object", "json_array"],
+            "description": "Expected repaired JSON top-level shape. Use auto by default."
+          }
+        },
+        "required": ["text"]
+      }
+    }
+  ],
+  "events": [],
+  "runtime": "rust"
+}
