@@ -33,7 +33,11 @@ pub fn handle_tab_switch(params: Value, sessions: SessionMap) -> Result<String> 
     run_session(&session_id, &["tab", &n.to_string()])?;
     let current_url = run_session(&session_id, &["get", "url"]).unwrap_or_default();
 
-    if let Some(s) = sessions.lock().expect("sessions poisoned").get_mut(&session_id) {
+    if let Some(s) = sessions
+        .lock()
+        .expect("sessions poisoned")
+        .get_mut(&session_id)
+    {
         s.current_url = current_url.clone();
     }
 
@@ -59,5 +63,7 @@ pub fn handle_tab_close(params: Value, sessions: SessionMap) -> Result<String> {
     } else {
         run_session(&session_id, &["tab", "close"])?;
     }
-    Ok(serde_json::to_string(&json!({ "ok": true, "session_id": session_id }))?)
+    Ok(serde_json::to_string(
+        &json!({ "ok": true, "session_id": session_id }),
+    )?)
 }

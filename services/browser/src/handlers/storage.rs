@@ -9,13 +9,20 @@ use serde_json::{json, Value};
 pub fn handle_cookies(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("get");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("get");
 
     let result = match action {
         "clear" => run_session(&session_id, &["cookies", "clear"])?,
         "set" => {
             let name = require_str(&params, "name")?.to_string();
-            let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let value = params
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             run_session(&session_id, &["cookies", "set", &name, &value])?
         }
         _ => run_session(&session_id, &["cookies"])?,
@@ -29,7 +36,10 @@ pub fn handle_cookies(params: Value, sessions: SessionMap) -> Result<String> {
 pub fn handle_state(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("save");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("save");
     let state_dir = artifacts_dir().join(&session_id).join("state.json");
     let state_str = state_dir.to_string_lossy().to_string();
 
@@ -50,13 +60,23 @@ pub fn handle_state(params: Value, sessions: SessionMap) -> Result<String> {
 pub fn handle_storage(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let store = params.get("store").and_then(|v| v.as_str()).unwrap_or("local");
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("get");
+    let store = params
+        .get("store")
+        .and_then(|v| v.as_str())
+        .unwrap_or("local");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("get");
 
     let result = match action {
         "set" => {
             let key = require_str(&params, "key")?.to_string();
-            let value = params.get("value").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let value = params
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             run_session(&session_id, &["storage", store, "set", &key, &value])?
         }
         "clear" => run_session(&session_id, &["storage", store, "clear"])?,

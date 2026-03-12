@@ -4,8 +4,10 @@
 //! binary with a `--session <id>` flag, keeping each session's Chromium
 //! context fully isolated (cookies, storage, history).
 
+use crate::app_config::BrowserIdentity;
 use crate::{DEFAULT_ARTIFACTS_DIR, DEFAULT_BROWSER_BIN, SESSION_ID_LEN};
 use anyhow::{Context, Result};
+use serde_json::Value;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,8 +23,7 @@ pub fn browser_bin() -> String {
 /// Return the root artifacts directory from `BROWSER_ARTIFACTS_DIR` env or default.
 pub fn artifacts_dir() -> PathBuf {
     PathBuf::from(
-        env::var("BROWSER_ARTIFACTS_DIR")
-            .unwrap_or_else(|_| DEFAULT_ARTIFACTS_DIR.to_string()),
+        env::var("BROWSER_ARTIFACTS_DIR").unwrap_or_else(|_| DEFAULT_ARTIFACTS_DIR.to_string()),
     )
 }
 
@@ -34,8 +35,7 @@ pub fn new_session_id() -> String {
 /// Ensure the per-session screenshot directory exists and return its path.
 pub fn ensure_session_dir(session_id: &str) -> Result<PathBuf> {
     let dir = artifacts_dir().join(session_id);
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("Cannot create screenshot dir {:?}", dir))?;
+    fs::create_dir_all(&dir).with_context(|| format!("Cannot create screenshot dir {:?}", dir))?;
     Ok(dir)
 }
 
@@ -57,18 +57,42 @@ pub fn ts_ms() -> u64 {
 /// On non-zero exit returns an error containing the stderr (or stdout) output.
 /// Install the binary with: `npm install -g agent-browser && agent-browser install`
 pub fn run_session(session_id: &str, args: &[&str]) -> Result<String> {
+    run_session_with_identity(session_id, args, None)
+}
+
+pub fn run_session_with_identity(
+    session_id: &str,
+    args: &[&str],
+    identity: Option<&BrowserIdentity>,
+) -> Result<String> {
     let bin = browser_bin();
-    let output = Command::new(&bin)
-        .arg("--session")
-        .arg(session_id)
-        .args(args)
-        .output()
-        .with_context(|| {
-            format!(
-                "Failed to execute '{}'. Install with: npm install -g agent-browser",
-                bin
-            )
-        })?;
+    let mut command = Command::new(&bin);
+    command.arg("--session").arg(session_id);
+    if let Some(identity) = identity {
+        if !identity.user_agent.is_empty() {
+            command.arg("--user-agent").arg(&identity.user_agent);
+        }
+        if !identity.color_scheme.is_empty() {
+            command.arg("--color-scheme").arg(&identity.color_scheme);
+        }
+        if identity.headed {
+            command.arg("--headed");
+        }
+        if !identity.launch_args.is_empty() {
+            command.arg("--args").arg(identity.launch_args.join(","));
+        }
+        if !identity.extra_headers.is_empty() {
+            command
+                .arg("--headers")
+                .arg(Value::Object(identity.extra_headers.clone()).to_string());
+        }
+    }
+    let output = command.args(args).output().with_context(|| {
+        format!(
+            "Failed to execute '{}'. Install with: npm install -g agent-browser",
+            bin
+        )
+    })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

@@ -13,9 +13,9 @@
 //! at the registration layer in `main.rs` via a wrapping macro, rather than in each
 //! individual handler. All tools share the same span/metric schema.
 
-use sdk_rust::{attach_context, ts_ms, MetricsWriter};
-pub use sdk_rust::elapsed_ms;
 use opentelemetry::{ContextGuard, KeyValue};
+pub use sdk_rust::elapsed_ms;
+use sdk_rust::{attach_context, ts_ms, MetricsWriter};
 use serde_json::{json, Value};
 
 /// OTEL observability facade for the Browser service.
@@ -35,8 +35,7 @@ impl BrowserTelemetry {
     /// metrics file cannot be opened.
     pub fn new(logs_dir: &str) -> anyhow::Result<Self> {
         Ok(Self {
-            writer: MetricsWriter::new(logs_dir, "browser")
-                .map_err(|e| anyhow::anyhow!("{e}"))?,
+            writer: MetricsWriter::new(logs_dir, "browser").map_err(|e| anyhow::anyhow!("{e}"))?,
         })
     }
 

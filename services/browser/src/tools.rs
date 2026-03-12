@@ -7,13 +7,16 @@ use sdk_rust::ToolDefinition;
 use serde_json::json;
 
 /// Return all browser tool definitions in MCP-lite format.
-#[allow(clippy::too_many_lines, reason = "flat list of tool schemas — splitting adds no clarity")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "flat list of tool schemas — splitting adds no clarity"
+)]
 pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         // ── Session lifecycle ────────────────────────────────────────────────
         ToolDefinition {
             name: "browser.open".into(),
-            description: "Open a URL in a new or existing named browser session. Each session has isolated cookies/storage. Returns session_id and screenshot path. Pass session_id to reuse an existing session.".into(),
+            description: "Open a URL in a new or existing named browser session. Each session has isolated cookies/storage. Returns session_id and screenshot path. Pass session_id to reuse an existing session. The service applies default browser identity settings from openagent config.".into(),
             params: json!({ "type":"object","properties":{ "url":{"type":"string","description":"URL to open"},"session_id":{"type":"string","description":"Optional: reuse existing session"} },"required":["url"] }),
         },
         ToolDefinition {

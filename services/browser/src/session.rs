@@ -51,9 +51,6 @@ pub fn lookup_session(sessions: &SessionMap, session_id: &str) -> Result<Browser
         .get(session_id)
         .cloned()
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Unknown session '{}'. Call browser.open first.",
-                session_id
-            )
+            anyhow::anyhow!("Unknown session '{}'. Call browser.open first.", session_id)
         })
 }

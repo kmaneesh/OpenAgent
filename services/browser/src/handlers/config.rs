@@ -13,8 +13,16 @@ pub fn handle_set(params: Value, sessions: SessionMap) -> Result<String> {
 
     let result = match what {
         "viewport" => {
-            let w = params.get("width").and_then(|v| v.as_i64()).unwrap_or(1280).to_string();
-            let h = params.get("height").and_then(|v| v.as_i64()).unwrap_or(800).to_string();
+            let w = params
+                .get("width")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(1280)
+                .to_string();
+            let h = params
+                .get("height")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(800)
+                .to_string();
             run_session(&session_id, &["set", "viewport", &w, &h])?
         }
         "device" => {
@@ -22,8 +30,16 @@ pub fn handle_set(params: Value, sessions: SessionMap) -> Result<String> {
             run_session(&session_id, &["set", "device", &name])?
         }
         "geo" => {
-            let lat = params.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
-            let lng = params.get("lng").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
+            let lat = params
+                .get("lat")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
+            let lng = params
+                .get("lng")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
             run_session(&session_id, &["set", "geo", &lat, &lng])?
         }
         "offline" => {
@@ -40,15 +56,16 @@ pub fn handle_set(params: Value, sessions: SessionMap) -> Result<String> {
             run_session(&session_id, &["set", "credentials", &username, &password])?
         }
         "media" => {
-            let scheme = params.get("scheme").and_then(|v| v.as_str()).unwrap_or("dark");
+            let scheme = params
+                .get("scheme")
+                .and_then(|v| v.as_str())
+                .unwrap_or("dark");
             run_session(&session_id, &["set", "media", scheme])?
         }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Unknown 'what': {}. Use: viewport, device, geo, offline, headers, credentials, media",
-                what
-            ))
-        }
+        _ => return Err(anyhow::anyhow!(
+            "Unknown 'what': {}. Use: viewport, device, geo, offline, headers, credentials, media",
+            what
+        )),
     };
 
     Ok(serde_json::to_string(
@@ -59,15 +76,25 @@ pub fn handle_set(params: Value, sessions: SessionMap) -> Result<String> {
 pub fn handle_network(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("requests");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("requests");
 
     let result = match action {
         "route" => {
             let url_pattern = require_str(&params, "url_pattern")?.to_string();
-            if params.get("abort").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if params
+                .get("abort")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 run_session(&session_id, &["network", "route", &url_pattern, "--abort"])?
             } else if let Some(body) = params.get("body").and_then(|v| v.as_str()) {
-                run_session(&session_id, &["network", "route", &url_pattern, "--body", body])?
+                run_session(
+                    &session_id,
+                    &["network", "route", &url_pattern, "--body", body],
+                )?
             } else {
                 run_session(&session_id, &["network", "route", &url_pattern])?
             }
@@ -96,19 +123,27 @@ pub fn handle_network(params: Value, sessions: SessionMap) -> Result<String> {
 pub fn handle_frame(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let selector = params.get("selector").and_then(|v| v.as_str()).unwrap_or("main");
+    let selector = params
+        .get("selector")
+        .and_then(|v| v.as_str())
+        .unwrap_or("main");
     if selector == "main" || selector.is_empty() {
         run_session(&session_id, &["frame", "main"])?;
     } else {
         run_session(&session_id, &["frame", selector])?;
     }
-    Ok(serde_json::to_string(&json!({ "ok": true, "session_id": session_id }))?)
+    Ok(serde_json::to_string(
+        &json!({ "ok": true, "session_id": session_id }),
+    )?)
 }
 
 pub fn handle_dialog(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("dismiss");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("dismiss");
 
     let result = if action == "accept" {
         if let Some(text) = params.get("text").and_then(|v| v.as_str()) {
@@ -128,25 +163,50 @@ pub fn handle_dialog(params: Value, sessions: SessionMap) -> Result<String> {
 pub fn handle_mouse(params: Value, sessions: SessionMap) -> Result<String> {
     let session_id = require_session_id(&params)?;
     lookup_session(&sessions, &session_id)?;
-    let action = params.get("action").and_then(|v| v.as_str()).unwrap_or("move");
+    let action = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("move");
 
     let result = match action {
         "move" => {
-            let x = params.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
-            let y = params.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
+            let x = params
+                .get("x")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
+            let y = params
+                .get("y")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
             run_session(&session_id, &["mouse", "move", &x, &y])?
         }
         "down" => {
-            let button = params.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let button = params
+                .get("button")
+                .and_then(|v| v.as_str())
+                .unwrap_or("left");
             run_session(&session_id, &["mouse", "down", button])?
         }
         "up" => {
-            let button = params.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let button = params
+                .get("button")
+                .and_then(|v| v.as_str())
+                .unwrap_or("left");
             run_session(&session_id, &["mouse", "up", button])?
         }
         "wheel" => {
-            let dy = params.get("dy").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
-            let dx = params.get("dx").and_then(|v| v.as_f64()).unwrap_or(0.0).to_string();
+            let dy = params
+                .get("dy")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
+            let dx = params
+                .get("dx")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .to_string();
             run_session(&session_id, &["mouse", "wheel", &dy, &dx])?
         }
         _ => {
