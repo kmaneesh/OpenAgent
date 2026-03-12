@@ -11,8 +11,7 @@ fi
 
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-RELOAD="${RELOAD:-false}"
-JAEGER="${JAEGER:-true}"   # set JAEGER=false to skip docker compose
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}"
 
 UNAME_S="$(uname -s)"
 UNAME_M="$(uname -m)"
@@ -29,38 +28,9 @@ fi
 HOST_SUFFIX="${HOST_OS}-${HOST_ARCH}"
 CORTEX_BIN="$ROOT/bin/cortex-${HOST_SUFFIX}"
 
-for arg in "$@"; do
-  case $arg in
-    --reload)
-      RELOAD="true"
-      shift
-      ;;
-  esac
-done
-
-# ---------------------------------------------------------------------------
-# Docker Compose (Jaeger) — start if available and not disabled
-# ---------------------------------------------------------------------------
-
 if [ ! -x "$CORTEX_BIN" ]; then
   echo "Cortex binary missing for ${HOST_SUFFIX} — building it"
   make -C "$ROOT" cortex
-fi
-
-COMPOSE_STARTED=false
-
-if [ "$JAEGER" = "true" ] && command -v docker >/dev/null 2>&1; then
-  if docker compose -f "$ROOT/docker-compose.yml" up -d 2>&1; then
-    COMPOSE_STARTED=true
-    export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}"
-    echo "  Jaeger UI → http://localhost:16686"
-    echo "  OTEL endpoint → $OTEL_EXPORTER_OTLP_ENDPOINT"
-  else
-    echo "  [warn] docker compose failed — continuing without Jaeger"
-  fi
-else
-  [ "$JAEGER" != "true" ] && echo "  Jaeger disabled (JAEGER=false)"
-  command -v docker >/dev/null 2>&1 || echo "  [warn] docker not found — skipping Jaeger"
 fi
 
 # ---------------------------------------------------------------------------
@@ -75,11 +45,6 @@ _shutdown() {
     kill -TERM "$UVICORN_PID" 2>/dev/null || true
     wait "$UVICORN_PID" 2>/dev/null || true
   fi
-  # Stop docker compose services
-  if [ "$COMPOSE_STARTED" = "true" ]; then
-    echo "Stopping Jaeger…"
-    docker compose -f "$ROOT/docker-compose.yml" down 2>/dev/null || true
-  fi
   exit 0
 }
 
@@ -90,16 +55,16 @@ trap _shutdown INT TERM
 # ---------------------------------------------------------------------------
 
 echo "Starting OpenAgent UI on http://${HOST}:${PORT}"
+echo "  OTEL endpoint → ${OTEL_EXPORTER_OTLP_ENDPOINT}"
 
 UVICORN_ARGS=(
   "--host" "$HOST"
   "--port" "$PORT"
+  "--reload"
+  "--reload-dir" "$ROOT/app"
+  "--reload-dir" "$ROOT/openagent"
 )
-
-if [ "$RELOAD" = "true" ]; then
-  echo "  Hot-reloading enabled"
-  UVICORN_ARGS+=("--reload" "--reload-dir" "$ROOT/app" "--reload-dir" "$ROOT/openagent")
-fi
+echo "  Hot-reloading enabled"
 
 uv run uvicorn app.main:app "${UVICORN_ARGS[@]}" &
 

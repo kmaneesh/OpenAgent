@@ -121,6 +121,7 @@ async def lifespan(app: FastAPI):
     app.state.active_provider = CortexProvider(
         get_client=cortex_client_getter,
         default_agent_name=cfg.default_agent.name,
+        timeout_s=max(float(cfg.provider.timeout), 1.0) + 5.0,
     )
 
     # Message bus

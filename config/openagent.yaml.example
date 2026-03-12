@@ -39,7 +39,7 @@ provider:
   base_url: http://100.74.210.70:1234/v1
   api_key: ""          # leave blank for unauthenticated local servers
   model: qwen2.5-7b-instruct
-  timeout: 60.0
+  timeout: 300.0
   max_tokens: 2048
   debug_llm: false     # debug only; logs outbound request and raw provider response from Cortex
 

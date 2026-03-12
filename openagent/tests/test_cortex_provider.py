@@ -32,7 +32,11 @@ async def test_cortex_provider_chat_routes_to_cortex_step() -> None:
             error=None,
         )
     )
-    provider = CortexProvider(get_client=lambda: client, default_agent_name="AgentM")
+    provider = CortexProvider(
+        get_client=lambda: client,
+        default_agent_name="AgentM",
+        timeout_s=305.0,
+    )
 
     result = await provider.chat(
         [Message("system", "sys"), Message("user", "hello")],
@@ -45,3 +49,4 @@ async def test_cortex_provider_chat_routes_to_cortex_step() -> None:
     assert payload["params"]["session_id"] == "web:123"
     assert payload["params"]["agent_name"] == "AgentM"
     assert payload["params"]["user_input"] == "hello"
+    assert client.request.await_args.kwargs["timeout_s"] == 305.0

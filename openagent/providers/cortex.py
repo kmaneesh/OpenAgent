@@ -23,9 +23,11 @@ class CortexProvider:
         *,
         get_client: Callable[[], McpLiteClient | None],
         default_agent_name: str = "",
+        timeout_s: float = 90.0,
     ) -> None:
         self._get_client = get_client
         self._default_agent_name = default_agent_name
+        self._timeout_s = timeout_s
 
     async def stream(
         self, messages: list[Message], **kwargs: Any
@@ -66,7 +68,7 @@ class CortexProvider:
         if self._default_agent_name:
             payload["params"]["agent_name"] = self._default_agent_name
 
-        frame = await client.request(payload, timeout_s=90.0)
+        frame = await client.request(payload, timeout_s=self._timeout_s)
         if not isinstance(frame, proto.ToolResultResponse):
             raise RuntimeError(f"unexpected cortex response: {type(frame).__name__}")
         if frame.error:
