@@ -160,25 +160,35 @@ Longer term:
 - richer routing by task type and uncertainty
 - tighter coupling between plan state and retrieval query construction
 
-### Tool Registry and Tool Search
+### Action Registry and Action Search
 
-Because the number of tools will grow, Cortex should not expose the full tool set to the LLM every cycle.
+Because the number of tools and skills will grow, Cortex should not expose the full action set to the LLM every cycle.
 
 Instead:
-- maintain a tool registry
-- embed tool descriptions
-- search top-k candidate tools for the current task
+- maintain an action registry
+- index service tools and local skills together
+- search top-k candidate actions for the current task
 - pass only a small candidate set to the LLM
 
-Tool discovery is the main abstraction, not service names. Browser and sandbox are important because they expose many tools each. Cortex should discover and rank available tools across tool services rather than treat browser and sandbox as special hardcoded one-off integrations.
+Action discovery is the main abstraction, not service names. Browser and sandbox are important because they expose many tools each, while local skills provide guidance about how to use those tools. Cortex should discover and rank available actions across tool services and local skills rather than hardcode one-off integrations.
 
-Each tool record should include:
+Current design:
+- discover service tools from `services/*/service.json` at boot
+- discover local skills from `skills/*/SKILL.md` at boot
+- keep the catalog only in transient Cortex memory for now
+- inject top candidate action summaries only on generation turns
+- inject nothing on deterministic tool-call turns
+
+Each action record should include:
 - name
-- description
-- owning service
+- kind
+- summary
+- owner
 - input schema summary
 - tags
-- embedding
+- embedding later
+
+Skills are guidance-first in the current phase. Later they should move to a hybrid model where some skills become executable workflows.
 
 ### Tool Router
 
@@ -240,6 +250,147 @@ Memory service responsibilities:
 - knowledge persistence
 - diary persistence and diary indexing
 
+## AutoAgents Integration Architecture
+
+Cortex uses [AutoAgents](https://github.com/liquidos-ai/AutoAgents) as its agent execution framework. The integration is selective — only the parts that strengthen Cortex without polluting its memory, protocol, or observability boundaries.
+
+### Crates adopted
+
+| Crate | Role in Cortex |
+|---|---|
+| `autoagents-llm` | Unified `LLMProvider` trait — replaces manual `reqwest` LLM calls. One trait covers OpenAI-compat, Anthropic, Ollama, etc. Built-in streaming and tool-calling. |
+| `autoagents-core` | `BaseAgent`, `AgentExecutor`, `ToolT` trait, `ActorAgent` for multi-agent via `ractor`. The execution engine. |
+| `autoagents-derive` | Proc macros where useful (`#[tool]`, `#[derive(ToolInput)]`). Not used for agent struct itself — see CortexAgent below. |
+
+### Crates deliberately excluded
+
+| Crate | Why excluded |
+|---|---|
+| `autoagents-core::memory` | Cortex has a segmented STM architecture (8 segments, per-segment budgets, LTM retrieval over MCP-lite). AutoAgents' `SlidingWindowMemory` is a flat buffer and would pollute this design. |
+| `autoagents-protocol` | OpenAgent uses MCP-lite (tagged JSON over UDS). AutoAgents' protocol types (`ActorID`, `Event`, `SubmissionId`) are incompatible and unnecessary. |
+| `autoagents-telemetry` | OpenAgent has its own OTEL pipeline via `sdk-rust` (file-based OTLP/JSON, daily rotation). Mixing two OTEL setups in one process causes provider conflicts. |
+
+---
+
+### CortexAgent — single generic struct, config-driven
+
+Cortex does not use the `#[agent]` proc macro. A single `CortexAgent` struct implements `AgentDeriveT` manually, reading everything from `config/openagent.yaml` at construction time. Adding a new agent is an edit to YAML — no Rust recompile.
+
+```rust
+pub struct CortexAgent {
+    config: AgentConfig,       // from openagent.yaml: name, description, system_prompt
+    tools: Vec<Box<dyn ToolT>>, // built from config at construction
+}
+
+impl AgentDeriveT for CortexAgent {
+    type Output = CortexOutput;
+    fn name(&self) -> &str { &self.config.name }
+    fn description(&self) -> &str { &self.config.description }
+    fn tools(&self) -> Vec<Box<dyn ToolT>> { self.tools.clone() }
+    fn output_schema(&self) -> Option<Value> { None }
+}
+
+impl CortexAgent {
+    pub fn from_config(cfg: &AgentConfig, clients: &ServiceClients) -> Self {
+        // Validates eagerly at startup — panics with clear message on bad config
+        // Never fails silently mid-run
+    }
+}
+```
+
+---
+
+### Tool Architecture — static set + one dynamic dispatcher
+
+The LLM always sees a small, fixed tool set. Exposing the full service catalog per turn is expensive in tokens and unreliable on sub-30B models.
+
+**Static tools** (always in LLM context, always needed):
+
+```rust
+// Each wraps a MCP-lite call over UDS — AutoAgents never sees the socket
+Box::new(MemorySearchTool::new(clients.memory.clone()))
+Box::new(SandboxExecuteTool::new(clients.sandbox.clone()))
+Box::new(BrowserNavigateTool::new(clients.browser.clone()))
+```
+
+**One dynamic dispatcher** (for everything else):
+
+```rust
+pub struct ActionDispatcherTool {
+    catalog: Arc<ActionCatalog>,  // loaded from services/*/service.json at boot
+}
+
+// LLM calls: action.call(name="browser.search", args={...})
+// Dispatcher looks up catalog, routes over MCP-lite
+impl ToolT for ActionDispatcherTool {
+    fn name(&self) -> &str { "action.call" }
+    fn description(&self) -> &str {
+        "Call any available action by name. Available actions are listed in your context."
+    }
+    fn args_schema(&self) -> Value { /* { name: string, args: object } */ }
+}
+```
+
+**No two-step search.** Candidate action summaries are injected into the system prompt by `CortexMemoryAdapter::get_messages()` at turn start — the LLM reads them in context and calls `action.call` directly. This avoids the `search → call` two-step that fails on smaller models.
+
+---
+
+### CortexMemoryAdapter — own MemoryProvider implementation
+
+Cortex implements AutoAgents' `MemoryProvider` trait directly. AutoAgents calls the two methods; the implementation hides all STM/LTM complexity behind them.
+
+```rust
+pub struct CortexMemoryAdapter {
+    stm: SegmentedStm,              // 8 segments, per-segment budgets (local, in-process)
+    memory_client: McpLiteClient,   // → memory service over UDS
+    action_catalog: Arc<ActionCatalog>,
+    session_id: String,
+}
+
+impl MemoryProvider for CortexMemoryAdapter {
+    async fn get_messages(&self) -> Vec<ChatMessage> {
+        // 1. Assemble STM segments (system core, objective, plan snapshot,
+        //    conversation context, tool log, scratchpad, observations, curiosity)
+        // 2. Fetch LTM bundle from memory service over MCP-lite
+        // 3. Inject top-k action candidate summaries as a system message
+        // 4. Respect per-segment size budgets — compact if over limit
+        // 5. Return flat Vec<ChatMessage> — AutoAgents sees nothing unusual
+    }
+
+    async fn add_message(&mut self, message: ChatMessage) {
+        // 1. Route to correct STM segment by role and content type
+        //    (assistant → conversation context; tool → tool interaction log; etc.)
+        // 2. Keep heavy async writes (episode, diary) out of this hot path
+    }
+}
+
+// Diary and LTM writes happen at turn boundary, not per-message
+impl AgentHooks for CortexMemoryAdapter {
+    async fn on_turn_complete(&self, result: &TurnResult) {
+        // Fire episode write to memory service (MCP-lite)
+        // Fire deterministic diary write (markdown + LanceDB index row)
+        // Both are async and non-blocking to the main loop
+    }
+}
+```
+
+---
+
+### Multi-agent — ractor actor model
+
+Named agents from `config/openagent.yaml` (supervisor, worker-search, worker-code, etc.) each run as `ractor` actors inside the Cortex process. The supervisor actor dispatches tasks to worker actors via typed `ractor` messages. AutoAgents' `ActorAgent` wrapper is used directly.
+
+```
+ractor supervisor actor
+    ├── worker-search actor  (CortexAgent, search-tuned prompt)
+    ├── worker-code actor    (CortexAgent, code-tuned prompt)
+    └── worker-memory actor  (CortexAgent, memory-tuned prompt)
+```
+
+Each actor is a `CortexAgent` constructed from its YAML block. Adding a worker agent = one new entry in `agents:` YAML.
+
+---
+
 ## Phase 1 Library Set
 
 Libraries used now:
@@ -248,16 +399,28 @@ Libraries used now:
 - `serde` and `serde_json` for protocol payloads
 - `serde_yaml` for loading the OpenAgent config file
 - `anyhow` for process-level error handling
-- `reqwest` with `rustls-tls` for async LLM HTTP calls
+- `reqwest` with `rustls-tls` for async LLM HTTP calls (transitional — replaced by `autoagents-llm`)
 - `tracing`, `opentelemetry`, and `tracing-opentelemetry` for observability
+
+Libraries being added (AutoAgents integration):
+- `autoagents-llm` — replaces manual `reqwest` LLM calls
+- `autoagents-core` — agent execution, tool trait, actor model
+- `autoagents-derive` — proc macros for tool input/output types
+- `ractor` — actor runtime for multi-agent (pulled in via `autoagents-core`)
 
 Libraries planned for later phases:
 - `uuid` for request/session correlation where the service generates identifiers
+- `tower` + `tower-http` — middleware stack (Phase 2); replaces Python middleware chain layer-by-layer
+- `axum` — HTTP/UDS control plane transport (Phase 4 endgame only); do not add before Phase 4
 
 Libraries intentionally avoided:
-- agent frameworks
+- `autoagents-core::memory` implementations — own `MemoryProvider` impl
+- `autoagents-protocol` — own MCP-lite protocol
+- `autoagents-telemetry` — own OTEL via `sdk-rust`
+- agent frameworks other than AutoAgents
 - embedded vector storage inside Cortex
 - direct browser/memory/sandbox implementation inside Cortex
+- `tower` or `axum` in any service other than Cortex
 
 ## Phase 1 Tools
 
@@ -370,18 +533,31 @@ Recommended message shape:
 
 ## Migration Strategy
 
-Short term:
-- keep Python outer loop
-- route each turn to Cortex
-- keep existing Python middleware such as STT and whitelist outside Cortex
+This is an evolution, not a rewrite. Each phase is independently shippable.
 
-Medium term:
-- Cortex becomes the true agent loop
-- Python becomes shell/UI only
+**Phase 1 (now):**
+- Keep Python outer loop
+- Route each turn to Cortex via `cortex.step` MCP-lite call
+- Python middleware (STT, whitelist) stays outside Cortex
 
-Long term:
-- outer loop may also move to Rust
-- Cortex remains the same service boundary
+**Phase 2 — Tower middleware begins:**
+- Cortex owns tool routing (memory, browser, sandbox)
+- Introduce `tower::ServiceBuilder` inside Cortex
+- Begin porting Python middleware to `tower::Layer` (whitelist first, then STT/TTS)
+- Python middleware removed as each Tower layer ships and passes integration tests
+
+**Phase 3 — Cortex owns the loop:**
+- Cortex owns the full ReAct loop (LLM → tool → LLM iterations)
+- Python becomes a thin launcher: config load, service spawn, platform adapter glue
+- Full Tower middleware stack active inside Cortex
+
+**Phase 4 — Axum control plane (endgame):**
+- `axum` over UDS replaces the Python process
+- Platform connectors (Discord, Telegram, Slack) wire directly to Cortex/Axum
+- `service.json` manifest and MCP-lite protocol unchanged for all other services
+- Python retired
+
+**Stability guarantee:** The MCP-lite UDS socket contract is stable across all phases. Downstream services never change protocol because the control plane above them is being replaced.
 
 ## Scope for MVP
 

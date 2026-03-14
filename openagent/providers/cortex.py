@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any, AsyncIterator
 
-from openagent.llm import LLMResponse, Message, StreamEvent
+from openagent.llm import LLMResponse, Message, StreamEvent, ToolCall
 from openagent.platforms.mcplite import McpLiteClient
 from openagent.services import protocol as proto
 
@@ -14,8 +14,9 @@ from openagent.services import protocol as proto
 class CortexProvider:
     """Provider-compatible adapter that delegates chat completion to Cortex.
 
-    Phase 1 uses ``cortex.step`` for one-shot response generation. Tool calling
-    remains disabled here; the adapter returns plain text only.
+    Cortex returns structured final/tool-call output. The adapter converts
+    tool calls into the existing Python ``LLMResponse`` contract so AgentLoop
+    can execute them.
     """
 
     def __init__(
@@ -46,7 +47,7 @@ class CortexProvider:
         tools: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        del tools  # Phase 1 Cortex does not support tool calling yet.
+        del tools  # Cortex owns the default tool set for this phase.
 
         client = self._get_client()
         if client is None:
@@ -75,6 +76,10 @@ class CortexProvider:
             raise RuntimeError(frame.error)
 
         parsed = json.loads(frame.result or "{}")
+        response_type = str(parsed.get("response_type") or "final").strip()
+        if response_type == "tool_call":
+            tool_call = _parse_tool_call(parsed)
+            return LLMResponse(content="", tool_calls=[tool_call])
         return LLMResponse(content=str(parsed.get("response_text") or ""))
 
     async def stream_with_tools(
@@ -85,8 +90,23 @@ class CortexProvider:
         **kwargs: Any,
     ) -> AsyncIterator[StreamEvent]:
         response = await self.chat(messages, tools=tools, **kwargs)
-        if response.content:
+        if response.tool_calls:
+            yield StreamEvent(tool_calls=response.tool_calls, finish_reason="tool_calls")
+        elif response.content:
             yield StreamEvent(content=response.content)
+
+
+def _parse_tool_call(payload: dict[str, Any]) -> ToolCall:
+    raw_tool = payload.get("tool_call") or {}
+    if not isinstance(raw_tool, dict):
+        raise RuntimeError("cortex tool_call payload must be an object")
+    name = str(raw_tool.get("tool") or "").strip()
+    if not name:
+        raise RuntimeError("cortex tool_call payload missing tool")
+    arguments = raw_tool.get("arguments") or {}
+    if not isinstance(arguments, dict):
+        raise RuntimeError("cortex tool_call arguments must be an object")
+    return ToolCall(id=f"cortex-{name}", name=name, arguments=arguments)
 
 
 def _latest_user_input(messages: list[Message]) -> str:

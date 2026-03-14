@@ -30,6 +30,66 @@ Goal: replace the current agent loop with a minimal Cortex step.
 Exit criteria:
 - Python shell can send one message to Cortex and get one response back
 
+## Phase 1B: AutoAgents Core Integration
+
+Goal: replace Cortex's manual `reqwest` LLM calls and ad-hoc tool handling with AutoAgents as the execution framework. This is a foundational refactor that must land before Phase 2 (tool routing) to avoid rebuilding twice.
+
+### Cargo.toml additions
+
+- Add `autoagents-llm` — unified `LLMProvider` trait
+- Add `autoagents-core` with features: `agent`, `tool`, `actor` (pulls in `ractor`)
+- Add `autoagents-derive` — `#[tool]`, `#[derive(ToolInput)]` proc macros
+- Do NOT add: `autoagents-protocol`, `autoagents-telemetry`, any `autoagents-core::memory` feature
+
+### CortexAgent
+
+- Define `CortexAgent` struct with fields: `config: AgentConfig`, `tools: Vec<Box<dyn ToolT>>`
+- Implement `AgentDeriveT` manually (do not use `#[agent]` macro) — 4 methods, reads from `AgentConfig`
+- Add `CortexAgent::from_config(cfg, clients)` constructor — validate eagerly at startup, panic with clear message on invalid config
+- Wire `BaseAgent::new(cortex_agent, llm, Some(memory_adapter), tx, false)` in handler
+
+### CortexMemoryAdapter
+
+- Define `SegmentedStm` struct with 8 named segments and per-segment `max_tokens` budgets (system_core, active_objective, plan_snapshot, conversation, tool_log, scratchpad, observations, curiosity_queue)
+- Implement `MemoryProvider` for `CortexMemoryAdapter`:
+  - `get_messages()` — assemble segments → fetch LTM bundle from memory service → inject top-k action candidates as system message → return flat `Vec<ChatMessage>`
+  - `add_message()` — route to correct STM segment by `ChatMessage` role; keep this path fast (no network calls)
+- Implement `AgentHooks` for `CortexMemoryAdapter`:
+  - `on_turn_complete()` — fire episode write to memory service (async, non-blocking); fire diary write
+- Stub `McpLiteClient` calls for memory service — they will be fully wired in Phase 3
+
+### Tool layer
+
+- Add `MemorySearchTool` — thin `ToolT` wrapper, stubs MCP-lite call to memory service (Phase 3 wires it fully)
+- Add `SandboxExecuteTool` — thin `ToolT` wrapper, stubs MCP-lite call to sandbox service
+- Add `BrowserNavigateTool` — thin `ToolT` wrapper, stubs MCP-lite call to browser service
+- Add `ActionDispatcherTool` — dynamic meta-tool: `name="action.call"`, `args={name: string, args: object}`; internally looks up `ActionCatalog` and routes over MCP-lite
+- Use `#[derive(ToolInput)]` for all tool input structs
+- Wire static tools + dispatcher into `CortexAgent::from_config()`
+
+### LLM provider swap
+
+- Replace manual `reqwest` HTTP block in `llm.rs` with `autoagents-llm::LLMBuilder`
+- Support OpenAI-compat (Ollama) and Anthropic backends — select from `config/openagent.yaml` provider key
+- Remove `llm.rs` once `LLMProvider` is wired into `BaseAgent`
+
+### Multi-agent bootstrap
+
+- Wrap `BaseAgent` in `ActorAgent` for each named agent in `config.agents`
+- Register actors with `ractor` supervisor on startup
+- Supervisor actor reads agent routing rules from config — dispatches `cortex.step` requests to correct worker actor by `agent_name` field
+- Keep supervisor logic simple at this phase — routing by name match only
+
+### Exit criteria
+
+- `cortex.step` request flows through AutoAgents `BaseAgent` → `LLMProvider` → response
+- All tests pass (update `test_cortex_provider.py` to reflect new step contract if needed)
+- Manual `reqwest` LLM code deleted
+- `CortexMemoryAdapter` passes unit tests for segment routing and `get_messages()` assembly
+- Stub tools callable without live services (return fixed JSON)
+
+---
+
 ## Phase 2: Tool Routing Baseline
 
 Goal: let Cortex execute tools directly.
@@ -103,26 +163,31 @@ Goal: capture human-readable request/response history without polluting normal m
 Exit criteria:
 - Every completed cycle produces a deterministic markdown diary entry plus a LanceDB reference index row, and diary entries can be semantically scanned by HITL without being used in normal context injection
 
-## Phase 5: Tool Search
+## Phase 5: Action Search
 
-Goal: avoid exposing every tool to the LLM at every step.
+Goal: avoid exposing every tool and skill to the LLM at every step.
 
-- Add `tool_registry` module
-- Treat tool discovery as the main abstraction rather than direct service naming
-- Define tool metadata schema:
+- Add `action_registry` module
+- Treat action discovery as the main abstraction rather than direct service naming
+- Define action metadata schema:
   - name
-  - description
+  - kind
+  - summary
   - tags
-  - owning service
+  - owner
   - schema summary
   - embedding
-- Add tool embedding/index build process
-- Implement top-k tool search
+- Add local skill loading from `skills/*/SKILL.md`
+- Keep skills guidance-only first, then move to hybrid/executable skills later
+- Add examples to skills later when vector rerank is introduced
+- Add action embedding/index build process
+- Implement top-k action search
 - Ensure browser and sandbox register many tools through the same discovery path
-- Pass only candidate tools into the LLM context
+- Pass only candidate action summaries into the LLM context on generation turns
+- Keep deterministic tool-call turns free of reinjected action context
 
 Exit criteria:
-- Cortex can search tools semantically and expose only a limited candidate set
+- Cortex can search actions semantically and expose only a limited candidate set
 
 ## Phase 6: Plan Store and DAG
 
@@ -200,13 +265,53 @@ Exit criteria:
 Exit criteria:
 - Cortex survives partial subsystem failures without corrupting control state
 
+## Tower Middleware Migration
+
+Tower layers replace Python middleware progressively. Cortex is the only service that uses `tower`. Other services remain plain `tokio` daemons.
+
+### Tower Phase 1 — introduce the stack (alongside Cortex Phase 2)
+
+- Add `tower` and `tower-http` to `Cargo.toml`
+- Wrap inner `ReActService` (or equivalent step handler) in a `tower::ServiceBuilder`
+- Add `TraceLayer` (from `tower_http`) — one span per step request, correlates with existing OTEL traces
+- Add `TimeoutLayer` — configurable per-step deadline (default 90s), replaces Python-side timeout
+- Python STT/whitelist middleware stays on Python side at this stage — do not remove yet
+
+### Tower Phase 2 — port Python middleware (alongside Cortex Phase 3)
+
+- Implement `WhitelistLayer` — checks sender against whitelist before passing to inner service
+- Implement `SttLayer` — transcribes audio payload if `content_type == audio/*`; passes text downstream
+- Implement `TtsLayer` (post-processing) — converts text response to audio if session config requires it
+- Wire all three into `ServiceBuilder` in correct order: Whitelist → STT → inner → TTS
+- Remove corresponding Python middleware once each layer is tested end-to-end
+- Add Rust integration tests for each layer in isolation (`tower_test` or `tokio::test`)
+
+Layer composition pattern:
+```rust
+let svc = ServiceBuilder::new()
+    .layer(TraceLayer::new_for_grpc())   // or custom UDS trace layer
+    .layer(TimeoutLayer::new(Duration::from_secs(90)))
+    .layer(WhitelistLayer::new(whitelist.clone()))
+    .layer(SttLayer::new(stt_client.clone()))
+    .service(react_service);
+```
+
+### Tower Phase 3 — Axum control plane (Phase 4 endgame)
+
+- Add `axum` to `Cargo.toml`
+- Replace raw UDS accept loop with `axum::serve` on `UnixListener`
+- Map `POST /tool/:name` routes to existing Tower service stack
+- Keep Tower middleware stack unchanged — Axum is the transport layer in front
+- Update `McpLiteClient` in Python/sdk-go to use HTTP over UDS (one-line transport swap)
+- Platform connectors (Discord, Telegram, Slack) wire directly to Cortex Axum endpoint
+- Python process retired — only needed as a launch wrapper if `systemd` unit isn't used directly
+
 ## Deferred by Design
 
 Not for early MVP:
 - full contradiction arbitration
 - concept canonicalization
 - knowledge decay management inside Cortex
-- moving the outer loop fully to Rust
 - splitting memory into multiple services
 - dynamic distributed scheduling
 

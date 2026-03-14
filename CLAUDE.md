@@ -2,15 +2,29 @@
 
 ## What We're Building
 
-**OpenAgent** is a deterministic, extension-first agent platform with a **hybrid Python + Rust architecture**:
+**OpenAgent** is a deterministic, extension-first agent platform on a **progressive Rust migration path**:
 
-- **Python Control Plane (the Brain)** — LLM interfacing, multi-agent orchestration, state management, and high-level reasoning. Stateless asyncio core loop. Python is the babysitter.
-- **Rust Services (the Hands)** — Long-lived service daemons for CPU/IO-intensive work: platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
+- **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
+- **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
+- **Cortex (the growing Brain)** — Rust service that will progressively absorb the Python control plane. Middleware migrates to `tower` layers inside Cortex. Endgame: `tower` + `axum` over UDS replaces the Python process entirely.
 - **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
-The two planes communicate via a **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets). Services run as persistent daemons; the agent's `ServiceManager` owns the full lifecycle: spawn, health-check, restart, graceful shutdown.
+All services communicate via **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets). Services run as persistent daemons; the agent's `ServiceManager` owns the full lifecycle: spawn, health-check, restart, graceful shutdown.
 
-Primary deployment target: **Raspberry Pi / low-power hardware** (Rust compiles to arm64; Python core stays lean).
+Primary deployment target: **Raspberry Pi / low-power hardware** (Rust compiles to arm64; Python core stays lean while it lasts).
+
+### Migration Trajectory
+
+This is an evolution, not a rewrite. Each phase is independently shippable. Python shrinks; Cortex grows.
+
+| Phase | Control plane | Python role | Tower/Axum role |
+|---|---|---|---|
+| **Phase 1 (now)** | Python `AgentLoop` calls `cortex.step` via MCP-lite. Cortex does one LLM turn. | Full control plane | None yet |
+| **Phase 2** | Cortex owns tool routing. Python middleware (STT, whitelist) starts migrating into Cortex as `tower::Layer` stack. | Control plane + launcher | Tower layers begin inside Cortex |
+| **Phase 3** | Cortex owns the full ReAct loop. Python becomes a thin launcher: config load, service spawn, platform adapters only. All middleware is Tower layers. | Launcher + glue | Full Tower middleware stack in Cortex |
+| **Phase 4 (endgame)** | `axum` over UDS replaces the Python process. Platform connectors (Discord, Telegram, etc.) connect directly to Cortex/Axum. | Gone | Tower + Axum is the control plane |
+
+**Key constraint:** The MCP-lite UDS socket contract is stable across all phases. Services never change their protocol because the control plane is being replaced above them.
 
 ## Communication Protocol (Rule #1)
 Whenever the user sends an input where their intention needs clarification or the context needs expansion, **do not assume the correct path.** Ask clarifying questions **one by one** (1-by-1) and provide possible **options/paths** for the user to choose from. Apply this explicitly in every conversation.
@@ -150,31 +164,31 @@ inspire/                    # Reference implementations (gitignored)
                     └─────────────────────────────────────────┘
 ```
 
-### Python Control Plane (Brain)
+### Python Control Plane (Temporary Shell — shrinking)
 
-Follows Nanobot's agent loop. Core loop:
+Follows Nanobot's agent loop. Current loop (Phase 1):
 
 ```
 InboundMessage (from platform extension)
   → AgentLoop.process()
-    → Execute Middleware Chain (Hooks like STT transcription)
+    → Execute Middleware Chain (STT, whitelist — Python-side, temporary)
     → Build context (history + memory + system prompt)
-    → Call LLM (OpenAI-compatible /v1/chat/completions via aiohttp)
-    → If tool call:
-        → Python tool? execute directly
-        → Service tool? ServiceManager.call(service, tool, params)
-        → Append result, loop (max 40 iterations)
+    → cortex.step via MCP-lite  ← Cortex does LLM reasoning
+    → If tool call (Phase 2+): Cortex routes tools directly
     → Final answer → OutboundMessage → platform extension delivers it
 ```
 
-**Agent registry:** Multiple named agent instances (follow Picoclaw `AgentRegistry`). Each agent has its own model, workspace, session, and tool set. A supervisor agent dispatches to workers.
+**Middleware migration:** Python middleware (STT transcription, whitelist check, TTS post-process) will be replaced phase-by-phase with `tower::Layer` implementations inside the Cortex service. Do not add new Python middleware — add Tower layers in Cortex instead.
 
-**Key constraints:**
+**Agent registry:** Multiple named agent instances (follow Picoclaw `AgentRegistry`). Each agent has its own model, workspace, session, and tool set. A supervisor agent dispatches to workers. In Phase 3+, this registry moves into Cortex.
+
+**Key constraints (Python side, until migrated):**
 - Max iterations: 40 (configurable)
 - Truncate large tool results to 500 chars (configurable)
 - Strip context tags before saving to history
 - Core loop is stateless — all state lives in `SessionManager`
-- **Zero-Copy Artifact Passing:** When dense data is generated or received by a service (e.g. media), the service writes the raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload, maintaining decoupling without IPC serialization taxes. Python is the absolute central router for all inter-service workflows (no east-west mesh between Rust/Go daemons).
+- **Zero-Copy Artifact Passing:** Services write raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload. In Phase 4, Cortex/Axum takes over this routing role.
+- Python is the central router for inter-service workflows until Phase 4 — no east-west mesh between Rust/Go daemons at any phase.
 
 ### Services Layer — Rust (primary) and Go (WhatsApp only)
 
@@ -454,6 +468,37 @@ app/
 - Compiled binaries go in `bin/` (gitignored)
 - External runtime deps (e.g. MSB) must be documented in `service.json` or service README
 
+### Cortex Service — AutoAgents + Tower + Axum
+
+Cortex is the only service that uses [AutoAgents](https://github.com/liquidos-ai/AutoAgents) as its agent execution framework, `tower` for middleware, and eventually `axum` for the control plane. Other services remain plain `tokio` + `sdk-rust` daemons — do not add any of these to non-Cortex services.
+
+**AutoAgents integration (selective — see `services/cortex/README.md` for full detail):**
+
+| Adopted | Excluded |
+|---|---|
+| `autoagents-llm` — unified `LLMProvider` trait | `autoagents-core::memory` — own `MemoryProvider` impl |
+| `autoagents-core` — `BaseAgent`, `ToolT`, `ActorAgent` | `autoagents-protocol` — own MCP-lite protocol |
+| `autoagents-derive` — tool input/output proc macros | `autoagents-telemetry` — own OTEL via `sdk-rust` |
+
+Key patterns:
+- **`CortexAgent`**: single generic struct implementing `AgentDeriveT` manually; fully driven by `config/openagent.yaml`. No `#[agent]` macro — adding an agent is a YAML edit, not a Rust recompile.
+- **`CortexMemoryAdapter`**: implements AutoAgents' `MemoryProvider` trait with a segmented STM backend (8 segments, per-segment budgets). Diary and LTM writes fire in `AgentHooks::on_turn_complete()`, not in `add_message()`.
+- **Tools**: small static set of `ToolT` wrappers (memory search, sandbox, browser) + one `ActionDispatcherTool` meta-tool (`action.call`). Candidate action summaries injected into system prompt via `get_messages()` — no two-step search/call pattern.
+- **Multi-agent**: named agents from YAML run as `ractor` actors via AutoAgents' `ActorAgent`. Supervisor dispatches by `agent_name`.
+
+**Tower conventions (Cortex, Phase 2+):**
+- Each Python middleware analogue becomes a `tower::Layer<S>` wrapping the inner `Service<StepRequest>`
+- Layer order (outermost → innermost): `WhitelistLayer` → `SttLayer` → `TtsLayer` → inner service
+- Use `tower::ServiceBuilder` to compose the stack in `main.rs`
+- Timeout and retry (`tower::timeout::TimeoutLayer`, `tower::retry::RetryLayer`) replace Python's manual retry logic
+- Do NOT use `axum` until Phase 4
+
+**Axum conventions (Phase 4 only):**
+- `axum` listens on the same UDS path (`data/sockets/cortex.sock`) — protocol changes from raw newline-JSON to HTTP/1.1 over UDS
+- `axum::Router` routes by tool name: `POST /tool/:name` replaces the JSON `type: tool.call` dispatch
+- Tower middleware stack unchanged — Axum sits in front of it
+- Design `McpLiteClient` in Python/sdk-go for a one-line transport swap (raw UDS → HTTP over UDS)
+
 ## Testing Standards
 
 - Core tests: `openagent/tests/` (including `openagent/tests/platforms/`)
@@ -482,10 +527,23 @@ app/
 - Cross-platform build: `make all` / `make local` / `make sandbox` / `make browser`
 
 ### Next (in order)
-1. **Agent registry** — optional multi-agent (follow `inspire/picoclaw/pkg/agent/registry.go`)
-2. **platform manager** — config-driven init, outbound dispatch
-3. **Optional** — memory consolidation, cron, slash commands, rate limiting
-4. **Rust migration** — session store first, then channels when bottleneck proven
+
+**Cortex evolution (see `services/cortex/TODO.md` for full phase breakdown):**
+1. **Cortex Phase 1B** — AutoAgents core integration: `CortexAgent` (manual `AgentDeriveT`), `CortexMemoryAdapter` (own `MemoryProvider`), static tools + `ActionDispatcherTool`, `ractor` multi-agent bootstrap, `autoagents-llm` replaces manual reqwest
+2. **Cortex Phase 2** — tool routing baseline: Cortex calls memory/browser/sandbox directly over MCP-lite
+3. **Cortex Phase 3** — memory retrieval + episode writes; Cortex becomes memory-aware
+3. **Tower middleware Phase 1** — introduce `tower::ServiceBuilder` in Cortex; port whitelist + STT layers from Python
+4. **Cortex Phase 4** — prompt system: YAML-loaded prompts, runtime template rendering
+5. **Cortex Phase 5** — action search: semantic top-k tool selection, shrink LLM context per turn
+6. **Cortex Phase 6+** — plan DAG, segmented STM, reflection, curiosity queue (see TODO.md)
+7. **Tower middleware Phase 2** — full middleware stack in Tower; Python middleware chain deleted
+8. **Axum control plane (Phase 4 endgame)** — replace Python process; Axum on UDS, platform connectors wire directly to Cortex
+
+**Parallel Python cleanup (as Cortex phases complete):**
+- Remove Python middleware as each Tower layer ships
+- Remove `AgentLoop` when Cortex Phase 2 (tool routing) is stable
+- Remove `SessionManager` when Cortex owns session state
+- Remove `ServiceManager` last — or keep as a thin Rust process launcher
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 

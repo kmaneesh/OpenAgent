@@ -1,3 +1,4 @@
+mod action;
 mod config;
 mod handlers;
 mod llm;
@@ -6,9 +7,11 @@ mod tools;
 mod validator;
 
 use anyhow::Result;
+use handlers::AppContext;
 use metrics::CortexTelemetry;
 use sdk_rust::{setup_otel, McpLiteServer};
 use std::env;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
 
@@ -27,9 +30,12 @@ async fn main() -> Result<()> {
         })
         .ok();
     let tel = Arc::new(CortexTelemetry::new(&logs_dir)?);
+    let root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let action_catalog = Arc::new(action::catalog::ActionCatalog::discover_from_root(&root)?);
+    let ctx = Arc::new(AppContext::new(Arc::clone(&tel), action_catalog));
 
     let mut server = McpLiteServer::new(tools::make_tools(), "phase1");
-    tools::register_handlers(&mut server, Arc::clone(&tel));
+    tools::register_handlers(&mut server, ctx);
 
     info!(socket = %socket_path, phase = "phase1", "cortex.start");
     server.serve(&socket_path).await?;

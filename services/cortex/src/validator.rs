@@ -44,9 +44,12 @@ pub async fn maybe_validate_response(content: &str) -> Result<ValidationOutcome>
 }
 
 async fn repair_json(text: &str) -> Result<Option<String>> {
-    let stream = timeout(VALIDATOR_TIMEOUT, UnixStream::connect(VALIDATOR_SOCKET_PATH))
-        .await
-        .map_err(|_| anyhow!("validator connect timed out"))??;
+    let stream = timeout(
+        VALIDATOR_TIMEOUT,
+        UnixStream::connect(VALIDATOR_SOCKET_PATH),
+    )
+    .await
+    .map_err(|_| anyhow!("validator connect timed out"))??;
     let (read_half, write_half) = stream.into_split();
     let mut decoder = Decoder::new(read_half);
     let mut encoder = Encoder::new(write_half);
@@ -111,10 +114,16 @@ fn looks_like_json_candidate(text: &str) -> bool {
 fn extract_json_candidate(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if let Some(rest) = trimmed.strip_prefix("```json") {
-        return rest.strip_suffix("```").map(str::trim).map(ToOwned::to_owned);
+        return rest
+            .strip_suffix("```")
+            .map(str::trim)
+            .map(ToOwned::to_owned);
     }
     if let Some(rest) = trimmed.strip_prefix("```") {
-        return rest.strip_suffix("```").map(str::trim).map(ToOwned::to_owned);
+        return rest
+            .strip_suffix("```")
+            .map(str::trim)
+            .map(ToOwned::to_owned);
     }
     None
 }
