@@ -1,7 +1,13 @@
 # OpenAgent
 
-A deterministic Python + Rust hybrid agent platform for low-power/offline deployments (including Raspberry Pi).  
-Python is the control plane (orchestration, routing). Rust services are the data plane (long-lived tools and integrations) over MCP-lite on Unix sockets. Only WhatsApp remains implemented in Go.
+A deterministic, extension-first agent platform on a **progressive Rust migration path** for low-power/offline deployments (including Raspberry Pi).
+
+- **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
+- **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors, compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
+- **Cortex (the growing Brain)** — Rust service that will progressively absorb the Python control plane. Middleware migrates to `tower` layers inside Cortex. Endgame: `tower` + `axum` over UDS replaces the Python process entirely.
+- **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
+
+All services communicate via **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets).
 
 ## Current Status
 
@@ -15,7 +21,7 @@ Python is the control plane (orchestration, routing). Rust services are the data
 - **MCP-lite** — Python client + Rust SDK (`openagent/platforms/mcplite.py`, `services/sdk-rust/`)
 - **Heartbeat** — periodic health/summary polling (`openagent/heartbeat/`)
 - **Platform adapters** — Discord, Telegram, WhatsApp, Slack (Python MCP-lite clients)
-- **Rust services** — `sandbox`, `discord`, `telegram`, `slack`, `stt`, `tts`, `browser`, `memory`
+- **Rust services** — `cortex`, `channels` (omnibus), `sandbox`, `stt`, `tts`, `browser`, `memory`
 - **Go service** — `whatsapp` (only remaining Go service)
 - **Web UI** — FastAPI + HTMX (dashboard, chat, services, settings)
 
@@ -25,18 +31,18 @@ Python is the control plane (orchestration, routing). Rust services are the data
 ## Architecture
 
 ```
-Python Control Plane (Brain)          Rust Services (Hands)
-─────────────────────────────         ────────────────────
- Orchestration + tool calls ──UDS+JSON──► Long-lived daemons
- Message bus + health/heartbeat ◄─UDS+JSON──  Compute/data integrations
-                                          Managed by ServiceManager
+Python Control Plane (Temporary Shell)      Rust Services (Hands) + Cortex (Brain)
+──────────────────────────────────────      ──────────────────────────────────────
+ Orchestration + tool calls ──UDS+JSON──►   Long-lived daemons (cortex, sandbox...)
+ Message bus + health       ◄─UDS+JSON───   Managed by ServiceManager
 ```
 
 (LLM provider calls use HTTP/JSON over TCP — separate from service IPC.)
 
 Two clear planes, one socket each, no REST overhead:
-- **Python** — control plane, orchestration, platform adapters
-- **Rust services** — compute, data, and platform connectors (Rust-first)
+- **Python** — control plane, orchestration, platform adapters (shrinking)
+- **Cortex** — Rust service progressively absorbing the Python control plane
+- **Rust services** — compute, data, and omnibus channels (Rust-first)
 - **Go** — WhatsApp only (whatsmeow)
 - **MCP-lite** newline-delimited JSON frames over Unix Domain Sockets
 
@@ -118,10 +124,9 @@ OpenAgent/
 │
 ├── services/               # Rust (primary) + Go (WhatsApp only)
 │   ├── sdk-rust/           # Shared MCP-lite Rust SDK
+│   ├── cortex/             # Rust — The growing Brain (progressive Python replacement)
+│   ├── channels/           # Rust — Omnibus channels (Discord, Slack, Telegram, Signal, etc)
 │   ├── sandbox/            # Rust — VM-isolated code/shell execution (microsandbox)
-│   ├── discord/            # Rust — Discord connector
-│   ├── telegram/           # Rust — Telegram connector (teloxide, Bot API)
-│   ├── slack/              # Rust — Slack connector (slack-morphism)
 │   ├── whatsapp/           # Go — WhatsApp (whatsmeow; only Go service retained)
 │   ├── stt/                # Rust — Speech-to-text
 │   ├── tts/                # Rust — Text-to-speech
@@ -146,10 +151,9 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 
 | Service | Language | Description |
 |---------|----------|-------------|
+| **cortex** | Rust | Agent execution, AutoAgents + Tower middleware |
+| **channels** | Rust | Omnibus daemon pattern for Discord, Slack, Telegram, Signal, iMessage, etc |
 | **sandbox** | Rust | VM-isolated code/shell execution (microsandbox) |
-| **discord** | Rust | Discord connector |
-| **telegram** | Rust | Telegram connector (teloxide, Bot API) |
-| **slack** | Rust | Slack connector (slack-morphism) |
 | **whatsapp** | Go | WhatsApp (whatsmeow) |
 | **stt** | Rust | Speech-to-text |
 | **tts** | Rust | Text-to-speech |
