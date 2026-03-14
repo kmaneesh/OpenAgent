@@ -119,7 +119,9 @@ def _read_log_file(root: Path, filename: str, max_lines: int = 2000) -> list[dic
     try:
         with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
-            return _build_log_entries(lines[-max_lines:], filename)
+            entries = _build_log_entries(lines[-max_lines:], filename)
+            entries.reverse()
+            return entries
     except Exception as e:
         message = f"Error reading log file: {e}"
         return [{"summary": message, "pretty": message}]

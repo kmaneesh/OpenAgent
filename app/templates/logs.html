@@ -31,7 +31,7 @@
     <div class="flex-1 overflow-auto bg-stone-50 dark:bg-stone-900 p-3 space-y-2 relative" id="logs-container">
       {% if log_entries %}
         {% for entry in log_entries %}
-          <details class="group rounded-lg border border-[#DEE2E6] dark:border-stone-700 bg-white dark:bg-stone-800 overflow-hidden shadow-sm dark:shadow-none" {% if loop.last %}open{% endif %}>
+          <details class="group rounded-lg border border-[#DEE2E6] dark:border-stone-700 bg-white dark:bg-stone-800 overflow-hidden shadow-sm dark:shadow-none" {% if loop.first %}open{% endif %}>
             <summary class="cursor-pointer px-3 py-2.5 text-xs font-mono text-stone-700 dark:text-stone-200 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/60">
               <span class="inline-flex items-start gap-3">
                 <span class="mt-0.5 text-stone-400 group-open:rotate-90 transition-transform">▶</span>

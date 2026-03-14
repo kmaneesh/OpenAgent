@@ -1,9 +1,9 @@
 use crate::action::catalog::ActionCatalog;
 use crate::action::search::{search_catalog, SearchQuery, SearchResult};
+use crate::agent::CortexAgent;
 use crate::config::CortexConfig;
-use crate::llm::{build_prompt_with_action_context, complete, prompt_preview};
 use crate::metrics::{elapsed_ms, step_err, step_ok, CortexTelemetry};
-use crate::validator::maybe_validate_response;
+use crate::tool_router::ToolRouter;
 use anyhow::{anyhow, Result};
 use opentelemetry::KeyValue;
 use serde_json::{json, Value};
@@ -23,14 +23,16 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
 pub struct AppContext {
     tel: Arc<CortexTelemetry>,
     action_catalog: Arc<ActionCatalog>,
+    tool_router: Arc<ToolRouter>,
 }
 
 impl AppContext {
-    pub fn new(tel: Arc<CortexTelemetry>, action_catalog: Arc<ActionCatalog>) -> Self {
-        Self {
-            tel,
-            action_catalog,
-        }
+    pub fn new(
+        tel: Arc<CortexTelemetry>,
+        action_catalog: Arc<ActionCatalog>,
+        tool_router: Arc<ToolRouter>,
+    ) -> Self {
+        Self { tel, action_catalog, tool_router }
     }
 
     pub fn tel(&self) -> Arc<CortexTelemetry> {
@@ -39,6 +41,10 @@ impl AppContext {
 
     pub fn action_catalog(&self) -> Arc<ActionCatalog> {
         Arc::clone(&self.action_catalog)
+    }
+
+    pub fn tool_router(&self) -> Arc<ToolRouter> {
+        Arc::clone(&self.tool_router)
     }
 }
 
@@ -69,11 +75,10 @@ pub fn handle_describe_boundary() -> String {
     .to_string()
 }
 
-pub fn handle_step(
-    params: Value,
-    tel: Arc<CortexTelemetry>,
-    catalog: Arc<ActionCatalog>,
-) -> Result<String> {
+pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
+    let tel = ctx.tel();
+    let catalog = ctx.action_catalog();
+    let router = ctx.tool_router();
     let p = params
         .as_object()
         .ok_or_else(|| anyhow!("params must be an object"))?;
@@ -138,8 +143,16 @@ pub fn handle_step(
         render_default_tool_context(&default_tools)
     };
     let structured_system_prompt = build_structured_system_prompt(&resolved.system_prompt);
-    let prompt =
-        build_prompt_with_action_context(&structured_system_prompt, &user_input, action_context);
+
+    // Phase 1B: construct a stateless CortexAgent per request and call step() directly.
+    // Phase 2+: wire AgentBuilder<CortexAgent, DirectAgent> → DirectAgentHandle::run(task).
+    let cortex_agent = CortexAgent::new(
+        resolved.agent_name.clone(),
+        structured_system_prompt,
+        action_context,
+        resolved.provider.clone(),
+        crate::agent_tools::default_tools(),
+    );
 
     span.record("agent_name", resolved.agent_name.as_str());
     span.record("provider_kind", resolved.provider.kind.as_str());
@@ -149,68 +162,57 @@ pub fn handle_step(
         agent_name = %resolved.agent_name,
         provider_kind = %resolved.provider.kind,
         config_path = %resolved.source_path.display(),
-        prompt_meta = %prompt_preview(&prompt).to_string(),
         turn_kind = %turn_kind,
         inject_default_tools = turn_kind != "tool_call",
         "cortex.step.start"
     );
 
+    // Phase 2: run the full ReAct loop — LLM → tool → LLM, up to MAX_REACT_ITERATIONS.
     let result = tokio::task::block_in_place(|| {
         tokio::runtime::Handle::current()
-            .block_on(async { complete(&resolved.provider, &prompt).await })
+            .block_on(async { cortex_agent.run(&user_input, &router).await })
     });
 
     match result {
-        Ok(mut output) => {
-            let validation = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(async { maybe_validate_response(&output.content).await })
-            })?;
-            let validator_repaired = validation.was_repaired;
-            output.content = validation.content;
-            let structured = parse_step_model_output(&output.content)?;
+        Ok(react_output) => {
             let duration_ms = elapsed_ms(started);
             span.record("status", "ok");
             span.record("duration_ms", duration_ms);
-            span.record("output_len", output.content.len() as i64);
+            span.record("output_len", react_output.response_text.len() as i64);
             info!(
                 agent_name = %resolved.agent_name,
-                provider_kind = %output.provider_kind,
-                model = %output.model,
+                provider_kind = %react_output.provider_kind,
+                model = %react_output.model,
                 duration_ms,
-                output_len = output.content.len(),
-                validator_repaired,
+                output_len = react_output.response_text.len(),
+                iterations = react_output.iterations,
+                tool_calls = ?react_output.tool_calls_made,
                 default_tool_count = default_tools.len(),
-                action_injected = turn_kind != "tool_call",
                 "cortex.step.ok"
             );
             tel.record(&step_ok(
                 &session_id,
                 &resolved.agent_name,
-                &output.provider_kind,
-                &output.model,
+                &react_output.provider_kind,
+                &react_output.model,
                 &resolved.source_path.display().to_string(),
                 duration_ms,
                 user_input.len(),
-                output.content.len(),
+                react_output.response_text.len(),
             ));
 
             Ok(json!({
                 "session_id": session_id,
                 "agent_name": resolved.agent_name,
-                "provider_kind": output.provider_kind,
-                "model": output.model,
-                "response_type": structured.response_type,
-                "response_text": structured.response_text,
-                "tool_call": structured.tool_call,
-                "action_activity_summary": {
-                    "turn_kind": turn_kind,
-                    "injected": turn_kind != "tool_call",
-                    "candidate_count": default_tools.len(),
-                    "candidates": default_tools.iter().map(|v| v.name.clone()).collect::<Vec<_>>()
-                },
-                "tool_activity_summary": {
-                    "candidate_count": default_tools.len(),
+                "provider_kind": react_output.provider_kind,
+                "model": react_output.model,
+                "response_type": "final",
+                "response_text": react_output.response_text,
+                "tool_call": null,
+                "react_summary": {
+                    "iterations": react_output.iterations,
+                    "tool_calls_made": react_output.tool_calls_made,
+                    "default_tool_count": default_tools.len(),
                     "candidates": default_tools.iter().map(|v| v.name.clone()).collect::<Vec<_>>()
                 }
             })
@@ -226,8 +228,6 @@ pub fn handle_step(
                 model = %resolved.provider.model,
                 duration_ms,
                 error = %err,
-                turn_kind = %turn_kind,
-                action_injected = turn_kind != "tool_call",
                 "cortex.step.error"
             );
             tel.record(&step_err(
@@ -244,13 +244,6 @@ pub fn handle_step(
     }
 }
 
-#[derive(Debug)]
-struct StructuredStepOutput {
-    response_type: String,
-    response_text: String,
-    tool_call: Value,
-}
-
 fn build_structured_system_prompt(system_prompt: &str) -> String {
     format!(
         concat!(
@@ -261,12 +254,9 @@ fn build_structured_system_prompt(system_prompt: &str) -> String {
             "{{\"type\":\"final\",\"content\":\"...\"}}\n",
             "2. Tool call:\n",
             "{{\"type\":\"tool_call\",\"tool\":\"browser.open\",\"arguments\":{{...}}}}\n",
-            "3. Discovery request:\n",
-            "{{\"type\":\"discover\",\"query\":\"...\",\"kind\":\"tool|skill_guidance|all\",\"owner\":\"optional\"}}\n",
             "Rules:\n",
-            "- Use only the provided default tools unless you need more and then use type=discover.\n",
+            "- Use only the listed tools. Do not invent tool names.\n",
             "- If you use type=tool_call, tool must be one of the provided tools.\n",
-            "- If you use type=discover, do not invent tools.\n",
             "- Never return pseudo-code like browser.open(...). Return valid JSON only."
         ),
         system_prompt = system_prompt.trim()
@@ -299,7 +289,8 @@ fn collect_default_tools(catalog: &ActionCatalog) -> Vec<SearchResult> {
                 })
         })
         .collect::<Vec<_>>();
-    by_name.push(discover_tool_result());
+    // cortex.discover disabled — deterministic tool set only (Phase 2+ re-enables via ActionCatalog search)
+    // by_name.push(discover_tool_result());
     by_name
 }
 
@@ -387,99 +378,6 @@ fn discover_tool_result() -> SearchResult {
     }
 }
 
-fn parse_step_model_output(raw: &str) -> Result<StructuredStepOutput> {
-    let parsed: Value = serde_json::from_str(raw)
-        .map_err(|err| anyhow!("cortex model output must be valid JSON: {err}"))?;
-    let obj = parsed
-        .as_object()
-        .ok_or_else(|| anyhow!("cortex model output must be a JSON object"))?;
-    let response_type = obj
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    match response_type.as_str() {
-        "final" => {
-            let content = obj
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            if content.trim().is_empty() {
-                return Err(anyhow!("final response requires non-empty content"));
-            }
-            Ok(StructuredStepOutput {
-                response_type,
-                response_text: content,
-                tool_call: Value::Null,
-            })
-        }
-        "tool_call" => {
-            let tool = obj
-                .get("tool")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if tool.is_empty() {
-                return Err(anyhow!("tool_call response requires tool"));
-            }
-            let arguments = obj
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            if !arguments.is_object() {
-                return Err(anyhow!("tool_call arguments must be an object"));
-            }
-            Ok(StructuredStepOutput {
-                response_type,
-                response_text: String::new(),
-                tool_call: json!({
-                    "tool": tool,
-                    "arguments": arguments,
-                }),
-            })
-        }
-        "discover" => {
-            let query = obj
-                .get("query")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if query.is_empty() {
-                return Err(anyhow!("discover response requires query"));
-            }
-            let kind = obj
-                .get("kind")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("all");
-            let owner = obj
-                .get("owner")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty());
-            Ok(StructuredStepOutput {
-                response_type,
-                response_text: String::new(),
-                tool_call: json!({
-                    "tool": "cortex.discover",
-                    "arguments": {
-                        "query": query,
-                        "kind": kind,
-                        "owner": owner,
-                    }
-                }),
-            })
-        }
-        _ => Err(anyhow!("unsupported cortex response type: {}", response_type)),
-    }
-}
-
 pub fn handle_search_actions(params: Value, catalog: Arc<ActionCatalog>) -> Result<String> {
     let p = params
         .as_object()
@@ -545,40 +443,3 @@ pub fn handle_discover(params: Value, catalog: Arc<ActionCatalog>) -> Result<Str
     handle_search_actions(params, catalog)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_step_model_output;
-
-    #[test]
-    fn parses_final_output() {
-        let parsed = parse_step_model_output(r#"{"type":"final","content":"hello"}"#)
-            .expect("final output should parse");
-        assert_eq!(parsed.response_type, "final");
-        assert_eq!(parsed.response_text, "hello");
-        assert!(parsed.tool_call.is_null());
-    }
-
-    #[test]
-    fn parses_tool_call_output() {
-        let parsed = parse_step_model_output(
-            r#"{"type":"tool_call","tool":"browser.open","arguments":{"url":"https://weather.com"}}"#,
-        )
-        .expect("tool_call output should parse");
-        assert_eq!(parsed.response_type, "tool_call");
-        assert_eq!(parsed.tool_call["tool"].as_str(), Some("browser.open"));
-        assert_eq!(
-            parsed.tool_call["arguments"]["url"].as_str(),
-            Some("https://weather.com")
-        );
-    }
-
-    #[test]
-    fn parses_discover_output() {
-        let parsed =
-            parse_step_model_output(r#"{"type":"discover","query":"weather","kind":"all"}"#)
-                .expect("discover output should parse");
-        assert_eq!(parsed.response_type, "discover");
-        assert_eq!(parsed.tool_call["tool"].as_str(), Some("cortex.discover"));
-        assert_eq!(parsed.tool_call["arguments"]["query"].as_str(), Some("weather"));
-    }
-}
