@@ -1,70 +1,111 @@
 # Omnibus Channels Service (`services/channels`)
 
-This service represents a major architectural shift from isolated per-platform binaries (`services/discord`, `services/slack`, `services/telegram`) to a **unified, multi-platform Omnibus daemon**.
+Unified multi-platform messaging daemon for OpenAgent.  A single long-lived
+Rust process handles all platform connectors via a shared `Channel` trait.
 
-## Why the Change?
+## Architecture
 
-1. **Standardization:** We ported upstream `zeroclaw`'s `Channel` trait (`src/traits.rs`), which abstracts platform-specific messaging mechanics into a unified interface (`send`, `listen`, `update_draft`, `finalize_draft`, `start_typing`).
-2. **Resource Efficiency:** Running a single daemon conserves memory and CPU on low-power hardware (Raspberry Pi targets) compared to running ~6 dedicated platform services.
-3. **Advanced Features Parity:** Implementing `zeroclaw` features like "draft" edits (streaming tool outputs directly into Discord/Telegram messages) and "typing" indicators is vastly simplified with a centralized trait dispatcher.
+```
+vendor/zeroclaw/          ← git subtree — canonical Channel trait + all connectors
+services/channels/src/
+  main.rs                 ← boot sequence + MCP-lite server
+  config.rs               ← TOML load + ${VAR} env interpolation + dotenvy
+  adapter.rs              ← ZeroClawChannel<T> — OTEL + metrics wrapper
+  registry.rs             ← ChannelRegistry — platform instantiation + listeners
+  address.rs              ← ChannelAddress — URL routing type
+config/channels.toml      ← platform credentials + enable flags
+```
 
-## URL-Based Routing
+### Why zeroclaw?
 
-To handle message routing to specific platforms, workspaces, and threads seamlessly over MCP-lite, we use a custom **`ChannelAddress`** URI formatted like so:
+zeroclaw ships a production-hardened `Channel` trait and implementations for
+20+ platforms.  Rather than maintaining our own platform code, we pull zeroclaw
+as a **git subtree** (`vendor/zeroclaw/`) and depend on it as a Rust path dep.
 
-- **Slack:** `slack://work_workspace_id/C123456?thread=123.456`
-- **Discord:** `discord://guild_id/channel_id`
-- **Telegram:** `telegram://bot_name/chat_id`
+Ingesting a new zeroclaw connector = `git subtree pull` + one `config/channels.toml`
+section + one `ChannelRegistry::build` match arm.  Zero trait synchronization work.
 
-This ensures full type safety in Rust (via the `url` crate) and makes it easy for LLMs to target distinct threads or groups without complex JSON blobs.
+### `ZeroClawChannel<T>`
 
-## Retained Separations
+Generic adapter that wraps any `T: zeroclaw::channels::Channel`:
 
-- **WhatsApp:** Kept separate (`services/whatsapp/`) as it uniquely runs on Go (`whatsmeow`). It still communicates via standard MCP-lite.
+- Records OTEL spans for `send`, `listen`, `update_draft`, etc.
+- Emits per-call metrics to `sdk-rust::MetricsWriter` (daily JSONL)
+- Delegates all platform logic to the inner `T`
 
-## Supported Platforms (WIP)
+New zeroclaw connectors are automatically instrumented.
 
-- Discord
-- Slack
-- Telegram
-- iMessage
-- IRC
-- Mattermost
-- Signal
+## Configuration (`config/channels.toml`)
 
-## Platform Setup & Credentials
+Credentials use `${VAR}` syntax resolved from environment variables.
+A `.env` file in the project root is loaded automatically at startup.
 
-Each platform requires specific environment variables to be set before it will boot successfully inside the omnibus daemon. 
+Enable platforms by setting `enabled = true` and providing credentials:
 
-### 1. Discord
-Requires a bot token from the Discord Developer Portal.
-- `DISCORD_BOT_TOKEN="MTEz..."`
+```toml
+[telegram]
+enabled = true
+token = "${TELEGRAM_BOT_TOKEN}"
 
-### 2. Slack
-Requires a bot token from the Slack API portal and optionally an app token if using socket mode.
-- `SLACK_BOT_TOKEN="xoxb-..."`
-- `SLACK_APP_TOKEN="xapp-..."` (If using socket mode)
+[discord]
+enabled = true
+token = "${DISCORD_BOT_TOKEN}"
 
-### 3. Telegram
-Requires a bot token from the BotFather.
-- `TELEGRAM_BOT_TOKEN="123456789:ABCDef..."`
+[slack]
+enabled = true
+bot_token = "${SLACK_BOT_TOKEN}"
+app_token = "${SLACK_APP_TOKEN}"   # required for Socket Mode
+```
 
-### 4. iMessage
-Requires macOS. Works by interacting with the local Messages SQLite database and AppleScript. No specific auth token, but requires accessibility permissions and Full Disk Access for the terminal/daemon.
+See [config/channels.toml](../../config/channels.toml) for the full template.
 
-### 5. IRC
-Requires standard IRC server details.
-- `IRC_SERVER="irc.freenode.net"`
-- `IRC_PORT="6667"`
-- `IRC_NICKNAME="agentbot"`
-- `IRC_CHANNEL="#openagent"`
+## MCP-lite Tool Surface
 
-### 6. Mattermost
-Requires API keys generated from a Mattermost admin console.
-- `MATTERMOST_URL="https://mattermost.example.com"`
-- `MATTERMOST_TOKEN="xyz123..."`
+| Tool | Description |
+|---|---|
+| `channel.send` | Send a message to a `ChannelAddress` URI |
+| `channel.update_draft` | Update a streaming draft message |
+| `channel.finalize_draft` | Finalize a draft with complete response |
+| `channel.cancel_draft` | Cancel and remove a draft |
+| `channel.react` | Add an emoji reaction to a message |
+| `channel.typing_start` | Send typing indicator |
+| `channel.typing_stop` | Stop typing indicator |
+| `channel.list` | List enabled platform names |
 
-### 7. Signal
-Runs by interfacing with a local `signal-cli` REST API or DBus interface.
-- `SIGNAL_CLI_URL="http://127.0.0.1:8080"` (if using the REST wrapper)
-- `SIGNAL_NUMBER="+1234567890"`
+## MCP-lite Events (pushed to Python control plane)
+
+| Event | When |
+|---|---|
+| `message.received` | Inbound message from any platform |
+| `channel.status` | On startup — lists enabled channels |
+
+## URL-Based Routing (`ChannelAddress`)
+
+```
+telegram://bot_name/chat_id
+discord://guild_id/channel_id
+slack://workspace_id/C123456?thread=123.456
+```
+
+## Supported Platforms
+
+All platforms listed below are provided by `vendor/zeroclaw/`.  Enable any
+by adding a section to `config/channels.toml`.
+
+- Telegram, Discord, Slack
+- IRC, Mattermost, Signal
+- iMessage (macOS only — requires Full Disk Access)
+- WhatsApp, Email, DingTalk, Lark/Feishu, Matrix, Nostr, WeCom, QQ, and more
+
+> **WhatsApp** remains in `services/whatsapp/` (Go/whatsmeow) — not part of
+> this omnibus due to its unique Go dependency.
+
+## Updating zeroclaw
+
+```bash
+git subtree pull --prefix=vendor/zeroclaw \
+  https://github.com/zeroclaw-labs/zeroclaw.git master --squash
+```
+
+Then add a registry entry in `registry.rs` for any new connector and a
+section in `config/channels.toml`.  The adapter and trait code need no changes.
