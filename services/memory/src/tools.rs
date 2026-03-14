@@ -108,7 +108,7 @@ pub fn make_tools() -> Vec<ToolDefinition> {
             description: concat!(
                 "Write a stub diary row (zero vector placeholder) for a completed ReAct turn. ",
                 "Called fire-and-forget by Cortex after each final answer. ",
-                "Compaction will back-fill real embeddings in a future pass."
+                "Compaction will back-fill real embeddings, keywords, and summaries in a future pass."
             )
             .to_string(),
             params: json!({
@@ -120,11 +120,24 @@ pub fn make_tools() -> Vec<ToolDefinition> {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Truncated response text (up to 500 chars)"
+                        "description": "Truncated response summary (up to 200 chars)"
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Absolute path to the diary markdown file"
+                        "description": "Path to the diary markdown file on disk"
+                    },
+                    "keywords": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional keyword list; defaults to [] (filled at compaction)"
+                    },
+                    "validator_status": {
+                        "type": "string",
+                        "description": "Optional validation tag; defaults to 'pending'"
+                    },
+                    "flags": {
+                        "type": "object",
+                        "description": "Optional flags object; defaults to {}"
                     }
                 },
                 "required": ["session_id", "content"]

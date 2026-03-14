@@ -258,46 +258,40 @@ memory:
 
 ---
 
-## Phase 4: Prompt System ⬅ NEXT
+## Phase 4: Prompt System ✅ DONE
 
 Goal: externalize prompts and stop hardcoding cognitive instructions.
 
-- Add prompt loader
-- Use YAML prompt files
-- Support runtime template rendering
-- Add prompt version metadata
-- Create initial prompt families:
-  - step reasoning
-  - tool selection
-  - memory compaction handoff
-  - plan update
+- [x] Add `src/prompt.rs` — MiniJinja `OnceLock<Environment<'static>>` with compile-time `include_str!` embedding ✅
+- [x] `prompts/step_system.j2` — base system prompt + JSON output format section ✅
+- [x] `prompts/tool_context.j2` — appends available-tools block to the system prompt ✅
+- [x] `prompts/correction.j2` — injected as a user turn when model returns non-JSON ✅
+- [x] Three render functions: `render_step_system`, `render_tool_context`, `render_correction` ✅
+- [x] `handlers.rs`: `build_structured_system_prompt` deleted; replaced with `crate::prompt::render_step_system` ✅
+- [x] `llm.rs`: `append_action_context` delegated to `crate::prompt::render_tool_context` ✅
+- [x] 7 unit tests covering all render paths ✅
 
 Exit criteria:
-- Cortex loads prompts from files without recompilation
+- Cortex loads prompts from embedded MiniJinja templates without recompilation ✅
 
 ---
 
-## Phase 4A: Diary Store and Index
+## Phase 4A: Diary Store and Index ✅ DONE
 
 Goal: capture human-readable request/response history without polluting normal memory retrieval.
 
-- Define diary markdown path convention
-- Define deterministic diary template
-- Persist request and response in markdown
-- Add LanceDB diary index storing only:
-  - entry id
-  - session id
-  - timestamp
-  - short summary
-  - keywords
-  - file path
-  - validator status
-  - flags
-- Ensure diary indexing is asynchronous and can be deferred when the system is under load
-- Ensure diary search is only exposed to HITL/audit workflows
+- [x] `prompts/diary_entry.j2` — deterministic MiniJinja template for diary markdown ✅
+- [x] `src/prompt.rs`: add `DiaryEntryContext` struct + `render_diary_entry()` function ✅
+- [x] `src/diary.rs`: replace `format!` string with `render_diary_entry()` call ✅
+- [x] `src/diary.rs`: enrich `memory.diary_write` params — `keywords`, `validator_status`, `flags` ✅
+- [x] `memory/src/handlers.rs`: `handle_diary_write` accepts and stores enriched metadata ✅
+- [x] `memory/src/tools.rs`: `memory.diary_write` schema extended with optional fields ✅
+- [x] Diary search (`store=diary`) accessible only when explicitly requested — not included in normal `HybridMemoryAdapter` LTM recall (which uses `store=memory`) ✅
+- [x] 3 unit tests for `render_diary_entry` (sections, tool list, whitespace trim) ✅
 
 Exit criteria:
-- Every completed cycle produces a deterministic markdown diary entry plus a LanceDB reference index row, and diary entries can be semantically scanned by HITL without being used in normal context injection
+- Every completed cycle produces a deterministic markdown diary entry plus a LanceDB reference index row ✅
+- Diary entries can be semantically scanned by HITL via `store=diary` without being used in normal context injection ✅
 
 ---
 

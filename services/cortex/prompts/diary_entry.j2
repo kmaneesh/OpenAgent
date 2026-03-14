@@ -1,0 +1,20 @@
+# Session: {{ session_id }}
+
+**Timestamp:** {{ timestamp }}
+
+## User input
+
+{{ user_input | trim }}
+
+## Response
+
+{{ response_text | trim }}
+
+## Tools used
+
+{% if tool_calls -%}
+{% for tool in tool_calls %}- {{ tool }}
+{% endfor %}
+{%- else -%}
+_none_
+{%- endif %}

@@ -1,0 +1,13 @@
+{{ system_prompt | trim }}
+
+## Output format
+
+Every response is exactly one JSON object. Start your response with `{`. No text before it, no text after it.
+
+Final answer:
+{"type":"final","content":"<your complete answer>"}
+
+Tool call:
+{"type":"tool_call","tool":"<tool_name>","arguments":{"<param>":"<value>"}}
+
+Never write prose, greetings, or explanations. Never wrap the JSON in markdown fences. The first character of your response must be `{`.

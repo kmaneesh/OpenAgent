@@ -413,15 +413,14 @@ impl AgentExecutor for CortexAgent {
                         raw_len = content.len(),
                         "cortex.react.parse_error — injecting correction prompt"
                     );
+                    let correction = crate::prompt::render_correction()
+                        .unwrap_or_else(|_| {
+                            "Your previous response was not valid JSON. \
+                             Respond with exactly one JSON object.".to_string()
+                        });
                     messages.push(
                         ChatMessageBuilder::new(ChatRole::User)
-                            .content(concat!(
-                                "Your previous response was not valid JSON. ",
-                                "You must respond with exactly one JSON object and no surrounding text.\n",
-                                "Allowed shapes:\n",
-                                "1. {\"type\":\"final\",\"content\":\"your answer here\"}\n",
-                                "2. {\"type\":\"tool_call\",\"tool\":\"tool.name\",\"arguments\":{}}"
-                            ))
+                            .content(&correction)
                             .build(),
                     );
                     self.on_turn_complete(iteration, &context).await;

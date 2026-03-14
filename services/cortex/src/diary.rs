@@ -6,11 +6,13 @@
 //!
 //! # What gets written
 //!
-//! 1. A markdown file at `<diary_dir>/<unix_timestamp>.md` with the session
-//!    summary (user input → tool calls → final answer).
-//! 2. A stub row in the memory service's `diary` LanceDB table (zero vector).
-//!    The memory compaction job will back-fill real embeddings later.
+//! 1. A markdown file at `<diary_dir>/<unix_timestamp>.md` rendered from
+//!    `prompts/diary_entry.j2` via `crate::prompt::render_diary_entry`.
+//! 2. A stub row in the memory service's `diary` LanceDB table (zero vector +
+//!    enriched metadata).  The memory compaction job will back-fill real
+//!    embeddings, summaries, and keywords later.
 
+use crate::prompt::{render_diary_entry, DiaryEntryContext};
 use crate::tool_router::ToolRouter;
 use serde_json::json;
 use std::path::PathBuf;
@@ -20,10 +22,10 @@ use tracing::{info, warn};
 
 /// Write a diary entry for a completed ReAct turn.
 ///
-/// Creates `<diary_dir>/<ts>.md`, then calls `memory.diary_write` over the
-/// `ToolRouter` to insert a stub LanceDB row.  Both steps are best-effort —
-/// if either fails the error is logged and the function returns without
-/// propagating.
+/// Creates `<diary_dir>/<ts>.md` from the `diary_entry.j2` template, then calls
+/// `memory.diary_write` over the `ToolRouter` to insert a stub LanceDB row.
+/// Both steps are best-effort — if either fails the error is logged and the
+/// function returns without propagating.
 pub async fn write_diary_entry(
     session_id: String,
     diary_dir: PathBuf,
@@ -37,30 +39,29 @@ pub async fn write_diary_entry(
         .unwrap_or_default()
         .as_secs();
 
-    // ── 1. Write markdown ─────────────────────────────────────────────────────
+    // ── 1. Render markdown via MiniJinja template ──────────────────────────────
+    let ctx = DiaryEntryContext {
+        session_id:    &session_id,
+        timestamp:     ts,
+        user_input:    &user_input,
+        response_text: &response_text,
+        tool_calls:    &tool_calls_made,
+    };
+    let md = match render_diary_entry(&ctx) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(session_id = %session_id, error = %e, "diary: template render failed");
+            return;
+        }
+    };
+
+    // ── 2. Write markdown to disk ──────────────────────────────────────────────
     if let Err(e) = tokio::fs::create_dir_all(&diary_dir).await {
         warn!(session_id = %session_id, error = %e, "diary: failed to create directory");
         return;
     }
 
     let file_path = diary_dir.join(format!("{ts}.md"));
-    let tools_section = if tool_calls_made.is_empty() {
-        "_none_".to_string()
-    } else {
-        tool_calls_made.iter().map(|t| format!("- {t}")).collect::<Vec<_>>().join("\n")
-    };
-
-    let md = format!(
-        "# Session: {session_id}\n\n\
-         **Timestamp:** {ts}\n\n\
-         ## User input\n\n\
-         {user_input}\n\n\
-         ## Response\n\n\
-         {response_text}\n\n\
-         ## Tools used\n\n\
-         {tools_section}\n"
-    );
-
     if let Err(e) = tokio::fs::write(&file_path, &md).await {
         warn!(session_id = %session_id, error = %e, "diary: failed to write markdown");
         return;
@@ -72,13 +73,17 @@ pub async fn write_diary_entry(
         "diary: markdown written"
     );
 
-    // ── 2. Stub LanceDB row (zero vector) via memory service ──────────────────
-    // Truncate to 500 chars so the stub content field stays compact.
-    let summary: String = response_text.chars().take(500).collect();
+    // ── 3. Stub LanceDB row (zero vector) via memory service ───────────────────
+    // `summary` is a 200-char truncation of the response — compact enough for
+    // the diary index row without duplicating the full text already on disk.
+    let summary: String = response_text.chars().take(200).collect();
     let params = json!({
-        "session_id": session_id,
-        "content": summary,
-        "file_path": file_path.display().to_string(),
+        "session_id":       session_id,
+        "content":          summary,
+        "file_path":        file_path.display().to_string(),
+        "keywords":         [],
+        "validator_status": "pending",
+        "flags":            {},
     });
 
     match router.call("memory.diary_write", &params).await {

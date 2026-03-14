@@ -19,6 +19,9 @@ serde_yaml = "0.9"
 # Error handling
 anyhow = "1.0"
 
+# Prompt templating — Jinja2-compatible, minimal binary footprint (no regex dep)
+minijinja = "2"
+
 # LLM provider abstraction
 autoagents-llm = { version = "0.3.6", features = ["openai", "anthropic"] }
 

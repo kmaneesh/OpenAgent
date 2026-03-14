@@ -569,9 +569,12 @@ pub fn handle_prune(
 /// is a placeholder; compaction will back-fill real embeddings in a future pass.
 ///
 /// Params:
-/// - `session_id`  — session identifier (stored in metadata JSON)
-/// - `content`     — truncated response text (up to 500 chars from Cortex)
-/// - `file_path`   — absolute path to the diary markdown file (stored in metadata)
+/// - `session_id`       — session identifier (stored in metadata JSON)
+/// - `content`          — truncated response text (up to 200 chars from Cortex)
+/// - `file_path`        — path to the diary markdown file (stored in metadata)
+/// - `keywords`         — optional keyword array; defaults to `[]`; filled at compaction
+/// - `validator_status` — optional string tag; defaults to `"pending"`
+/// - `flags`            — optional JSON object; defaults to `{}`
 pub fn handle_diary_write(
     params: Value,
     db: Arc<Connection>,
@@ -583,6 +586,14 @@ pub fn handle_diary_write(
     let session_id = p.get("session_id").and_then(|v| v.as_str()).unwrap_or("").trim();
     let content = p.get("content").and_then(|v| v.as_str()).unwrap_or("").trim();
     let file_path = p.get("file_path").and_then(|v| v.as_str()).unwrap_or("").trim();
+    let keywords = p.get("keywords").cloned().unwrap_or_else(|| json!([]));
+    let validator_status = p
+        .get("validator_status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pending")
+        .trim()
+        .to_owned();
+    let flags = p.get("flags").cloned().unwrap_or_else(|| json!({}));
 
     if content.is_empty() {
         return Err(anyhow::anyhow!("{}", err_json("content is required")));
@@ -612,9 +623,12 @@ pub fn handle_diary_write(
                 .unwrap_or_else(|_| "0".to_string());
 
             let metadata = serde_json::json!({
-                "session_id": session_owned,
-                "file_path": file_path_owned,
-                "stub": true,
+                "session_id":       session_owned,
+                "file_path":        file_path_owned,
+                "stub":             true,
+                "keywords":         keywords,
+                "validator_status": validator_status,
+                "flags":            flags,
             })
             .to_string();
 

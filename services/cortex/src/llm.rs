@@ -272,21 +272,11 @@ pub fn prompt_preview(prompt: &StepPrompt) -> Value {
 }
 
 fn append_action_context(system_prompt: &str, action_context: Option<&str>) -> String {
-    let Some(action_context) = action_context.map(str::trim).filter(|v| !v.is_empty()) else {
-        return system_prompt.to_string();
-    };
-    format!(
-        concat!(
-            "{system_prompt}\n\n",
-            "## Available tools\n\n",
-            "{action_context}\n\n",
-            "To call a tool: {{\"type\":\"tool_call\",\"tool\":\"<name>\",\"arguments\":{{...}}}}\n",
-            "To answer directly: {{\"type\":\"final\",\"content\":\"<answer>\"}}\n",
-            "Only use tools listed above. Start your response with `{{`."
-        ),
-        system_prompt = system_prompt,
-        action_context = action_context,
-    )
+    crate::prompt::render_tool_context(system_prompt, action_context.unwrap_or(""))
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "tool_context render failed — using bare system prompt");
+            system_prompt.to_string()
+        })
 }
 
 #[cfg(test)]

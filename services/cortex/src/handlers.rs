@@ -145,7 +145,8 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     } else {
         render_default_tool_context(&default_tools)
     };
-    let structured_system_prompt = build_structured_system_prompt(&resolved.system_prompt);
+    let structured_system_prompt = crate::prompt::render_step_system(&resolved.system_prompt)
+        .map_err(|e| anyhow!("system prompt render failed: {e}"))?;
 
     let data_root = std::env::current_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -284,25 +285,6 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
             Err(err)
         }
     }
-}
-
-fn build_structured_system_prompt(system_prompt: &str) -> String {
-    format!(
-        concat!(
-            "{system_prompt}\n\n",
-            "## Output format\n\n",
-            "Every response is exactly one JSON object. ",
-            "Start your response with `{{`. No text before it, no text after it.\n\n",
-            "Final answer:\n",
-            "{{\"type\":\"final\",\"content\":\"<your complete answer>\"}}\n\n",
-            "Tool call:\n",
-            "{{\"type\":\"tool_call\",\"tool\":\"<tool_name>\",\"arguments\":{{\"<param>\":\"<value>\"}}}}\n\n",
-            "Never write prose, greetings, or explanations. ",
-            "Never wrap the JSON in markdown fences. ",
-            "The first character of your response must be `{{`."
-        ),
-        system_prompt = system_prompt.trim()
-    )
 }
 
 fn collect_default_tools(catalog: &ActionCatalog) -> Vec<SearchResult> {

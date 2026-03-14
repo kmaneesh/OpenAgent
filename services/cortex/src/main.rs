@@ -3,6 +3,7 @@ mod agent;
 mod agent_tools;
 mod config;
 mod diary;
+mod prompt;
 mod handlers;
 mod llm;
 mod memory_adapter;
