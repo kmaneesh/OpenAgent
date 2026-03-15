@@ -1,0 +1,36 @@
+# Dockerfile.ui — OpenAgent Python web UI
+#
+# Runs the FastAPI + HTMX admin dashboard.
+# The Rust openagent runtime is expected on the host (or at OPENAGENT_API_URL).
+#
+# Build:
+#   docker build -f Dockerfile.ui -t openagent-ui .
+# Run standalone:
+#   docker run -p 8000:8000 -e OPENAGENT_API_URL=http://host.docker.internal:8080 openagent-ui
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install uv for fast dependency resolution
+RUN pip install --no-cache-dir uv
+
+# Copy dependency manifests first (layer caching)
+COPY requirements.txt .
+COPY pyproject.toml .
+COPY README.md .
+COPY app/pyproject.toml app/
+
+# Copy source — openagent-py core and app
+COPY openagent-py/ openagent-py/
+COPY app/ app/
+
+# Install all Python deps into the system interpreter (no venv needed in Docker)
+RUN uv pip install --system --no-cache -r requirements.txt
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
