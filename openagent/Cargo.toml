@@ -1,0 +1,58 @@
+[package]
+name = "openagent"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAgent Rust runtime — service manager, MCP-lite client, Axum control plane"
+
+[[bin]]
+name = "openagent"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4"] }
+glob = "0.3"
+toml = "0.8"
+mimalloc = { version = "0.1", default-features = false }
+axum = "0.7"
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+http = "1"
+
+# OpenTelemetry — three-pillar observability (traces, logs, metrics)
+opentelemetry        = { version = "0.27", features = ["trace", "logs", "metrics"] }
+opentelemetry_sdk    = { version = "0.27", features = ["trace", "logs", "metrics", "rt-tokio"] }
+opentelemetry-otlp   = { version = "0.27", default-features = false, features = ["trace", "logs", "http-proto", "reqwest-rustls"] }
+opentelemetry-appender-tracing = { version = "0.27", default-features = false }
+tracing-opentelemetry = "0.28"
+tracing-appender      = "0.2"
+async-trait           = "0.1"
+futures-util          = "0.3"
+hex                   = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+literal_string_with_formatting_args = "allow"
