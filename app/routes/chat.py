@@ -1,26 +1,22 @@
-"""Chat route — GET /chat, WS /ws/chat, SSE /stream/session, POST /api/chat/sessions/{id}/send"""
+"""Chat route — GET /chat, WS /ws/chat, POST /api/chat/sessions/{id}/send"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
 
+import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.requests import Request
 from fastapi.responses import StreamingResponse
 from fastapi.templating import Jinja2Templates
-
-from openagent.bus.bus import MessageBus
-from openagent.bus.events import InboundMessage, OutboundMessage, SenderInfo
-from openagent.platforms.web import WebPlatformAdapter
 
 router = APIRouter()
 templates: Jinja2Templates  # injected by main.py
 
 
 def _get_sessions(request: Request):
-    """Return the SessionManager from app state (handles both attribute names)."""
+    """Return the SessionManager from app state."""
     app = request.app
     return getattr(app.state, "session_manager", None) or getattr(app.state, "sessions", None)
 
@@ -46,7 +42,7 @@ async def list_sessions(request: Request):
         if key.startswith("user:"):
             links = await sessions.get_identity_links(key)
             if links:
-                primary = links[0]  # already sorted newest-active first
+                primary = links[0]
                 result.append({
                     "key": key,
                     "platform": primary["platform"],
@@ -54,7 +50,6 @@ async def list_sessions(request: Request):
                     "platforms": links,
                 })
                 continue
-        # Fallback: derive platform from key prefix (e.g. "telegram:12345")
         if ":" in key:
             platform, channel_id = key.split(":", 1)
         else:
@@ -94,25 +89,24 @@ async def delete_session(request: Request, session_id: str):
 
 @router.post("/api/chat/sessions/{session_id}/send")
 async def direct_send(request: Request, session_id: str):
-    """Operator direct reply — bypasses the agent loop, goes straight to platform adapter."""
+    """Operator direct reply — calls Rust POST /tool/channel.send."""
     body = await request.json()
     content = str(body.get("content", "")).strip()
     if not content:
         return {"error": "content required"}
 
-    bus: MessageBus = request.app.state.bus
-    sessions = _get_sessions(request)
-
-    platform: str
-    channel_id: str
-
-    if session_id.startswith("user:") and sessions:
-        links = await sessions.get_identity_links(session_id)
-        if not links:
-            return {"error": "no platform links found for this session"}
-        primary = links[0]
-        platform = primary["platform"]
-        channel_id = primary["channel_id"]
+    if session_id.startswith("user:"):
+        sessions = _get_sessions(request)
+        if sessions:
+            links = await sessions.get_identity_links(session_id)
+            if links:
+                primary = links[0]
+                platform = primary["platform"]
+                channel_id = primary["channel_id"]
+            else:
+                return {"error": "no platform links found for this session"}
+        else:
+            return {"error": "session manager unavailable"}
     elif ":" in session_id:
         platform, channel_id = session_id.split(":", 1)
     else:
@@ -121,45 +115,16 @@ async def direct_send(request: Request, session_id: str):
     if platform == "web":
         return {"error": "use WebSocket for web sessions"}
 
-    msg = OutboundMessage(
-        platform=platform,
-        channel_id=channel_id,
-        content=content,
-        session_key=session_id,
-    )
-    await bus.dispatch(msg)
-    return {"ok": True, "platform": platform, "channel_id": channel_id}
-
-
-@router.get("/stream/session/{session_key:path}")
-async def stream_session(request: Request, session_key: str):
-    """SSE endpoint — streams real-time inbound+outbound events for a session."""
-    bus: MessageBus = request.app.state.bus
-    q = bus.subscribe(session_key)
-
-    async def event_generator():
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=15.0)
-                    if event is None:  # bus shutdown sentinel
-                        break
-                    yield f"data: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-        finally:
-            bus.unsubscribe(session_key, q)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    api_client: httpx.AsyncClient = request.app.state.api_client
+    channel_uri = f"{platform}://{channel_id}"
+    try:
+        resp = await api_client.post(f"/tool/channel.send", content=json.dumps({
+            "address": channel_uri,
+            "content": content,
+        }), headers={"Content-Type": "application/json"})
+        return {"ok": resp.is_success, "platform": platform, "channel_id": channel_id}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.websocket("/ws/chat")
@@ -167,24 +132,15 @@ async def chat_ws(ws: WebSocket):
     await ws.accept()
 
     app = ws.app
-    bus: MessageBus = app.state.bus
-    web_adapter: WebPlatformAdapter = app.state.web_platform
+    api_client: httpx.AsyncClient = app.state.api_client
 
-    # Prefer requested session ID, otherwise generate unique tab ID
+    # Prefer requested session ID, otherwise generate unique tab ID.
     requested_session = ws.query_params.get("session_id")
     if requested_session:
         session_id = requested_session
     else:
         session_id = f"web:{uuid.uuid4().hex[:12]}"
 
-    async def _deliver(content: str, stream_chunk: bool = False) -> None:
-        await ws.send_json({
-            "role": "agent",
-            "content": content,
-            "stream_chunk": stream_chunk,
-        })
-
-    web_adapter.register_connection(session_id, _deliver)
     # Tell the browser its session ID so it can display it.
     await ws.send_json({"session_id": session_id})
 
@@ -194,14 +150,20 @@ async def chat_ws(ws: WebSocket):
             if not text.strip():
                 continue
 
-            await bus.publish(InboundMessage(
-                platform="web",
-                channel_id=session_id,
-                sender=SenderInfo(platform="web", user_id=session_id),
-                content=text.strip(),
-                session_key_override=session_id,
-            ))
+            try:
+                resp = await api_client.post("/step", json={
+                    "platform": "web",
+                    "channel_id": session_id,
+                    "session_id": session_id,
+                    "user_input": text.strip(),
+                })
+                resp.raise_for_status()
+                data = resp.json()
+                response_text = data.get("response_text", "")
+                await ws.send_json({"role": "agent", "content": response_text})
+            except httpx.HTTPStatusError as e:
+                await ws.send_json({"role": "error", "content": f"Agent error: {e.response.status_code}"})
+            except Exception as e:
+                await ws.send_json({"role": "error", "content": str(e)})
     except WebSocketDisconnect:
         pass
-    finally:
-        web_adapter.unregister_connection(session_id)

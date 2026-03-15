@@ -12,20 +12,18 @@ history. Actionable gaps below, ordered by impact.
 
 ### 🔴 High Priority
 
-#### 1. Credential Scrubbing on Inbound Messages
+#### 1. Credential Scrubbing on Inbound Messages ✅ DONE
 
-**Gap:** ZeroClaw scrubs API keys, passwords, and tokens from every inbound user message
-before the content reaches the LLM or is saved to memory. We have no equivalent.
+**Implementation:** `openagent/src/scrub.rs` — `scrub::process(input, context)`.
+Hand-rolled byte scanner, no new deps.
 
-**What to build:**
-- Regex pass on `user_input` inside `CortexAgent::execute()` before the prompt is assembled
-- Patterns: `(token|api[_-]?key|password|secret|bearer|credential)\s*[:=]\s*\S+`
-- Replacement: preserve 4-char prefix, redact remainder (e.g. `sk-an*[REDACTED]`)
-- Log a warning with session_id when a credential is detected (do not log the value)
-- Location: `services/cortex/src/agent.rs` — top of `execute()` before `build_prompt_with_action_context`
+Applied in two places (Guard layer):
+- `openagent/src/middleware.rs` — scrubs `user_input` in buffered HTTP request body before STT/Cortex
+- `openagent/src/dispatch.rs` — scrubs channel message `content` before `cortex.step`
 
-**Scope:** Single function, ~20 lines. No new deps (standard regex via `regex` crate or
-hand-rolled for zero-dep option).
+Patterns: `token`, `api_key`, `password`, `secret`, `bearer`, `credential`, `auth` + variants.
+Redaction: keeps first 4 chars, replaces remainder with `[REDACTED]`. Values < 8 chars not redacted.
+Logs `WARN guard.scrub.credential_detected` with context label; secret value never logged.
 
 ---
 
@@ -114,15 +112,15 @@ Implement via `opentelemetry-prometheus` exporter alongside the file exporter.
 
 ---
 
-#### 7. Prompt Injection Detection
+#### 7. Prompt Injection Detection ✅ DONE
 
-**Gap:** ZeroClaw has `prompt_guard.rs`. We have no prompt injection detection.
+**Implementation:** Bundled with credential scrubbing in `openagent/src/scrub.rs`.
+`detect_injection()` runs as the second pass inside `scrub::process()`.
 
-**What to build:**
-- Heuristic scan of `user_input` for common injection patterns:
-  `"ignore previous instructions"`, `"you are now"`, `"disregard"`, etc.
-- Log warning + optionally reject/sanitize the message
-- Location: same pass as credential scrubbing (#1 above)
+Phrases detected: "ignore previous instructions", "you are now", "disregard", "jailbreak",
+"pretend you are", "roleplay as", "dan mode", and others.
+Logs `WARN guard.scrub.injection_detected` with the matched phrase; text is NOT modified
+(detection only — preserves model's ability to reason about the flagged content if needed).
 
 ---
 

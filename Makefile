@@ -32,7 +32,9 @@
 # ---------------------------------------------------------------------------
 
 GO_SERVICES   := whatsapp
-RUST_SERVICES := sandbox browser memory tts stt validator cortex channels
+RUST_SERVICES := sandbox browser memory tts stt validator cortex channels guard
+# openagent is the Rust control plane binary — built separately (not a service)
+OPENAGENT_DIR := openagent
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -73,11 +75,11 @@ TTS_SKIP_DARWIN := true
 
 BIN := bin
 
-.PHONY: all local clean test-go test-rust test-py download-models help \
+.PHONY: all local clean test-go test-rust test-py download-models help openagent openagent-local \
         $(GO_SERVICES) $(RUST_SERVICES)
 
-# Default: cross-compile everything
-all: $(GO_SERVICES) $(RUST_SERVICES)
+# Default: cross-compile everything (services + openagent control plane)
+all: $(GO_SERVICES) $(RUST_SERVICES) openagent
 
 # ---------------------------------------------------------------------------
 # Go services — cross-compile to all targets
@@ -143,7 +145,7 @@ $(foreach svc,$(RUST_SERVICES),$(eval $(call build_rust_service,$(svc))))
 # Local build — current host platform only (fastest dev loop)
 # ---------------------------------------------------------------------------
 
-local:
+local: openagent-local
 	@echo "==> Building for $(HOST_OS)/$(HOST_ARCH)"
 	@mkdir -p $(BIN)
 	@echo "--- Go services ---"
@@ -202,6 +204,55 @@ download-models:
 	fi
 
 # ---------------------------------------------------------------------------
+# OpenAgent Rust control plane binary
+# ---------------------------------------------------------------------------
+
+# openagent-local: build for the current host only (fastest dev loop)
+openagent-local:
+	@echo "==> openagent (Rust control plane, $(HOST_OS)/$(HOST_ARCH))"
+	@mkdir -p $(BIN)
+ifeq ($(HOST_OS),darwin)
+	cd $(OPENAGENT_DIR) && cargo build --release --target aarch64-apple-darwin
+	cp $(OPENAGENT_DIR)/target/aarch64-apple-darwin/release/openagent \
+	   $(BIN)/openagent-$(HOST_SUFFIX)
+else
+	cd $(OPENAGENT_DIR) && cargo build --release
+	cp $(OPENAGENT_DIR)/target/release/openagent $(BIN)/openagent-$(HOST_SUFFIX)
+endif
+	@echo "   ✓ $(BIN)/openagent-$(HOST_SUFFIX)"
+
+# openagent: cross-compile (darwin native + linux via cross)
+openagent:
+	@echo "==> openagent (Rust control plane, all targets)"
+	@mkdir -p $(BIN)
+ifeq ($(HOST_OS),darwin)
+	cd $(OPENAGENT_DIR) && cargo build --release --target aarch64-apple-darwin
+	cp $(OPENAGENT_DIR)/target/aarch64-apple-darwin/release/openagent \
+	   $(BIN)/openagent-darwin-arm64
+	@if rustup target list --installed 2>/dev/null | grep -q x86_64-apple-darwin; then \
+	  cd $(OPENAGENT_DIR) && cargo build --release --target x86_64-apple-darwin && \
+	  cp $(OPENAGENT_DIR)/target/x86_64-apple-darwin/release/openagent \
+	     $(BIN)/openagent-darwin-amd64; \
+	else \
+	  echo "   Skipping darwin/amd64 (run: rustup target add x86_64-apple-darwin)"; \
+	fi
+else
+	cd $(OPENAGENT_DIR) && cargo build --release
+	cp $(OPENAGENT_DIR)/target/release/openagent $(BIN)/openagent-$(HOST_SUFFIX)
+endif
+	@if command -v cross >/dev/null 2>&1; then \
+	  cd $(OPENAGENT_DIR) && cross build --release --target aarch64-unknown-linux-musl && \
+	  cp $(OPENAGENT_DIR)/target/aarch64-unknown-linux-musl/release/openagent \
+	     $(BIN)/openagent-linux-arm64; \
+	  cd $(OPENAGENT_DIR) && cross build --release --target x86_64-unknown-linux-musl && \
+	  cp $(OPENAGENT_DIR)/target/x86_64-unknown-linux-musl/release/openagent \
+	     $(BIN)/openagent-linux-amd64; \
+	else \
+	  echo "   Skipping linux targets (install: cargo install cross --locked)"; \
+	fi
+	@echo "   ✓ openagent binaries in $(BIN)/"
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -250,6 +301,10 @@ help:
 	@echo "  make test-rust    Run Rust unit tests"
 	@echo "  make test-py      Run Python tests"
 	@echo "  make clean        Remove all binaries from $(BIN)/"
+	@echo ""
+	@echo "  Control plane:"
+	@echo "  make openagent-local   Build openagent for current host (fast)"
+	@echo "  make openagent         Cross-compile openagent for all targets"
 	@echo ""
 	@echo "  make download-models  Check embedding model cache; prints download command if missing"
 	@echo ""

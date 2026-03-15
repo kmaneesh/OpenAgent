@@ -10,13 +10,12 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from openagent.services.manager import ServiceManager
-
 router = APIRouter()
 templates: Jinja2Templates  # injected by main.py
 
 
-def _mgr(request: Request) -> ServiceManager | None:
+def _mgr(request: Request):
+    # ServiceManager is now in the Rust binary; Python mgr is no longer available.
     return getattr(request.app.state, "service_manager", None)
 
 
@@ -115,7 +114,22 @@ async def services_page(request: Request):
         go_services = [s for s in all_svcs if s.get("runtime", "go") != "rust"]
         rust_services = [s for s in all_svcs if s.get("runtime", "go") == "rust"]
     else:
+        # Python ServiceManager is gone — discover from service.json manifests and
+        # overlay running status from the Rust API /tools endpoint.
         go_services, rust_services = _discover_services(request.app.state.root)
+        import httpx
+        api_client = getattr(request.app.state, "api_client", None)
+        running_svcs: set[str] = set()
+        if api_client is not None:
+            try:
+                resp = await api_client.get("/tools", timeout=3.0)
+                for t in resp.json().get("tools", []):
+                    running_svcs.add(t.get("service", ""))
+            except Exception:
+                pass
+        for s in go_services + rust_services:
+            if s["name"] in running_svcs:
+                s["status"] = "running"
         go_services = [_merge_state(s) for s in go_services]
         rust_services = [_merge_state(s) for s in rust_services]
 
@@ -132,71 +146,63 @@ async def services_page(request: Request):
 # Service control endpoints (all return HTMX HTML snippets)
 # ---------------------------------------------------------------------------
 
+async def _api_tool(request: Request, tool: str, name: str) -> bool:
+    """Call a service management tool on the Rust API. Returns True on success."""
+    import httpx
+    api_client = getattr(request.app.state, "api_client", None)
+    if api_client is None:
+        return False
+    try:
+        resp = await api_client.post(f"/tool/{tool}", content=f'{{"name":"{name}"}}',
+                                     headers={"Content-Type": "application/json"}, timeout=10.0)
+        return resp.is_success
+    except Exception:
+        return False
+
+
 @router.post("/services/{name}/restart", response_class=HTMLResponse)
 async def restart_service(name: str, request: Request):
-    """Terminate service process; watchdog will relaunch with back-off."""
-    mgr = _mgr(request)
-    if mgr is None:
-        return HTMLResponse('<span class="text-red-400 text-sm">ServiceManager not available.</span>')
-
-    matches = [s for s in mgr.list_services() if s.name == name]
-    if not matches:
-        return HTMLResponse(
-            f'<span class="text-red-400 text-sm">Service <strong>{name}</strong> not found.</span>'
-        )
-
-    svc = matches[0]
-    if svc._process and svc._process.returncode is None:
-        svc._process.terminate()
+    """Signal the Rust openagent binary to restart a service."""
+    store = _store(request)
+    ok = await _api_tool(request, "service.restart", name)
+    if ok:
         return HTMLResponse(
             f'<span class="text-[#FF9933] text-sm">Restarting <strong>{name}</strong>…</span>'
         )
     return HTMLResponse(
-        f'<span class="text-stone-400 text-sm"><strong>{name}</strong> is not running.</span>'
+        f'<span class="text-red-400 text-sm">Could not restart <strong>{name}</strong> — check Rust binary.</span>'
     )
 
 
 @router.post("/services/{name}/stop", response_class=HTMLResponse)
 async def stop_service(name: str, request: Request):
-    """Permanently stop a service and persist the disabled state to SQLite."""
-    mgr = _mgr(request)
+    """Persist disabled state and signal the Rust binary to stop the service."""
     store = _store(request)
-
-    if mgr is None:
-        return HTMLResponse('<span class="text-red-400 text-sm">ServiceManager not available.</span>')
-
-    # Persist intent before stopping so a crash-restart doesn't re-enable it
     if store:
         await store.set_service_enabled(name, False)
 
-    ok = await mgr.stop_service(name)
+    ok = await _api_tool(request, "service.stop", name)
     if ok:
         return HTMLResponse(
             f'<span class="text-stone-400 text-sm"><strong>{name}</strong> stopped.</span>'
         )
     return HTMLResponse(
-        f'<span class="text-red-400 text-sm">Service <strong>{name}</strong> not found.</span>'
+        f'<span class="text-red-400 text-sm">Could not stop <strong>{name}</strong> — check Rust binary.</span>'
     )
 
 
 @router.post("/services/{name}/start", response_class=HTMLResponse)
 async def start_service(name: str, request: Request):
-    """Re-enable and start a previously stopped service."""
-    mgr = _mgr(request)
+    """Persist enabled state and signal the Rust binary to start the service."""
     store = _store(request)
-
-    if mgr is None:
-        return HTMLResponse('<span class="text-red-400 text-sm">ServiceManager not available.</span>')
-
-    # Persist enabled intent before starting
     if store:
         await store.set_service_enabled(name, True)
 
-    ok = await mgr.reload(name)
+    ok = await _api_tool(request, "service.start", name)
     if ok:
         return HTMLResponse(
             f'<span class="text-sage text-sm">Starting <strong>{name}</strong>…</span>'
         )
     return HTMLResponse(
-        f'<span class="text-red-400 text-sm">Failed to start <strong>{name}</strong>. Check binary.</span>'
+        f'<span class="text-red-400 text-sm">Could not start <strong>{name}</strong> — check Rust binary.</span>'
     )

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import time
-import tomllib
 from pathlib import Path
-from typing import Any
 
 import psutil
 from fastapi import APIRouter, Request
@@ -16,28 +14,6 @@ templates: Jinja2Templates  # injected by main.py
 
 _START_TIME = time.time()
 
-
-def _online_services_from_manager(mgr) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Get Go and Rust services from ServiceManager, filtered to online (running) only."""
-    go_services: list[dict[str, Any]] = []
-    rust_services: list[dict[str, Any]] = []
-
-    for svc in mgr.list_services():
-        d = svc.to_dict()
-        if d.get("status") != "running":
-            continue
-        entry = {
-            "name": d["name"],
-            "version": d.get("version", "?"),
-            "status": "online",
-            "memory_mb": d.get("memory_mb"),
-        }
-        if d.get("runtime") == "rust":
-            rust_services.append(entry)
-        else:
-            go_services.append(entry)
-
-    return go_services, rust_services
 
 
 def _get_vram_gb() -> tuple[float | None, float | None]:
@@ -95,33 +71,28 @@ def _system_stats() -> dict:
 
 
 
-def _python_packages(root: Path) -> list[dict[str, Any]]:
-    """Build Python packages list: OpenAgent (core) first, then extensions from extensions/."""
-    result: list[dict[str, Any]] = []
-
-    # Current process memory (RSS) in MB — shared by core + all extensions
+def _python_packages(root: Path) -> list[dict]:
+    """Web UI process memory and version."""
     try:
         proc = psutil.Process()
         memory_mb = round(proc.memory_info().rss / (1024 * 1024), 1)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         memory_mb = None
 
-    # OpenAgent core — always first
     try:
         import importlib.metadata
-        core_version = importlib.metadata.version("openagent-core")
+        version = importlib.metadata.version("openagent-app")
     except Exception:
-        core_version = "?"
-    result.append({
-        "name": "OpenAgent",
-        "package": "openagent-core",
-        "version": core_version,
-        "status": "installed",
+        version = "?"
+
+    return [{
+        "name": "App",
+        "package": "openagent-app",
+        "version": version,
+        "status": "running",
         "memory_mb": memory_mb,
         "memory_display": f"{memory_mb} MB" if memory_mb is not None else "—",
-    })
-
-    return result
+    }]
 
 
 def _get_latest_log_content(root: Path, max_lines: int = 1000) -> str:
@@ -152,21 +123,66 @@ def _get_latest_log_content(root: Path, max_lines: int = 1000) -> str:
         return ""
 
 
+async def _rust_services_from_api(request: Request) -> list[dict]:
+    """Fetch service list from the Rust API.
+
+    Prepends the openagent runtime itself (from /health), then lists each
+    child service that has registered at least one tool (from /tools).
+    """
+    import asyncio
+    api_client = getattr(request.app.state, "api_client", None)
+    if api_client is None:
+        return []
+
+    async def _health():
+        try:
+            r = await api_client.get("/health", timeout=3.0)
+            return r.json() if r.is_success else {}
+        except Exception:
+            return {}
+
+    async def _tools():
+        try:
+            r = await api_client.get("/tools", timeout=3.0)
+            return r.json() if r.is_success else {}
+        except Exception:
+            return {}
+
+    health_data, tools_data = await asyncio.gather(_health(), _tools())
+
+    result: list[dict] = []
+
+    # openagent runtime — first entry, status from /health
+    runtime_status = "online" if health_data.get("status") == "ok" else "offline"
+    tool_count = health_data.get("tool_count", 0)
+    result.append({
+        "name": "openagent",
+        "version": "?",
+        "status": runtime_status,
+        "memory_mb": None,
+        "tool_count": tool_count,
+    })
+
+    # Child services — one entry per unique service name in the tool list
+    seen: dict[str, dict] = {}
+    for t in tools_data.get("tools", []):
+        svc = t.get("service", "unknown")
+        if svc not in seen:
+            seen[svc] = {"name": svc, "version": "?", "status": "online", "memory_mb": None}
+    result.extend(seen.values())
+
+    return result
+
+
 @router.get("/")
 async def dashboard(request: Request):
     import asyncio
     root = getattr(request.app.state, "root", Path.cwd())
-    mgr = getattr(request.app.state, "service_manager", None)
-    if mgr:
-        services, rust_services = _online_services_from_manager(mgr)
-    else:
-        services = []
-        rust_services = []
 
-    # Run blocking psutil + disk I/O in a thread so the event loop stays free
-    stats, packages = await asyncio.gather(
+    stats, packages, rust_services = await asyncio.gather(
         asyncio.to_thread(_system_stats),
         asyncio.to_thread(_python_packages, root),
+        _rust_services_from_api(request),
     )
 
     return templates.TemplateResponse("dashboard.html", {
@@ -174,7 +190,7 @@ async def dashboard(request: Request):
         "active": "dashboard",
         "stats": stats,
         "python_packages": packages,
-        "services": services,
+        "services": [],          # Go services managed by Rust binary
         "rust_services": rust_services,
     })
 
@@ -184,23 +200,17 @@ async def stats_partial(request: Request):
     """Partial for HTMX stat-card polling — returns cards only, no layout."""
     import asyncio
     root = getattr(request.app.state, "root", Path.cwd())
-    mgr = getattr(request.app.state, "service_manager", None)
-    if mgr:
-        services, rust_services = _online_services_from_manager(mgr)
-    else:
-        services = []
-        rust_services = []
 
-    # Run blocking psutil + disk I/O in a thread so the event loop stays free
-    stats, packages = await asyncio.gather(
+    stats, packages, rust_services = await asyncio.gather(
         asyncio.to_thread(_system_stats),
         asyncio.to_thread(_python_packages, root),
+        _rust_services_from_api(request),
     )
 
     return templates.TemplateResponse("_stats_cards.html", {
         "request": request,
         "stats": stats,
         "python_packages": packages,
-        "services": services,
+        "services": [],
         "rust_services": rust_services,
     })

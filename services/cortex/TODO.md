@@ -395,11 +395,11 @@ Exit criteria:
 
 ---
 
-## Tower Middleware Migration — ARCHITECTURE REVISED
+## Tower Middleware Migration — ✅ COMPLETE (2026-03)
 
 **Cortex is a pure MCP-lite service. It does not own Tower middleware.**
 
-Tower was removed from Cortex entirely (2026-03):
+Tower was removed from Cortex entirely:
 - `step_service.rs` deleted
 - `tower` dep removed from `Cargo.toml`
 - `handlers.rs` calls `base_agent.run()` directly — no Tower wrapping
@@ -407,22 +407,25 @@ Tower was removed from Cortex entirely (2026-03):
 **The Tower middleware stack lives in the `openagent` Rust binary (the control plane):**
 
 ```
-openagent (Axum TCP :8000)
-  TimeoutLayer(130s)
-  HandleErrorLayer(→ HTTP 408)
-  TraceLayer
-  GuardLayer (calls guard.check MCP-lite service)
-  Router → cortex.step / tool calls / health
+openagent (Axum TCP :8080)
+  TimeoutLayer(130s)          ✅
+  HandleErrorLayer(→ HTTP 408) ✅
+  TraceLayer                   ✅
+  GuardLayer → guard.check     ✅
+  SttLayer   → stt.transcribe  ✅
+  TtsLayer   → tts.synthesize  ✅ (disabled by default; toggle in openagent.toml)
+  Router → /step /tool/:name /tools /health
 ```
 
-Guard, STT, TTS middleware all go in openagent as Axum/Tower layers — not in Cortex.
+Python middleware deleted:
+- `whitelist.py` → GuardLayer ✅
+- `stt.py`       → SttLayer   ✅
+- `tts.py`       → TtsLayer   ✅
 
-### Remaining openagent middleware (Tower Phase 2)
-
-- `SttLayer` — transcribes audio payload before `/step`; calls `stt.transcribe` MCP-lite tool
-- `TtsLayer` — converts text response to audio after `/step`; calls `tts.synthesise` MCP-lite tool
-- Remove corresponding Python middleware once each layer ships and is tested
-- Add integration tests per layer in isolation
+Dispatch loop added to openagent (`src/dispatch.rs`):
+- Subscribes to ServiceManager event bus
+- Routes `message.received` → `cortex.step` → `channel.send`
+- Semaphore-bounded (max 4 concurrent) for Pi-friendly backpressure ✅
 
 ---
 

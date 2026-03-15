@@ -8,14 +8,21 @@ version = "0.1.0"
 description = "OpenAgent minimalist web UI."
 requires-python = ">=3.11"
 dependencies = [
-    "openagent-core",
     "fastapi[standard]>=0.100.0",
     "jinja2>=3.1.0",
     "pyyaml>=6.0",
     "psutil>=5.9.0",
     "qrcode[pil]>=7.0.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "pydantic>=2.8.0",
+    "prometheus-client>=0.20.0",
+    "croniter>=3.0.0",
+    "opentelemetry-api>=1.26.0",
+    "opentelemetry-sdk>=1.26.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.26.0",
 ]
 
 [tool.setuptools.packages.find]
-where = [".."]
-include = ["app*"]
+where = ["."]
+include = ["app*", "openagent*"]

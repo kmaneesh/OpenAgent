@@ -19,10 +19,10 @@ This is an evolution, not a rewrite. Each phase is independently shippable. Pyth
 
 | Phase | Control plane | Python role | Tower/Axum role |
 |---|---|---|---|
-| **Phase 1 (now)** | Python `AgentLoop` calls `cortex.step` via MCP-lite. Cortex does one LLM turn. | Full control plane | None yet |
-| **Phase 2** | Cortex owns tool routing. Python middleware (STT, whitelist) starts migrating into Cortex as `tower::Layer` stack. | Control plane + launcher | Tower layers begin inside Cortex |
-| **Phase 3** | Cortex owns the full ReAct loop. Python becomes a thin launcher: config load, service spawn, platform adapters only. All middleware is Tower layers. | Launcher + glue | Full Tower middleware stack in Cortex |
-| **Phase 4 (endgame)** | `axum` over UDS replaces the Python process. Platform connectors (Discord, Telegram, etc.) connect directly to Cortex/Axum. | Gone | Tower + Axum is the control plane |
+| **Phase 1** ✅ | Python `AgentLoop` calls `cortex.step` via MCP-lite. Cortex does one LLM turn. | Full control plane | None |
+| **Phase 2** ✅ | Rust `openagent` binary is the control plane. Cortex owns full ReAct loop + tool routing + memory. Tower middleware (Guard, STT, TTS) and dispatch loop live in `openagent`. Python middleware deleted. | Web UI only (optional Docker container) | Full Tower stack in `openagent` (GuardLayer → SttLayer → TtsLayer) |
+| **Phase 3 (now)** | `openagent` Axum serves control plane API on :8080. Platform connectors (channels service) connect directly. Python web UI is a separate container. | Retired as control plane; web UI only | Axum in `openagent` is the control plane |
+| **Phase 4 (endgame)** | Axum over UDS replaces raw MCP-lite between openagent and services. All services speak HTTP/1.1 over UDS. | Gone (or thin launcher only) | Tower + Axum is the full stack |
 
 **Key constraint:** The MCP-lite UDS socket contract is stable across all phases. Services never change their protocol because the control plane is being replaced above them.
 
@@ -178,7 +178,7 @@ InboundMessage (from platform extension)
     → Final answer → OutboundMessage → platform extension delivers it
 ```
 
-**Middleware migration:** Python middleware (STT transcription, whitelist check, TTS post-process) will be replaced phase-by-phase with `tower::Layer` implementations inside the Cortex service. Do not add new Python middleware — add Tower layers in Cortex instead.
+**Middleware migration:** ✅ Complete. Python middleware (STT, whitelist/guard, TTS) has been replaced by Tower layers (`SttLayer`, `GuardLayer`, `TtsLayer`) in the `openagent` Rust binary. Do not add new Python middleware — add Tower layers in `openagent/src/` instead.
 
 **Agent registry:** Multiple named agent instances (follow Picoclaw `AgentRegistry`). Each agent has its own model, workspace, session, and tool set. A supervisor agent dispatches to workers. In Phase 3+, this registry moves into Cortex.
 
@@ -486,10 +486,10 @@ Key patterns:
 - **Tools**: small static set of `ToolT` wrappers (memory search, sandbox, browser) + one `ActionDispatcherTool` meta-tool (`action.call`). Candidate action summaries injected into system prompt via `get_messages()` — no two-step search/call pattern.
 - **Multi-agent**: named agents from YAML run as `ractor` actors via AutoAgents' `ActorAgent`. Supervisor dispatches by `agent_name`.
 
-**Tower conventions (Cortex, Phase 2+):**
-- Each Python middleware analogue becomes a `tower::Layer<S>` wrapping the inner `Service<StepRequest>`
-- Layer order (outermost → innermost): `WhitelistLayer` → `SttLayer` → `TtsLayer` → inner service
-- Use `tower::ServiceBuilder` to compose the stack in `main.rs`
+**Tower conventions (`openagent` binary — current):**
+- Tower/Axum lives in `openagent/` (the control plane binary), NOT in Cortex
+- Layer order (outermost → innermost): `TimeoutLayer` → `HandleErrorLayer` → `TraceLayer` → `GuardLayer` → `SttLayer` → `TtsLayer` → Router
+- Use `tower::ServiceBuilder` to compose timeout + error handling; use `axum::middleware::from_fn_with_state` for stateful layers
 - Timeout and retry (`tower::timeout::TimeoutLayer`, `tower::retry::RetryLayer`) replace Python's manual retry logic
 - Do NOT use `axum` until Phase 4
 
@@ -529,21 +529,14 @@ Key patterns:
 ### Next (in order)
 
 **Cortex evolution (see `services/cortex/TODO.md` for full phase breakdown):**
-1. **Cortex Phase 1B** — AutoAgents core integration: `CortexAgent` (manual `AgentDeriveT`), `CortexMemoryAdapter` (own `MemoryProvider`), static tools + `ActionDispatcherTool`, `ractor` multi-agent bootstrap, `autoagents-llm` replaces manual reqwest
-2. **Cortex Phase 2** — tool routing baseline: Cortex calls memory/browser/sandbox directly over MCP-lite
-3. **Cortex Phase 3** — memory retrieval + episode writes; Cortex becomes memory-aware
-3. **Tower middleware Phase 1** — introduce `tower::ServiceBuilder` in Cortex; port whitelist + STT layers from Python
-4. **Cortex Phase 4** — prompt system: YAML-loaded prompts, runtime template rendering
+1. ~~**Cortex Phase 1B**~~ ✅ — AutoAgents core integration, `CortexAgent`, `HybridMemoryAdapter`, static tools, `autoagents-llm`
+2. ~~**Cortex Phase 2**~~ ✅ — tool routing baseline; Cortex calls memory/browser/sandbox directly over MCP-lite
+3. ~~**Cortex Phase 3**~~ ✅ — memory retrieval + episode writes; STM eviction, diary writes
+4. ~~**Cortex Phase 4**~~ ✅ — prompt system: MiniJinja embedded templates
+4. ~~**Tower middleware (full)**~~ ✅ — `GuardLayer`, `SttLayer`, `TtsLayer` in `openagent`; Python middleware deleted; dispatch loop added
 5. **Cortex Phase 5** — action search: semantic top-k tool selection, shrink LLM context per turn
 6. **Cortex Phase 6+** — plan DAG, segmented STM, reflection, curiosity queue (see TODO.md)
-7. **Tower middleware Phase 2** — full middleware stack in Tower; Python middleware chain deleted
-8. **Axum control plane (Phase 4 endgame)** — replace Python process; Axum on UDS, platform connectors wire directly to Cortex
-
-**Parallel Python cleanup (as Cortex phases complete):**
-- Remove Python middleware as each Tower layer ships
-- Remove `AgentLoop` when Cortex Phase 2 (tool routing) is stable
-- Remove `SessionManager` when Cortex owns session state
-- Remove `ServiceManager` last — or keep as a thin Rust process launcher
+7. **Axum control plane (endgame)** — Axum over UDS replaces raw MCP-lite between openagent and services
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 

@@ -1,0 +1,149 @@
+# config/openagent.toml — Openagent Rust runtime settings.
+#
+# This is the single config source for the Rust openagent binary.
+# During the Python → Rust migration, openagent.yaml is still read by the
+# Python control plane; this file is read by the Rust binary.
+# Once migration is complete, openagent.yaml is retired.
+#
+# Secrets use ${VAR} syntax resolved from environment variables.
+# Set them in a .env file in the project root or in the shell.
+# Environment variables always take precedence over values in this file.
+#
+# ── env var overrides ───────────────────────────────────────────────────────
+#   OPENAGENT_PROVIDER_KIND   — openai_compat | anthropic | openai
+#   OPENAGENT_LLM_BASE_URL    — full base URL (e.g. http://localhost:1234/v1)
+#   OPENAGENT_API_KEY         — API key / bearer token
+#   OPENAGENT_MODEL           — concrete model name
+#   OPENAGENT_LLM_TIMEOUT     — request timeout in seconds
+#   OPENAGENT_DEBUG_LLM       — 1/true to log outbound requests and raw responses
+#   DISCORD_TOKEN             — Discord bot token
+#   TELEGRAM_APP_ID           — Telegram MTProto app ID (integer)
+#   TELEGRAM_APP_HASH         — Telegram MTProto app hash
+#   TELEGRAM_BOT_TOKEN        — Telegram bot token (bot mode)
+#   SLACK_BOT_TOKEN           — Slack bot OAuth token (xoxb-...)
+#   SLACK_APP_TOKEN           — Slack app-level token (xapp-..., socket mode)
+#   WHATSAPP_PHONE            — WhatsApp linked phone number
+
+# ---------------------------------------------------------------------------
+# LLM Provider (consumed by Cortex via genai)
+# ---------------------------------------------------------------------------
+#
+# kind: openai_compat → genai OpenAI adapter with a custom endpoint
+#       openai        → genai OpenAI adapter (api.openai.com)
+#       anthropic     → genai Anthropic adapter (api.anthropic.com)
+
+[provider]
+# Option A: local OpenAI-compatible server (LM Studio / llama.cpp / vLLM)
+kind       = "openai_compat"
+base_url   = "http://100.124.59.111:1234/v1"
+api_key    = ""              # leave blank for unauthenticated local servers
+model      = "qwen/qwen3.5-9b"
+timeout    = 300.0
+max_tokens = 2048
+debug_llm  = true           # logs outbound request and raw response from Cortex
+
+# Option B: Anthropic Claude
+# kind     = "anthropic"
+# base_url = ""              # blank → https://api.anthropic.com
+# api_key  = "${OPENAGENT_API_KEY}"
+# model    = "claude-sonnet-4-6"
+
+# Option C: OpenAI
+# kind     = "openai"
+# base_url = ""
+# api_key  = "${OPENAGENT_API_KEY}"
+# model    = "gpt-4o"
+
+# ---------------------------------------------------------------------------
+# Agents
+# ---------------------------------------------------------------------------
+
+[[agents]]
+name           = "AgentM"
+system_prompt  = """\
+You are a helpful assistant.\
+Use tools only when necessary.\
+Be concise. Do not over think.\
+"""
+max_iterations = 40
+max_tool_output = 500
+
+# ---------------------------------------------------------------------------
+# Session
+# ---------------------------------------------------------------------------
+
+[session]
+summarise_after = 40
+backend         = "sqlite"
+db_path         = "data/openagent.db"
+
+# ---------------------------------------------------------------------------
+# Platforms — credentials injected as env vars into the service binary
+# ---------------------------------------------------------------------------
+
+[platforms.discord]
+enabled = true
+token   = "${DISCORD_TOKEN}"
+
+[platforms.telegram]
+enabled   = false
+app_id    = "${TELEGRAM_APP_ID}"
+app_hash  = "${TELEGRAM_APP_HASH}"
+bot_token = "${TELEGRAM_BOT_TOKEN}"
+
+[platforms.slack]
+enabled   = true
+bot_token = "${SLACK_BOT_TOKEN}"
+app_token = "${SLACK_APP_TOKEN}"
+
+[platforms.whatsapp]
+enabled      = false
+phone_number = "${WHATSAPP_PHONE}"
+data_dir     = "data"
+
+# ---------------------------------------------------------------------------
+# Guard (whitelist / security middleware)
+# ---------------------------------------------------------------------------
+
+[guard]
+# Guard is a standalone MCP-lite service backed by SQLite.
+# enabled controls whether the guard.check MCP-lite call is made.
+# Manage the whitelist via guard.add / guard.remove / guard.list tools.
+enabled = true
+db_path = "data/guard.db"
+
+# ---------------------------------------------------------------------------
+# Browser identity
+# ---------------------------------------------------------------------------
+
+[browser.identity]
+user_agent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+color_scheme   = "light"
+headed         = false
+viewport_width = 1440
+viewport_height = 900
+launch_args    = ["--disable-blink-features=AutomationControlled"]
+
+[browser.identity.extra_headers]
+Accept-Language = "en-US,en;q=0.9"
+
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
+[middleware.stt]
+# Transcribe audio before the step handler.
+# When enabled, requests with an `audio_path` field have their audio
+# transcribed by the stt service; the transcript replaces `user_input`.
+# Requires the stt service to be running.
+enabled = false
+
+[middleware.tts]
+# Synthesize speech after the step handler.
+# When enabled, response_text from cortex.step is synthesized to WAV by
+# the tts service. The response JSON gains an `audio_path` field.
+# Requires the tts service to be running.
+enabled  = false
+voice    = "af_sarah"    # af_sarah | af_nicole | af_sky | blend e.g. "af_sarah.4+af_nicole.6"
+speed    = 1.0           # speech rate multiplier
+language = "en-us"       # BCP-47 language code

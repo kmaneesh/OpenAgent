@@ -52,7 +52,9 @@ def _session_backend(request: Request):
 
 
 def _whitelist_middleware(request: Request):
-    return getattr(request.app.state, "whitelist_middleware", None)
+    # Whitelist is now enforced by the Rust Guard service (openagent/src/middleware.rs).
+    # Python middleware is gone; this always returns None so refresh calls are no-ops.
+    return None
 
 
 @router.get("/api/settings/connectors")
@@ -114,16 +116,19 @@ async def patch_connector(request: Request, name: str):
     enabled_map[name] = bool(enabled)
     request.app.state.connectors_enabled = enabled_map
 
-    # Start or stop the Go service
-    if mgr:
-        if enabled:
-            ok = await mgr.reload(name)
-            return {"ok": ok, "action": "started"}
-        else:
-            ok = await mgr.stop_service(name)
-            return {"ok": ok, "action": "stopped"}
+    # Service start/stop is handled by the Rust openagent binary.
+    # Signal the Rust binary via the tool API.
+    import httpx
+    api_client = getattr(request.app.state, "api_client", None)
+    if api_client is not None:
+        tool = "service.start" if enabled else "service.stop"
+        try:
+            await api_client.post(f"/tool/{tool}", content=f'{{"name":"{name}"}}',
+                                  headers={"Content-Type": "application/json"})
+        except Exception:
+            pass  # best-effort — service management is Rust-side
 
-    return {"ok": True}
+    return {"ok": True, "action": "started" if enabled else "stopped"}
 
 
 # ---------------------------------------------------------------------------
@@ -138,14 +143,20 @@ async def whatsapp_qr(request: Request):
     connected = False
     status = "unavailable"
 
-    platform_manager = getattr(request.app.state, "platform_manager", None)
-    if platform_manager:
-        adapters = platform_manager.adapters()
-        wa_adapter = adapters.get("whatsapp")
-        if wa_adapter and hasattr(wa_adapter, "latest_qr"):
-            qr_text = wa_adapter.latest_qr() or None
-            connected = wa_adapter._status.get("connected", False)
-            status = "connected" if connected else ("pending" if qr_text else "waiting")
+    # WhatsApp QR comes from the Rust whatsapp service via tool call.
+    import httpx
+    api_client = getattr(request.app.state, "api_client", None)
+    if api_client is not None:
+        try:
+            resp = await api_client.post("/tool/whatsapp.qr", content="{}",
+                                         headers={"Content-Type": "application/json"}, timeout=5.0)
+            if resp.is_success:
+                data = resp.json()
+                qr_text = data.get("qr_text") or None
+                connected = data.get("connected", False)
+                status = "connected" if connected else ("pending" if qr_text else "waiting")
+        except Exception:
+            pass
 
     if not qr_text:
         if status == "unavailable":

@@ -1,49 +1,72 @@
 #!/usr/bin/env bash
+# run.sh — start the OpenAgent Rust runtime
+#
+# The Rust binary (openagent) is the sole control plane process.  It:
+#   - spawns and monitors all MCP-lite services (cortex, channels, guard, …)
+#   - runs the dispatch loop (channels → cortex → channel.send)
+#   - serves the Axum control plane API on TCP :8080
+#
+# The Python web UI runs separately via Docker:
+#   docker compose up -d       # starts jaeger + web UI
+#
+# Usage:
+#   ./run.sh                   # start openagent runtime
+#   PORT=9090 ./run.sh         # override Axum port (default 8080)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+BIN="$ROOT/bin"
 
-# Ensure venv exists
-if [ ! -d "$ROOT/.venv" ]; then
-  echo "No .venv found — run: uv venv --python 3.11 && uv pip install -r requirements.txt -e app/"
-  exit 1
-fi
-
-HOST="${HOST:-0.0.0.0}"
-PORT="${PORT:-8000}"
-export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}"
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
 
 UNAME_S="$(uname -s)"
 UNAME_M="$(uname -m)"
-if [ "$UNAME_S" = "Darwin" ]; then
-  HOST_OS="darwin"
-else
-  HOST_OS="linux"
-fi
-if [ "$UNAME_M" = "arm64" ] || [ "$UNAME_M" = "aarch64" ]; then
-  HOST_ARCH="arm64"
-else
-  HOST_ARCH="amd64"
-fi
+if [ "$UNAME_S" = "Darwin" ]; then HOST_OS="darwin"; else HOST_OS="linux"; fi
+if [ "$UNAME_M" = "arm64" ] || [ "$UNAME_M" = "aarch64" ]; then HOST_ARCH="arm64"; else HOST_ARCH="amd64"; fi
 HOST_SUFFIX="${HOST_OS}-${HOST_ARCH}"
-CORTEX_BIN="$ROOT/bin/cortex-${HOST_SUFFIX}"
 
-if [ ! -x "$CORTEX_BIN" ]; then
-  echo "Cortex binary missing for ${HOST_SUFFIX} — building it"
-  make -C "$ROOT" cortex
+# ---------------------------------------------------------------------------
+# Locate / build the openagent binary
+# ---------------------------------------------------------------------------
+
+OPENAGENT_BIN="$BIN/openagent-${HOST_SUFFIX}"
+
+if [ ! -x "$OPENAGENT_BIN" ]; then
+  echo "openagent binary missing for ${HOST_SUFFIX} — building it (make openagent-local)"
+  make -C "$ROOT" openagent-local
 fi
 
 # ---------------------------------------------------------------------------
-# Shutdown handler — Ctrl-C / SIGTERM
+# Environment
+# ---------------------------------------------------------------------------
+
+export OPENAGENT_ROOT="${OPENAGENT_ROOT:-$ROOT}"
+export OPENAGENT_LOGS_DIR="${OPENAGENT_LOGS_DIR:-$ROOT/logs}"
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}"
+
+# Load .env if present (secrets — DISCORD_TOKEN, SLACK_*, etc.)
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "$ROOT/.env"
+  set +a
+  echo "  Loaded .env"
+fi
+
+mkdir -p "$ROOT/logs" "$ROOT/data/sockets" "$ROOT/data/artifacts"
+
+# ---------------------------------------------------------------------------
+# Shutdown handler
 # ---------------------------------------------------------------------------
 
 _shutdown() {
   echo ""
   echo "Shutting down…"
-  # Kill uvicorn subprocess group if still running
-  if [ -n "${UVICORN_PID:-}" ] && kill -0 "$UVICORN_PID" 2>/dev/null; then
-    kill -TERM "$UVICORN_PID" 2>/dev/null || true
-    wait "$UVICORN_PID" 2>/dev/null || true
+  if [ -n "${OPENAGENT_PID:-}" ] && kill -0 "$OPENAGENT_PID" 2>/dev/null; then
+    kill -TERM "$OPENAGENT_PID" 2>/dev/null || true
+    wait "$OPENAGENT_PID" 2>/dev/null || true
   fi
   exit 0
 }
@@ -51,22 +74,18 @@ _shutdown() {
 trap _shutdown INT TERM
 
 # ---------------------------------------------------------------------------
-# Start uvicorn in background so the trap fires immediately on Ctrl-C
+# Start openagent (Rust runtime)
 # ---------------------------------------------------------------------------
 
-echo "Starting OpenAgent UI on http://${HOST}:${PORT}"
-echo "  OTEL endpoint → ${OTEL_EXPORTER_OTLP_ENDPOINT}"
+echo "Starting OpenAgent runtime  [${HOST_SUFFIX}]"
+echo "  binary  → $OPENAGENT_BIN"
+echo "  root    → $OPENAGENT_ROOT"
+echo "  logs    → $OPENAGENT_LOGS_DIR"
+echo "  OTEL    → $OTEL_EXPORTER_OTLP_ENDPOINT"
+echo ""
+echo "  Web UI + Jaeger → docker compose up -d"
+echo ""
 
-UVICORN_ARGS=(
-  "--host" "$HOST"
-  "--port" "$PORT"
-  "--reload"
-  "--reload-dir" "$ROOT/app"
-  "--reload-dir" "$ROOT/openagent"
-)
-echo "  Hot-reloading enabled"
-
-uv run uvicorn app.main:app "${UVICORN_ARGS[@]}" &
-
-UVICORN_PID=$!
-wait "$UVICORN_PID"
+"$OPENAGENT_BIN" &
+OPENAGENT_PID=$!
+wait "$OPENAGENT_PID"

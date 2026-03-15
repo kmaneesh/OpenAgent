@@ -1,25 +1,32 @@
-# OpenAgent + Jaeger observability stack
+# OpenAgent observability + web UI stack
 #
 # Usage:
-#   docker compose up -d
-#   # Open Jaeger UI: http://localhost:16686
+#   docker compose up -d           # start jaeger + web UI
+#   docker compose up -d jaeger    # jaeger only
+#   docker compose logs -f ui      # tail web UI logs
 #
-# Set OTEL_EXPORTER_OTLP_ENDPOINT for services to send traces to Jaeger:
-#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317  # gRPC (from host)
-#   OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317    # gRPC (from other containers)
+# The Rust openagent runtime runs on the host via ./run.sh (not in Docker).
+# The web UI container connects to it at host.docker.internal:8080.
+#
+# OTEL endpoints (from host):
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318   (HTTP, default in run.sh)
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317   (gRPC)
 
 services:
+  # ---------------------------------------------------------------------------
+  # Jaeger — traces, logs, metrics UI
+  # ---------------------------------------------------------------------------
   jaeger:
     image: jaegertracing/all-in-one:1.76.0
     container_name: openagent-jaeger
     ports:
       # Jaeger UI
       - "16686:16686"
-      # OTLP gRPC receiver (traces, metrics, logs)
-      - "4317:4317"
-      # OTLP HTTP receiver
+      # OTLP HTTP receiver (used by openagent runtime and services)
       - "4318:4318"
-      # Zipkin HTTP (/api/v1/spans, /api/v2/spans)
+      # OTLP gRPC receiver
+      - "4317:4317"
+      # Zipkin HTTP
       - "9411:9411"
       # Jaeger Thrift compact (legacy)
       - "6831:6831/udp"
@@ -36,6 +43,41 @@ services:
     networks:
       - openagent
     restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Web UI — Python FastAPI + HTMX admin dashboard
+  #
+  # Connects to the Rust openagent runtime at host.docker.internal:8080.
+  # Secrets injected via .env file (same file used by run.sh on the host).
+  # ---------------------------------------------------------------------------
+  ui:
+    container_name: openagent-ui
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    ports:
+      - "8000:8000"
+    environment:
+      OPENAGENT_API_URL: "http://host.docker.internal:8080"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Mount project-root data/ so the UI reads the same SQLite DB as the Rust runtime
+      - ./data:/app/data
+      # Mount logs/ so the UI can display live log files written by the Rust binary
+      - ./logs:/app/logs
+      # Mount config/ so the UI can show the current openagent.yaml
+      - ./config:/app/config:ro
+    networks:
+      - openagent
+    restart: unless-stopped
+    depends_on:
+      - jaeger
+    extra_hosts:
+      # Allow the container to reach the host-side openagent runtime
+      - "host.docker.internal:host-gateway"
 
 networks:
   openagent:
