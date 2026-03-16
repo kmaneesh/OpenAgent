@@ -1,11 +1,14 @@
-"""Settings route — GET /settings (Provider + Connector + Whitelist tabs)."""
+"""Settings route — GET /settings (Provider + Connector + Guard tabs)."""
 
 from __future__ import annotations
 
 import io
 import base64
+import json
 
+import httpx
 from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 
 router = APIRouter()
@@ -25,66 +28,53 @@ async def settings_page(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Connectors API (enable/disable Discord, Slack, Telegram, WhatsApp)
+# Connectors API — state read from openagent.toml; runtime toggle in-memory
 # ---------------------------------------------------------------------------
 
 CONNECTOR_INFO = {
-    "discord":  {"description": "Discord bot for servers and DMs. Configure token in config/openagent.yaml."},
+    "discord":  {"description": "Discord bot for servers and DMs. Configure token in config/openagent.toml."},
     "slack":    {"description": "Slack workspace bot. Requires bot token and app token."},
-    "telegram": {"description": "Telegram bot or MTProto client. Configure app_id, app_hash, bot_token."},
+    "telegram": {"description": "Telegram bot or MTProto client. Configure in config/openagent.toml."},
     "whatsapp": {"description": "WhatsApp via whatsmeow (Go). Link phone via QR code below."},
 }
 
-_SETTINGS_KEY = "connector.{name}.enabled"
 
-
-def _settings_store(request: Request):
-    return getattr(request.app.state, "settings_store", None)
-
-
-def _service_manager(request: Request):
-    return getattr(request.app.state, "service_manager", None)
-
-
-def _session_backend(request: Request):
-    mgr = getattr(request.app.state, "session_manager", None)
-    return mgr._backend if mgr and hasattr(mgr, "_backend") else None
-
-
-def _whitelist_middleware(request: Request):
-    # Whitelist is now enforced by the Rust Guard service (openagent/src/middleware.rs).
-    # Python middleware is gone; this always returns None so refresh calls are no-ops.
-    return None
+def _api(request: Request) -> httpx.AsyncClient | None:
+    return getattr(request.app.state, "api_client", None)
 
 
 @router.get("/api/settings/connectors")
 async def list_connectors(request: Request):
-    """Return connector list with enabled state (from SQLite) and running status."""
-    store = _settings_store(request)
-    mgr = _service_manager(request)
+    """Return connector list with enabled state from openagent.toml and running status from /health."""
+    cfg = getattr(request.app.state, "config", None)
+    platforms = getattr(cfg, "platforms", None) if cfg else None
 
-    # Load all connector settings in one query
-    all_settings: dict[str, str] = {}
-    if store:
-        all_settings = await store.get_all(prefix="connector.")
+    # Runtime override map (toggled via PATCH, lives in memory, resets on restart)
+    enabled_map: dict[str, bool] = getattr(request.app.state, "connectors_enabled", {})
 
-    # Build running-status map from ServiceManager
+    # Running status from Rust /health
     running: dict[str, bool] = {}
-    if mgr:
-        for svc in mgr.list_services():
-            running[svc.name] = svc.status.value == "running"
+    api = _api(request)
+    if api:
+        try:
+            resp = await api.get("/health", timeout=2.0)
+            if resp.is_success:
+                health = resp.json()
+                for svc in health.get("services", []):
+                    running[svc["name"]] = svc.get("status") == "running"
+        except Exception:
+            pass
 
     connectors = []
     for name, info in CONNECTOR_INFO.items():
-        raw = all_settings.get(_SETTINGS_KEY.format(name=name))
-        # Default: enabled if credentials exist in config (non-empty token)
-        if raw is None:
-            cfg = getattr(request.app.state, "config", None)
-            platforms = getattr(cfg, "platforms", None) if cfg else None
-            has_creds = bool(getattr(platforms, name, None)) if platforms else False
-            enabled = has_creds
+        # Enabled: in-memory override first, then toml
+        if name in enabled_map:
+            enabled = enabled_map[name]
+        elif platforms:
+            plat = getattr(platforms, name, None)
+            enabled = bool(getattr(plat, "enabled", False)) if plat else False
         else:
-            enabled = raw == "1"
+            enabled = False
 
         connectors.append({
             "name": name,
@@ -97,7 +87,7 @@ async def list_connectors(request: Request):
 
 @router.patch("/api/settings/connectors/{name}")
 async def patch_connector(request: Request, name: str):
-    """Enable or disable a connector — persists to SQLite and starts/stops the service."""
+    """Enable or disable a connector at runtime (in-memory; edit openagent.toml for persistence)."""
     body = await request.json()
     enabled = body.get("enabled")
     if enabled is None:
@@ -105,51 +95,41 @@ async def patch_connector(request: Request, name: str):
     if name not in CONNECTOR_INFO:
         return {"ok": False, "error": f"unknown connector: {name}"}
 
-    store = _settings_store(request)
-    mgr = _service_manager(request)
-
-    # Persist to SQLite
-    if store:
-        await store.set(_SETTINGS_KEY.format(name=name), "1" if enabled else "0")
-    # Also update in-memory map so PlatformManager picks it up immediately
+    # Update in-memory map
     enabled_map = getattr(request.app.state, "connectors_enabled", {})
     enabled_map[name] = bool(enabled)
     request.app.state.connectors_enabled = enabled_map
 
-    # Service start/stop is handled by the Rust openagent binary.
-    # Signal the Rust binary via the tool API.
-    import httpx
-    api_client = getattr(request.app.state, "api_client", None)
-    if api_client is not None:
+    # Signal Rust binary (best-effort)
+    api = _api(request)
+    if api:
         tool = "service.start" if enabled else "service.stop"
         try:
-            await api_client.post(f"/tool/{tool}", content=f'{{"name":"{name}"}}',
-                                  headers={"Content-Type": "application/json"})
+            await api.post(f"/tool/{tool}", content=json.dumps({"name": name}),
+                           headers={"Content-Type": "application/json"})
         except Exception:
-            pass  # best-effort — service management is Rust-side
+            pass
 
-    return {"ok": True, "action": "started" if enabled else "stopped"}
+    return {"ok": True, "action": "started" if enabled else "stopped",
+            "note": "In-memory only — edit config/openagent.toml for persistence"}
 
 
 # ---------------------------------------------------------------------------
-# WhatsApp QR (for linking in Settings > Connector)
+# WhatsApp QR
 # ---------------------------------------------------------------------------
-
 
 @router.get("/api/settings/whatsapp/qr")
 async def whatsapp_qr(request: Request):
-    """Return WhatsApp QR code as data URL for scanning. QR comes from the Go whatsapp service (whatsmeow)."""
+    """Return WhatsApp QR code as data URL for scanning."""
     qr_text: str | None = None
     connected = False
     status = "unavailable"
 
-    # WhatsApp QR comes from the Rust whatsapp service via tool call.
-    import httpx
-    api_client = getattr(request.app.state, "api_client", None)
-    if api_client is not None:
+    api = _api(request)
+    if api:
         try:
-            resp = await api_client.post("/tool/whatsapp.qr", content="{}",
-                                         headers={"Content-Type": "application/json"}, timeout=5.0)
+            resp = await api.post("/tool/whatsapp.qr", content="{}",
+                                  headers={"Content-Type": "application/json"}, timeout=5.0)
             if resp.is_success:
                 data = resp.json()
                 qr_text = data.get("qr_text") or None
@@ -160,20 +140,13 @@ async def whatsapp_qr(request: Request):
 
     if not qr_text:
         if status == "unavailable":
-            msg = (
-                "WhatsApp service not available. Ensure the Go whatsapp service is built "
-                "('make whatsapp') and running. Check Settings > Connector to enable WhatsApp."
-            )
+            msg = "WhatsApp service not available. Ensure the service is built and running."
         elif connected:
             msg = "WhatsApp is already connected — no QR needed."
         else:
-            msg = (
-                "Waiting for QR code… This can take 30–60 seconds on first run. "
-                "Ensure WhatsApp service is running (Services page). Click 'Refresh' to retry."
-            )
+            msg = "Waiting for QR code… Click 'Refresh' to retry."
         return {"qr": None, "connected": connected, "status": status, "message": msg}
 
-    # Generate QR image as base64 data URL
     try:
         import qrcode
         img = qrcode.make(qr_text)
@@ -181,99 +154,101 @@ async def whatsapp_qr(request: Request):
         img.save(buf, format="PNG")
         buf.seek(0)
         b64 = base64.b64encode(buf.read()).decode("ascii")
-        data_url = f"data:image/png;base64,{b64}"
         return {
-            "qr": data_url,
+            "qr": f"data:image/png;base64,{b64}",
             "connected": connected,
             "status": status,
             "message": "Scan with WhatsApp: Settings > Linked Devices > Link a Device",
         }
     except Exception as e:
-        return {
-            "qr": None,
-            "connected": connected,
-            "status": "error",
-            "message": f"QR generation failed: {e}",
-        }
+        return {"qr": None, "connected": connected, "status": "error",
+                "message": f"QR generation failed: {e}"}
 
 
 # ---------------------------------------------------------------------------
-# Whitelist API
+# Guard API — contacts (allowed/blocked/unknown) via Rust guard service
 # ---------------------------------------------------------------------------
 
-
-@router.get("/api/settings/whitelist")
-async def list_whitelist(request: Request):
-    """Return all whitelist entries."""
-    backend = _session_backend(request)
-    if not backend:
-        return {"entries": []}
-    entries = await backend.get_whitelist()
-    return {"entries": entries}
+async def _guard_call(api: httpx.AsyncClient, tool: str, params: dict) -> dict:
+    """Call a guard tool on the Rust openagent API."""
+    resp = await api.post(f"/tool/{tool}", content=json.dumps(params),
+                          headers={"Content-Type": "application/json"}, timeout=5.0)
+    resp.raise_for_status()
+    return resp.json()
 
 
-@router.post("/api/settings/whitelist")
-async def add_whitelist_entry(request: Request):
-    """Add a new whitelist entry. channel_id is stored as-is (e.g. 52922670915662@lid)."""
+@router.get("/api/settings/guard")
+async def list_guard(request: Request):
+    """Return all contacts in the guard table (allowed + blocked + unknown)."""
+    api = _api(request)
+    if not api:
+        return {"entries": [], "count": 0}
+    try:
+        data = await _guard_call(api, "guard.list", {})
+        return data
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+
+@router.post("/api/settings/guard/allow")
+async def guard_allow(request: Request):
+    """Allow a contact (add to guard table as status=allowed)."""
     body = await request.json()
     platform = body.get("platform", "").strip()
     channel_id = body.get("channel_id", "").strip()
-    label = body.get("label", "").strip()
-    added_by = body.get("added_by", "").strip()
-
+    name = body.get("name", "").strip()
     if not platform or not channel_id:
-        return {"ok": False, "error": "platform and channel_id are required"}
-
-    backend = _session_backend(request)
-    if not backend:
-        return {"ok": False, "error": "session backend not available"}
-
-    await backend.add_to_whitelist(
-        platform, channel_id, label=label, added_by=added_by
-    )
-
-    # Refresh in-memory cache if middleware is running
-    mw = _whitelist_middleware(request)
-    if mw:
-        await mw.refresh()
-
-    return {"ok": True}
+        return JSONResponse({"error": "platform and channel_id required"}, status_code=400)
+    api = _api(request)
+    if not api:
+        return JSONResponse({"error": "api unavailable"}, status_code=503)
+    try:
+        return await _guard_call(api, "guard.allow", {"platform": platform, "channel_id": channel_id, "name": name})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
 
 
-@router.delete("/api/settings/whitelist/{platform}/{channel_id:path}")
-async def remove_whitelist_entry(request: Request, platform: str, channel_id: str):
-    """Remove a whitelist entry."""
-    backend = _session_backend(request)
-    if not backend:
-        return {"ok": False, "error": "session backend not available"}
-
-    await backend.remove_from_whitelist(platform, channel_id)
-
-    # Refresh in-memory cache if middleware is running
-    mw = _whitelist_middleware(request)
-    if mw:
-        await mw.refresh()
-
-    return {"ok": True}
-
-
-@router.get("/api/settings/whitelist/seen")
-async def list_seen_senders(request: Request):
-    """Return senders whose messages were blocked (not in whitelist), unique per platform/channel."""
-    backend = _session_backend(request)
-    if not backend:
-        return {"senders": []}
-    if not hasattr(backend, "get_seen_senders"):
-        return {"senders": []}
-    senders = await backend.get_seen_senders()
-    return {"senders": senders}
+@router.post("/api/settings/guard/block")
+async def guard_block(request: Request):
+    """Block a contact."""
+    body = await request.json()
+    platform = body.get("platform", "").strip()
+    channel_id = body.get("channel_id", "").strip()
+    note = body.get("note", "").strip()
+    if not platform or not channel_id:
+        return JSONResponse({"error": "platform and channel_id required"}, status_code=400)
+    api = _api(request)
+    if not api:
+        return JSONResponse({"error": "api unavailable"}, status_code=503)
+    try:
+        return await _guard_call(api, "guard.block", {"platform": platform, "channel_id": channel_id, "note": note})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
 
 
-@router.post("/api/settings/whitelist/refresh")
-async def refresh_whitelist(request: Request):
-    """Reload whitelist middleware cache from DB."""
-    mw = _whitelist_middleware(request)
-    if not mw:
-        return {"ok": False, "error": "whitelist middleware not running"}
-    await mw.refresh()
-    return {"ok": True}
+@router.patch("/api/settings/guard/{platform}/{channel_id:path}/name")
+async def guard_rename(request: Request, platform: str, channel_id: str):
+    """Rename a contact in the guard table."""
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        return JSONResponse({"error": "name required"}, status_code=400)
+    api = _api(request)
+    if not api:
+        return JSONResponse({"error": "api unavailable"}, status_code=503)
+    try:
+        return await _guard_call(api, "guard.name", {"platform": platform, "channel_id": channel_id, "name": name})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)
+
+
+@router.delete("/api/settings/guard/{platform}/{channel_id:path}")
+async def guard_remove(request: Request, platform: str, channel_id: str):
+    """Remove a contact from the guard table."""
+    api = _api(request)
+    if not api:
+        return JSONResponse({"error": "api unavailable"}, status_code=503)
+    try:
+        return await _guard_call(api, "guard.remove", {"platform": platform, "channel_id": channel_id})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=503)

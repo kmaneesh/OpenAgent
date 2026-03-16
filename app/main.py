@@ -20,12 +20,11 @@ import httpx
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from app.routes import dashboard, chat, services, config, provider, settings, browser, logs
+from app.routes import dashboard, chat, config, provider, settings, browser, logs
 from openagent.config import load_config
 from openagent.cron import CronService, CronJob
 from openagent.observability import configure_logging, setup_otel, shutdown_otel
 from openagent.observability.metrics import render_metrics
-from openagent.session.settings import SettingsStore
 from app.diary_store import DiaryStore
 
 # ---------------------------------------------------------------------------
@@ -59,12 +58,6 @@ async def lifespan(app: FastAPI):
 
     # Connector enable/disable — in-memory map for Settings page.
     app.state.connectors_enabled = {}
-
-    # Settings store — persistent key-value in openagent.db
-    db_path = ROOT / cfg.session.db_path
-    settings_store = SettingsStore(db_path)
-    await settings_store.start()
-    app.state.settings_store = settings_store
 
     # Diary store — chat history from cortex diary markdown files.
     # No SQLite turns table needed; cortex writes diary on every turn.
@@ -104,7 +97,6 @@ async def lifespan(app: FastAPI):
 
     await cron.stop()
     await api_client.aclose()
-    await settings_store.stop()
     shutdown_otel()
 
 
@@ -121,7 +113,6 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Share templates with routes
 dashboard.templates = templates
 chat.templates = templates
-services.templates = templates
 config.templates = templates
 settings.templates = templates
 browser.templates = templates
@@ -129,7 +120,6 @@ logs.templates = templates
 
 app.include_router(dashboard.router)
 app.include_router(chat.router)
-app.include_router(services.router)
 app.include_router(config.router)
 app.include_router(settings.router)
 app.include_router(provider.router)

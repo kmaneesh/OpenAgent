@@ -15,7 +15,7 @@ Markdown format:
 
 Contact name resolution (priority order):
   1. data/contacts.json  — operator-set names keyed by session_key
-  2. whitelist.label     — label set when whitelisting a contact
+  2. guard.name          — name set in the unified guard table
   3. Formatted session_key — "WhatsApp: 916356737267" etc.
 """
 
@@ -75,12 +75,12 @@ class DiaryStore:
             json.dumps(self._contacts, indent=2, ensure_ascii=False)
         )
 
-    async def _whitelist_label(self, platform: str, channel_id: str) -> Optional[str]:
-        """Look up whitelist.label for (platform, channel_id)."""
+    async def _contact_name(self, platform: str, channel_id: str) -> Optional[str]:
+        """Look up name for (platform, channel_id) from guard table."""
         try:
             async with aiosqlite.connect(self.db_path) as db:
                 async with db.execute(
-                    "SELECT label FROM whitelist WHERE platform=? AND channel_id=? AND label != ''",
+                    "SELECT name FROM guard WHERE platform=? AND channel_id=? AND name != ''",
                     (platform, channel_id),
                 ) as cur:
                     row = await cur.fetchone()
@@ -94,10 +94,10 @@ class DiaryStore:
         if session_key in self._contacts:
             return self._contacts[session_key]
 
-        # 2. Whitelist label
+        # 2. Guard table name
         platform, channel_id = parse_session_key(session_key)
         if platform and channel_id:
-            label = await self._whitelist_label(platform, channel_id)
+            label = await self._contact_name(platform, channel_id)
             if label:
                 return label
 
