@@ -46,9 +46,13 @@ pub fn handle_add(conn: &Connection, params: Value) -> Result<String> {
         .get("channel_id")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("missing required param: channel_id"))?;
-    let note = params.get("note").and_then(Value::as_str);
+    // Accept either "label" (openagent.db schema) or "note" (legacy) as the annotation.
+    let label = params
+        .get("label")
+        .or_else(|| params.get("note"))
+        .and_then(Value::as_str);
 
-    db::add(conn, platform, channel_id, note)?;
+    db::add(conn, platform, channel_id, label)?;
     Ok(json!({"ok": true, "platform": platform, "channel_id": channel_id}).to_string())
 }
 
@@ -85,8 +89,9 @@ mod tests {
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  platform TEXT NOT NULL,
                  channel_id TEXT NOT NULL,
-                 note TEXT,
-                 added_at INTEGER NOT NULL,
+                 label TEXT NOT NULL DEFAULT '',
+                 added_by TEXT NOT NULL DEFAULT '',
+                 added_at TEXT NOT NULL,
                  UNIQUE(platform, channel_id)
              );
              CREATE TABLE seen_senders (
@@ -137,7 +142,7 @@ mod tests {
     #[test]
     fn add_then_check_allowed() {
         let conn = mem_db();
-        handle_add(&conn, json!({"platform": "discord", "channel_id": "alice", "note": "test"}))
+        handle_add(&conn, json!({"platform": "discord", "channel_id": "alice", "label": "test"}))
             .unwrap();
         let result: Value = serde_json::from_str(
             &handle_check(&conn, json!({"platform": "discord", "channel_id": "alice"})).unwrap(),

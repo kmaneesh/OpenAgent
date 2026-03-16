@@ -242,7 +242,7 @@ func (r *waRuntime) handleMessage(evt *events.Message) {
 		go func() {
 			path, err := downloadAudio(r.client, audioMsg, r.artifactsDir, chatID)
 			data := map[string]any{
-				"chat_id": chatID,
+				"channel": "whatsapp://" + chatID,
 				"sender":  sender,
 				"kind":    kind,
 				"is_ptt":  isPTT,
@@ -253,11 +253,10 @@ func (r *waRuntime) handleMessage(evt *events.Message) {
 					"chat_id": chatID,
 					"error":   err.Error(),
 				})
-				// Emit without artifact so agent still sees the event
-				data["text"] = "[Voice message]"
+				data["content"] = "[Voice message]"
 			} else {
 				data["artifact_path"] = path
-				data["text"] = ""
+				data["content"] = ""
 				mcplite.LogEvent("INFO", "audio saved", map[string]any{
 					"service": "whatsapp",
 					"chat_id": chatID,
@@ -267,7 +266,7 @@ func (r *waRuntime) handleMessage(evt *events.Message) {
 			}
 			r.emit(mcplite.EventFrame{
 				Type:  mcplite.TypeEvent,
-				Event: "whatsapp.message.received",
+				Event: "message.received",
 				Data:  data,
 			})
 		}()
@@ -289,11 +288,11 @@ func (r *waRuntime) handleMessage(evt *events.Message) {
 
 	r.emit(mcplite.EventFrame{
 		Type:  mcplite.TypeEvent,
-		Event: "whatsapp.message.received",
+		Event: "message.received",
 		Data: map[string]any{
-			"chat_id": chatID,
+			"channel": "whatsapp://" + chatID,
 			"sender":  sender,
-			"text":    text,
+			"content": text,
 			"kind":    kind,
 		},
 	})

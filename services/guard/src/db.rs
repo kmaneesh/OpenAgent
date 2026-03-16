@@ -1,18 +1,20 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A single whitelist entry.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WhitelistEntry {
     pub platform: String,
     pub channel_id: String,
-    pub note: Option<String>,
-    pub added_at: i64,
+    pub label: Option<String>,
+    pub added_at: String,
 }
 
 /// Open (or create) the guard SQLite database at `db_path` and run migrations.
+///
+/// When pointing at the shared `openagent.db` the tables already exist with the
+/// correct schema so the `CREATE TABLE IF NOT EXISTS` statements below are no-ops.
 pub fn open(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)
         .with_context(|| format!("open guard db at {db_path}"))?;
@@ -25,8 +27,9 @@ pub fn open(db_path: &str) -> Result<Connection> {
              id         INTEGER PRIMARY KEY AUTOINCREMENT,
              platform   TEXT    NOT NULL,
              channel_id TEXT    NOT NULL,
-             note       TEXT,
-             added_at   INTEGER NOT NULL,
+             label      TEXT    NOT NULL DEFAULT '',
+             added_by   TEXT    NOT NULL DEFAULT '',
+             added_at   TEXT    NOT NULL,
              UNIQUE(platform, channel_id)
          );
 
@@ -45,7 +48,50 @@ pub fn open(db_path: &str) -> Result<Connection> {
     Ok(conn)
 }
 
+fn now_iso() -> String {
+    // RFC-3339 UTC timestamp — matches what the Python side wrote.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Simple ISO-8601 UTC without external deps.
+    let s = secs;
+    let sec = s % 60;
+    let min = (s / 60) % 60;
+    let hr = (s / 3600) % 24;
+    let days = s / 86400;
+    // Days since 1970-01-01 → approximate calendar date (good enough for a label).
+    let (y, m, d) = days_to_ymd(days);
+    format!("{y:04}-{m:02}-{d:02}T{hr:02}:{min:02}:{sec:02}Z")
+}
+
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    let mut y = 1970u64;
+    loop {
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        let dy = if leap { 366 } else { 365 };
+        if days < dy {
+            break;
+        }
+        days -= dy;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let months = [31u64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 1u64;
+    for dm in &months {
+        if days < *dm {
+            break;
+        }
+        days -= dm;
+        m += 1;
+    }
+    (y, m, days + 1)
+}
+
 fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -62,13 +108,13 @@ pub fn check(conn: &Connection, platform: &str, channel_id: &str) -> Result<bool
     Ok(count > 0)
 }
 
-/// Add a sender to the whitelist. Idempotent — updates `note` if the entry exists.
-pub fn add(conn: &Connection, platform: &str, channel_id: &str, note: Option<&str>) -> Result<()> {
+/// Add a sender to the whitelist. Idempotent — updates `label` if the entry exists.
+pub fn add(conn: &Connection, platform: &str, channel_id: &str, label: Option<&str>) -> Result<()> {
     conn.execute(
-        "INSERT INTO whitelist (platform, channel_id, note, added_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(platform, channel_id) DO UPDATE SET note = excluded.note",
-        params![platform, channel_id, note, now_ms()],
+        "INSERT INTO whitelist (platform, channel_id, label, added_by, added_at)
+         VALUES (?1, ?2, ?3, 'guard', ?4)
+         ON CONFLICT(platform, channel_id) DO UPDATE SET label = excluded.label",
+        params![platform, channel_id, label.unwrap_or(""), now_iso()],
     )?;
     Ok(())
 }
@@ -85,14 +131,14 @@ pub fn remove(conn: &Connection, platform: &str, channel_id: &str) -> Result<boo
 /// List all whitelist entries.
 pub fn list(conn: &Connection) -> Result<Vec<WhitelistEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT platform, channel_id, note, added_at FROM whitelist ORDER BY added_at DESC",
+        "SELECT platform, channel_id, label, added_at FROM whitelist ORDER BY added_at DESC",
     )?;
     let entries = stmt
         .query_map([], |row| {
             Ok(WhitelistEntry {
                 platform: row.get(0)?,
                 channel_id: row.get(1)?,
-                note: row.get(2)?,
+                label: row.get(2)?,
                 added_at: row.get(3)?,
             })
         })?
@@ -126,8 +172,9 @@ mod tests {
                  id         INTEGER PRIMARY KEY AUTOINCREMENT,
                  platform   TEXT    NOT NULL,
                  channel_id TEXT    NOT NULL,
-                 note       TEXT,
-                 added_at   INTEGER NOT NULL,
+                 label      TEXT    NOT NULL DEFAULT '',
+                 added_by   TEXT    NOT NULL DEFAULT '',
+                 added_at   TEXT    NOT NULL,
                  UNIQUE(platform, channel_id)
              );
              CREATE TABLE IF NOT EXISTS seen_senders (
@@ -169,7 +216,7 @@ mod tests {
     fn list_returns_entries_newest_first() {
         let conn = mem_db();
         add(&conn, "telegram", "a", None).unwrap();
-        add(&conn, "telegram", "b", Some("note")).unwrap();
+        add(&conn, "telegram", "b", Some("label")).unwrap();
         let entries = list(&conn).unwrap();
         assert_eq!(entries.len(), 2);
     }
@@ -181,7 +228,7 @@ mod tests {
         add(&conn, "discord", "x", Some("updated")).unwrap();
         let entries = list(&conn).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].note.as_deref(), Some("updated"));
+        assert_eq!(entries[0].label.as_deref(), Some("updated"));
     }
 
     #[test]

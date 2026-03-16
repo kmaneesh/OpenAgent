@@ -57,6 +57,10 @@ fi
 
 mkdir -p "$ROOT/logs" "$ROOT/data/sockets" "$ROOT/data/artifacts" "$ROOT/data/run"
 
+# Clear logs from previous run so each session starts fresh.
+rm -f "$ROOT/logs"/*.jsonl "$ROOT/logs"/*.log "$ROOT/logs"/*.log.*
+echo "  Logs cleared"
+
 PIDFILE="$ROOT/data/run/openagent.pid"
 
 # ---------------------------------------------------------------------------
@@ -68,6 +72,8 @@ if [ -f "$PIDFILE" ]; then
     echo "  Stopping previous instance (PID $OLD_PID)…"
     kill -TERM "$OLD_PID" 2>/dev/null || true
     sleep 1
+    # Kill any service children that survived the SIGTERM
+    pkill -KILL -P "$OLD_PID" 2>/dev/null || true
     kill -KILL "$OLD_PID" 2>/dev/null || true
   fi
   rm -f "$PIDFILE"
@@ -89,9 +95,9 @@ _shutdown() {
       sleep 1
       kill -0 "$OPENAGENT_PID" 2>/dev/null || break
     done
+    # Kill any service children that survived the SIGTERM
+    pkill -KILL -P "$OPENAGENT_PID" 2>/dev/null || true
     kill -KILL "$OPENAGENT_PID" 2>/dev/null || true
-    # Belt-and-suspenders: kill any surviving service children by process group.
-    kill -KILL -"$OPENAGENT_PID" 2>/dev/null || true
     wait "$OPENAGENT_PID" 2>/dev/null || true
   fi
   exit 0

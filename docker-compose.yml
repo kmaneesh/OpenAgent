@@ -70,6 +70,8 @@ services:
       - ./logs:/app/logs
       # Mount config/ so the UI can show the current openagent.yaml
       - ./config:/app/config:ro
+      # Mount services/ so the dashboard can read service.json manifests (runtime/version)
+      - ./services:/app/services:ro
     networks:
       - openagent
     restart: unless-stopped
