@@ -110,7 +110,7 @@ data_dir     = "data"
 # enabled controls whether the guard.check MCP-lite call is made.
 # Manage the whitelist via guard.add / guard.remove / guard.list tools.
 enabled = true
-db_path = "data/guard.db"
+db_path = "data/openagent.db"
 
 # ---------------------------------------------------------------------------
 # Browser identity

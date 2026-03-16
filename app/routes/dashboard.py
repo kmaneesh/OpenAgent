@@ -142,98 +142,73 @@ def _read_manifests(root: Path) -> dict[str, dict]:
     return manifests
 
 
-def _process_memory_map() -> dict[str, float]:
-    """Return {process_name: rss_mb} for all running processes."""
-    mem: dict[str, float] = {}
-    try:
-        for proc in psutil.process_iter(["name", "memory_info"]):
-            try:
-                name = proc.info["name"] or ""
-                rss = proc.info["memory_info"].rss if proc.info["memory_info"] else 0
-                # Strip platform suffixes like -darwin-arm64, -linux-arm64
-                base = name.split("-")[0]
-                mb = round(rss / (1024 * 1024), 1)
-                # Keep highest RSS if multiple procs match same base name
-                if base not in mem or mb > mem[base]:
-                    mem[base] = mb
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-    except Exception:
-        pass
-    return mem
-
 
 async def _all_services(request: Request) -> tuple[list[dict], list[dict]]:
     """Return (go_services, rust_services) for the dashboard.
 
     Sources:
-      - service.json manifests  → full list + runtime classification
-      - Rust /health            → openagent runtime status + tool_count
-      - Rust /tools             → which child services are registered (running)
-      - psutil process scan     → per-process RSS memory
+      - service.json manifests  → full list + runtime classification + version
+      - Rust /health            → openagent RSS, uptime, tool_count, per-service RSS + status
     """
     import asyncio
 
     root: Path = getattr(request.app.state, "root", Path.cwd())
     api_client = getattr(request.app.state, "api_client", None)
 
-    # Run blocking I/O in threads alongside async API calls
     manifests_fut = asyncio.to_thread(_read_manifests, root)
-    mem_fut = asyncio.to_thread(_process_memory_map)
 
     async def _health():
         if api_client is None:
             return {}
         try:
-            r = await api_client.get("/health", timeout=3.0)
+            r = await api_client.get("/health", timeout=5.0)
             return r.json() if r.is_success else {}
         except Exception:
             return {}
 
-    async def _tools():
-        if api_client is None:
-            return {}
-        try:
-            r = await api_client.get("/tools", timeout=3.0)
-            return r.json() if r.is_success else {}
-        except Exception:
-            return {}
+    manifests, health_data = await asyncio.gather(manifests_fut, _health())
 
-    manifests, mem_map, health_data, tools_data = await asyncio.gather(
-        manifests_fut, mem_fut, _health(), _tools()
-    )
-
-    # Services registered with openagent (connected + tools returned)
-    registered: set[str] = set()
-    for t in tools_data.get("tools", []):
-        registered.add(t.get("service", ""))
-
-    def _entry(name: str, version: str = "?") -> dict:
-        running = name in registered
-        return {
-            "name": name,
-            "version": version,
-            "status": "online" if running else "stopped",
-            "memory_mb": mem_map.get(name),
-            "memory_display": f"{mem_map[name]} MB" if name in mem_map else "—",
-        }
-
-    # openagent runtime — always first in Rust list
     runtime_ok = health_data.get("status") == "ok"
+
+    # Build name → rss_mb from health_data["services"] list
+    svc_rss: dict[str, float | None] = {}
+    svc_running: set[str] = set()
+    for svc in health_data.get("services", []):
+        name = svc.get("name", "")
+        svc_rss[name] = svc.get("rss_mb")
+        if svc.get("status") == "running":
+            svc_running.add(name)
+
+    # openagent runtime self-info
+    self_info = health_data.get("self", {})
+    self_rss = self_info.get("rss_mb")
+
+    def _fmt(mb: float | None) -> str:
+        return f"{mb} MB" if mb is not None else "—"
+
     runtime_entry = {
         "name": "openagent",
         "version": "?",
         "status": "online" if runtime_ok else "offline",
-        "memory_mb": mem_map.get("openagent"),
-        "memory_display": f"{mem_map['openagent']} MB" if "openagent" in mem_map else "—",
+        "memory_mb": self_rss,
+        "memory_display": _fmt(self_rss),
         "tool_count": health_data.get("tool_count", 0),
+        "uptime_s": health_data.get("uptime_s"),
     }
 
     go_services: list[dict] = []
     rust_services: list[dict] = [runtime_entry]
 
     for name, manifest in sorted(manifests.items()):
-        entry = _entry(name, manifest.get("version", "?"))
+        rss = svc_rss.get(name)
+        running = name in svc_running
+        entry = {
+            "name": name,
+            "version": manifest.get("version", "?"),
+            "status": "online" if running else "stopped",
+            "memory_mb": rss,
+            "memory_display": _fmt(rss),
+        }
         if manifest.get("runtime", "go") == "rust":
             rust_services.append(entry)
         else:

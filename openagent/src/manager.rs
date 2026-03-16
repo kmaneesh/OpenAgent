@@ -30,6 +30,14 @@ pub struct RegisteredTool {
 struct ServiceState {
     name: String,
     client: Arc<McpLiteClient>,
+    pid: Option<u32>,
+}
+
+/// Public snapshot of a running service — returned by `live_services()`.
+#[derive(Debug, Clone)]
+pub struct LiveServiceInfo {
+    pub name: String,
+    pub pid: Option<u32>,
 }
 
 /// ServiceManager — the central orchestrator.
@@ -71,6 +79,16 @@ impl ServiceManager {
     }
 
     /// Return a snapshot of all registered tools.
+    /// Snapshot of all currently running services (name + PID).
+    pub async fn live_services(&self) -> Vec<LiveServiceInfo> {
+        self.services
+            .read()
+            .await
+            .values()
+            .map(|s| LiveServiceInfo { name: s.name.clone(), pid: s.pid })
+            .collect()
+    }
+
     pub async fn tools(&self) -> Vec<RegisteredTool> {
         self.tools.read().await.clone()
     }
@@ -289,11 +307,13 @@ async fn run_service_loop(
         }
 
         // ---- register live state --------------------------------------------
+        let child_pid = child.id();
         services.write().await.insert(
             name.clone(),
             ServiceState {
                 name: name.clone(),
                 client: Arc::clone(&client),
+                pid: child_pid,
             },
         );
         attempt = 0; // reset backoff on successful start

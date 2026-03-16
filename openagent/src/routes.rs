@@ -20,11 +20,60 @@ use crate::state::AppState;
 // GET /health
 // ---------------------------------------------------------------------------
 
+/// Read RSS memory (KB → MB) for a given PID via `ps`. Works on macOS + Linux.
+/// Returns None if the process no longer exists or ps fails.
+async fn rss_mb(pid: u32) -> Option<f64> {
+    tokio::task::spawn_blocking(move || {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let kb: u64 = std::str::from_utf8(&out.stdout).ok()?.trim().parse().ok()?;
+        Some((kb as f64) / 1024.0)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let uptime_s = state.started_at.elapsed().as_secs();
     let tool_count = state.manager.tools().await.len();
+    let live = state.manager.live_services().await;
+
+    // openagent runtime itself
+    let self_pid = std::process::id();
+    let self_rss = rss_mb(self_pid).await;
+
+    // Per-service info — gather RSS concurrently
+    let service_futs: Vec<_> = live
+        .iter()
+        .map(|svc| {
+            let name = svc.name.clone();
+            let pid = svc.pid;
+            async move {
+                let rss = if let Some(p) = pid { rss_mb(p).await } else { None };
+                json!({
+                    "name": name,
+                    "pid": pid,
+                    "rss_mb": rss.map(|v| (v * 10.0).round() / 10.0),
+                    "status": "running",
+                })
+            }
+        })
+        .collect();
+    let services: Vec<Value> = futures_util::future::join_all(service_futs).await;
+
     Json(json!({
         "status": "ok",
+        "uptime_s": uptime_s,
         "tool_count": tool_count,
+        "self": {
+            "name": "openagent",
+            "pid": self_pid,
+            "rss_mb": self_rss.map(|v| (v * 10.0).round() / 10.0),
+        },
+        "services": services,
     }))
 }
 

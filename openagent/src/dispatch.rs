@@ -213,15 +213,30 @@ async fn handle_message(
         "dispatch.sending"
     );
 
-    // Send reply back via channels service.
-    if let Err(e) = manager
-        .call_tool(
-            "channel.send",
-            json!({"address": channel, "content": response_text}),
-            SEND_TIMEOUT_MS,
-        )
-        .await
-    {
+    // Route the reply to the appropriate send tool based on platform.
+    let platform = platform_from_channel(&channel);
+    let send_result = if platform == "whatsapp" {
+        // WhatsApp uses its own send tool with chat_id extracted from the URI.
+        let chat_id = channel.trim_start_matches("whatsapp://");
+        manager
+            .call_tool(
+                "whatsapp.send_text",
+                json!({"chat_id": chat_id, "text": response_text}),
+                SEND_TIMEOUT_MS,
+            )
+            .await
+    } else {
+        // All other platforms go through the channels service.
+        manager
+            .call_tool(
+                "channel.send",
+                json!({"address": channel, "content": response_text}),
+                SEND_TIMEOUT_MS,
+            )
+            .await
+    };
+
+    if let Err(e) = send_result {
         error!(session_id, channel, error = %e, "dispatch.channel.send.error");
     }
 }
