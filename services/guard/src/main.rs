@@ -95,14 +95,14 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ---- guard.add ----------------------------------------------------------
+    // ---- guard.allow --------------------------------------------------------
     {
         let conn = Arc::clone(&conn);
         let tel = telemetry.clone();
-        server.register_tool("guard.add", move |params: Value| {
+        server.register_tool("guard.allow", move |params: Value| {
             let _cx = GuardTelemetry::attach_context(
                 &params,
-                vec![opentelemetry::KeyValue::new("tool", "guard.add")],
+                vec![opentelemetry::KeyValue::new("tool", "guard.allow")],
             );
             let platform = params
                 .get("platform")
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
                 .unwrap_or("")
                 .to_string();
             let span = info_span!(
-                "guard.add",
+                "guard.allow",
                 platform = platform.as_str(),
                 channel_id = channel_id.as_str(),
                 status = tracing::field::Empty
@@ -126,18 +126,121 @@ async fn main() -> Result<()> {
             let result = conn
                 .lock()
                 .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))
-                .and_then(|c| handlers::handle_add(&c, params));
+                .and_then(|c| handlers::handle_allow(&c, params));
 
             match &result {
                 Ok(_) => {
                     span.record("status", "ok");
-                    info!(platform = platform.as_str(), channel_id = channel_id.as_str(), "guard.add.ok");
-                    tel.record(&write_metric("guard.add", &platform, "ok", started));
+                    info!(platform = platform.as_str(), channel_id = channel_id.as_str(), "guard.allow.ok");
+                    tel.record(&write_metric("guard.allow", &platform, "ok", started));
                 }
                 Err(err) => {
                     span.record("status", "error");
-                    error!(platform = platform.as_str(), error = %err, "guard.add.error");
-                    tel.record(&write_metric("guard.add", &platform, "error", started));
+                    error!(platform = platform.as_str(), error = %err, "guard.allow.error");
+                    tel.record(&write_metric("guard.allow", &platform, "error", started));
+                }
+            }
+
+            result
+        });
+    }
+
+    // ---- guard.block --------------------------------------------------------
+    {
+        let conn = Arc::clone(&conn);
+        let tel = telemetry.clone();
+        server.register_tool("guard.block", move |params: Value| {
+            let _cx = GuardTelemetry::attach_context(
+                &params,
+                vec![opentelemetry::KeyValue::new("tool", "guard.block")],
+            );
+            let platform = params
+                .get("platform")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let channel_id = params
+                .get("channel_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let span = info_span!(
+                "guard.block",
+                platform = platform.as_str(),
+                channel_id = channel_id.as_str(),
+                status = tracing::field::Empty
+            );
+            let _enter = span.enter();
+            let started = Instant::now();
+
+            let result = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))
+                .and_then(|c| handlers::handle_block(&c, params));
+
+            match &result {
+                Ok(_) => {
+                    span.record("status", "ok");
+                    info!(platform = platform.as_str(), channel_id = channel_id.as_str(), "guard.block.ok");
+                    tel.record(&write_metric("guard.block", &platform, "ok", started));
+                }
+                Err(err) => {
+                    span.record("status", "error");
+                    error!(platform = platform.as_str(), error = %err, "guard.block.error");
+                    tel.record(&write_metric("guard.block", &platform, "error", started));
+                }
+            }
+
+            result
+        });
+    }
+
+    // ---- guard.name ---------------------------------------------------------
+    {
+        let conn = Arc::clone(&conn);
+        let tel = telemetry.clone();
+        server.register_tool("guard.name", move |params: Value| {
+            let _cx = GuardTelemetry::attach_context(
+                &params,
+                vec![opentelemetry::KeyValue::new("tool", "guard.name")],
+            );
+            let platform = params
+                .get("platform")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let channel_id = params
+                .get("channel_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let span = info_span!(
+                "guard.name",
+                platform = platform.as_str(),
+                channel_id = channel_id.as_str(),
+                status = tracing::field::Empty
+            );
+            let _enter = span.enter();
+            let started = Instant::now();
+
+            let result = conn
+                .lock()
+                .map_err(|e| anyhow::anyhow!("db lock poisoned: {e}"))
+                .and_then(|c| handlers::handle_name(&c, params));
+
+            match &result {
+                Ok(payload) => {
+                    let v: Value = serde_json::from_str(payload).unwrap_or_default();
+                    let ok = v.get("ok").and_then(Value::as_bool).unwrap_or(false);
+                    let s = if ok { "ok" } else { "not_found" };
+                    span.record("status", s);
+                    info!(platform = platform.as_str(), channel_id = channel_id.as_str(), updated = ok, "guard.name.ok");
+                    tel.record(&write_metric("guard.name", &platform, s, started));
+                }
+                Err(err) => {
+                    span.record("status", "error");
+                    error!(platform = platform.as_str(), error = %err, "guard.name.error");
+                    tel.record(&write_metric("guard.name", &platform, "error", started));
                 }
             }
 

@@ -205,6 +205,11 @@ pub async fn call_tool(
         }
     };
 
+    // Intercept service control tools — handled directly in the control plane.
+    if name.starts_with("service.") {
+        return service_control(&state, &name, params).await.into_response();
+    }
+
     match state.manager.call_tool(&name, params, 30_000).await {
         Ok(result) => {
             state.metrics.record(&tool_metric(&name, "ok", started));
@@ -219,5 +224,52 @@ pub async fn call_tool(
             )
                 .into_response()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Service control (service.list / service.restart)
+// ---------------------------------------------------------------------------
+
+async fn service_control(state: &AppState, tool: &str, params: Value) -> impl IntoResponse {
+    match tool {
+        "service.list" => {
+            let live = state.manager.live_services().await;
+            let services: Vec<Value> = live
+                .iter()
+                .map(|s| json!({"name": s.name, "pid": s.pid, "status": "running"}))
+                .collect();
+            (StatusCode::OK, Json(json!({"services": services, "count": services.len()}))).into_response()
+        }
+
+        "service.restart" => {
+            let svc_name = match params.get("name").and_then(Value::as_str) {
+                Some(n) if !n.is_empty() => n.to_string(),
+                _ => return (StatusCode::BAD_REQUEST, Json(json!({"error": "name required"}))).into_response(),
+            };
+
+            let live = state.manager.live_services().await;
+            match live.iter().find(|s| s.name == svc_name) {
+                None => {
+                    (StatusCode::NOT_FOUND, Json(json!({"error": format!("service not found: {svc_name}")}))).into_response()
+                }
+                Some(svc) => {
+                    let pid = match svc.pid {
+                        Some(p) => p,
+                        None => return (StatusCode::OK, Json(json!({"ok": false, "error": "no pid — service may be starting"}))).into_response(),
+                    };
+                    // SIGTERM — the run_service_loop health check detects the exit and restarts.
+                    let killed = std::process::Command::new("kill")
+                        .args(["-TERM", &pid.to_string()])
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+                    info!(service = %svc_name, pid, "service.restart.requested");
+                    (StatusCode::OK, Json(json!({"ok": killed, "action": "restart", "service": svc_name, "pid": pid}))).into_response()
+                }
+            }
+        }
+
+        _ => (StatusCode::NOT_FOUND, Json(json!({"error": format!("unknown service tool: {tool}")}))).into_response(),
     }
 }

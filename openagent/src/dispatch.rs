@@ -87,7 +87,11 @@ pub async fn run(manager: Arc<ServiceManager>) {
             .unwrap_or("unknown")
             .to_string();
 
-        let session_id = format!("{channel}:{sender}");
+        // Session key = the channel URI (platform://chatID).
+        // For 1:1 chats the channel already uniquely identifies the conversation —
+        // appending the sender would duplicate the chatID (e.g. "wa://id:id").
+        // For group chats the channel is the group ID, which is also correct.
+        let session_id = channel.clone();
 
         info!(
             session_id,
