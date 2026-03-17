@@ -20,7 +20,7 @@ import httpx
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from app.routes import dashboard, chat, config, provider, settings, browser, logs, diary
+from app.routes import dashboard, chat, config, provider, settings, browser, logs, diary, research
 from openagent.config import load_config
 from openagent.cron import CronService, CronJob
 from openagent.observability import configure_logging, setup_otel, shutdown_otel
@@ -118,6 +118,7 @@ settings.templates = templates
 browser.templates = templates
 logs.templates = templates
 diary.templates = templates
+research.templates = templates
 
 app.include_router(dashboard.router)
 app.include_router(chat.router)
@@ -127,6 +128,7 @@ app.include_router(provider.router)
 app.include_router(browser.router)
 app.include_router(logs.router)
 app.include_router(diary.router)
+app.include_router(research.router)
 
 
 @app.get("/metrics")

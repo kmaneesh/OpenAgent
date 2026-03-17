@@ -1,0 +1,399 @@
+{% extends "base.html" %}
+{% block title %}Research — OpenAgent{% endblock %}
+{% block page_title %}Research{% endblock %}
+
+{% block content %}
+<div class="h-full flex gap-4 w-full" x-data="researchApp()" x-init="init()">
+
+  <!-- ── Research list (left panel) ── -->
+  <div class="w-72 flex-shrink-0 flex flex-col border-r border-[#DEE2E6] dark:border-[#21262D] pr-4">
+
+    <!-- Search + status filter -->
+    <div class="mb-3 flex gap-2">
+      <input x-model="search" type="text" placeholder="Search research…"
+        class="flex-1 text-xs bg-white dark:bg-richObsidian border border-[#DEE2E6] dark:border-[#21262D]
+               rounded-lg px-3 py-2 text-stone-900 dark:text-stone-100 placeholder-mutedCharcoal
+               dark:placeholder-steelMist focus:outline-none focus:border-saffron focus:ring-1 focus:ring-saffron" />
+    </div>
+
+    <!-- Status filter pills -->
+    <div class="flex flex-wrap gap-1 mb-3">
+      <template x-for="s in statusFilters" :key="s.value">
+        <button @click="activeStatus = s.value"
+          :class="activeStatus === s.value
+            ? 'bg-saffron/20 text-saffron border border-saffron/30'
+            : 'text-mutedCharcoal dark:text-steelMist border border-transparent hover:bg-[#DEE2E6] dark:hover:bg-[#21262D]'"
+          class="text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wide transition-colors"
+          x-text="s.label"></button>
+      </template>
+    </div>
+
+    <!-- Research list -->
+    <div class="flex-1 overflow-y-auto space-y-1 pr-1">
+      <template x-if="filteredResearches.length === 0">
+        <p class="text-xs text-mutedCharcoal dark:text-steelMist italic px-2 py-4">
+          No research sessions found.
+        </p>
+      </template>
+      <template x-for="r in filteredResearches" :key="r.id">
+        <button @click="selectResearch(r)"
+          :class="selected && selected.id === r.id
+            ? 'bg-[#FF9933]/15 text-saffron border border-[#FF9933]/30'
+            : 'text-stone-700 dark:text-stone-300 border border-transparent hover:border-[#DEE2E6] dark:hover:border-[#21262D] hover:bg-pastelFog dark:hover:bg-charcoalLayer'"
+          class="w-full text-left px-3 py-2.5 rounded-xl text-sm transition-all">
+
+          <!-- Title row -->
+          <div class="flex items-start gap-2 mb-1">
+            <span class="flex-1 font-medium text-xs truncate" x-text="r.title"></span>
+            <span class="flex-shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide"
+              :class="statusClass(r.status)"
+              x-text="r.status"></span>
+          </div>
+
+          <!-- Goal excerpt -->
+          <p class="text-[10px] text-mutedCharcoal dark:text-steelMist truncate mb-1"
+            x-text="r.goal"></p>
+
+          <!-- Meta row -->
+          <div class="flex items-center gap-2 text-[10px] text-mutedCharcoal dark:text-steelMist">
+            <span x-text="r.user_key"></span>
+            <span class="ml-auto" x-text="formatDate(r.updated_at)"></span>
+          </div>
+
+          <!-- Current indicator -->
+          <template x-if="r.is_current">
+            <div class="mt-1">
+              <span class="text-[9px] font-bold text-sage uppercase tracking-wide">current</span>
+            </div>
+          </template>
+        </button>
+      </template>
+    </div>
+  </div>
+
+  <!-- ── Detail panel (right) ── -->
+  <div class="flex-1 flex flex-col min-w-0 bg-white dark:bg-deepSpaceBlue rounded-2xl border border-[#DEE2E6] dark:border-[#21262D] shadow-sm overflow-hidden">
+
+    <!-- Empty state -->
+    <template x-if="!selected">
+      <div class="flex-1 flex flex-col items-center justify-center opacity-40">
+        <svg class="w-10 h-10 text-saffron mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+        </svg>
+        <span class="text-sm">Select a research session</span>
+      </div>
+    </template>
+
+    <!-- Research detail -->
+    <template x-if="selected">
+      <div class="flex flex-col flex-1 overflow-hidden">
+
+        <!-- Header -->
+        <div class="flex-shrink-0 px-5 py-3 border-b border-[#DEE2E6] dark:border-[#21262D] bg-pastelFog/50 dark:bg-charcoalLayer/50 flex items-center gap-3">
+          <div class="flex-1 min-w-0">
+            <h2 class="text-sm font-semibold text-stone-800 dark:text-stone-100 truncate"
+              x-text="selected.title"></h2>
+            <p class="text-xs text-mutedCharcoal dark:text-steelMist truncate mt-0.5"
+              x-text="selected.goal"></p>
+          </div>
+          <span class="flex-shrink-0 text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wide"
+            :class="statusClass(selected.status)"
+            x-text="selected.status"></span>
+          <span class="flex-shrink-0 text-[10px] text-mutedCharcoal dark:text-steelMist"
+            x-text="selected.user_key"></span>
+        </div>
+
+        <!-- Tab bar -->
+        <div class="flex-shrink-0 border-b border-[#DEE2E6] dark:border-[#21262D] px-5 flex gap-1 bg-white/50 dark:bg-deepSpaceBlue/50">
+          <button @click="tab = 'tasks'"
+            :class="tab === 'tasks' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-800 dark:hover:text-stone-100'"
+            class="text-xs font-medium px-3 py-2.5 transition-colors">Tasks</button>
+          <button @click="loadSnapshot()"
+            :class="tab === 'snapshot' ? 'border-b-2 border-saffron text-saffron' : 'text-mutedCharcoal dark:text-steelMist hover:text-stone-800 dark:hover:text-stone-100'"
+            class="text-xs font-medium px-3 py-2.5 transition-colors">Snapshot</button>
+        </div>
+
+        <!-- Tasks tab -->
+        <div x-show="tab === 'tasks'" class="flex-1 overflow-y-auto p-5">
+
+          <template x-if="tasksLoading">
+            <div class="flex items-center justify-center py-8 opacity-40">
+              <span class="text-sm animate-pulse">Loading tasks…</span>
+            </div>
+          </template>
+
+          <template x-if="!tasksLoading && tasks.length === 0">
+            <div class="flex items-center justify-center py-8 opacity-40">
+              <span class="text-sm">No tasks yet</span>
+            </div>
+          </template>
+
+          <!-- Done tasks -->
+          <template x-if="doneTasks.length > 0">
+            <div class="mb-5">
+              <h3 class="text-[10px] font-bold uppercase tracking-widest text-sage mb-2 flex items-center gap-1.5">
+                <span>Done</span>
+                <span class="font-normal text-mutedCharcoal dark:text-steelMist"
+                  x-text="'(' + doneTasks.length + ')'"></span>
+              </h3>
+              <div class="space-y-2">
+                <template x-for="t in doneTasks" :key="t.id">
+                  <div class="rounded-xl border border-[#DEE2E6] dark:border-[#21262D] bg-pastelFog/30 dark:bg-charcoalLayer/30 px-3 py-2.5">
+                    <div class="flex items-start gap-2">
+                      <span class="text-sage text-sm flex-shrink-0 mt-0.5">&#10003;</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-xs font-medium text-stone-800 dark:text-stone-100" x-text="t.description"></p>
+                        <template x-if="t.result">
+                          <p class="text-[10px] text-mutedCharcoal dark:text-steelMist mt-1 line-clamp-2"
+                            x-text="t.result"></p>
+                        </template>
+                        <p class="text-[9px] text-mutedCharcoal dark:text-steelMist mt-1 font-mono opacity-60"
+                          x-text="t.id.slice(0, 8)"></p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- In progress tasks -->
+          <template x-if="inProgressTasks.length > 0">
+            <div class="mb-5">
+              <h3 class="text-[10px] font-bold uppercase tracking-widest text-saffron mb-2 flex items-center gap-1.5">
+                <span>In Progress</span>
+                <span class="font-normal text-mutedCharcoal dark:text-steelMist"
+                  x-text="'(' + inProgressTasks.length + ')'"></span>
+              </h3>
+              <div class="space-y-2">
+                <template x-for="t in inProgressTasks" :key="t.id">
+                  <div class="rounded-xl border border-saffron/20 bg-saffron/5 px-3 py-2.5">
+                    <div class="flex items-start gap-2">
+                      <span class="text-saffron text-sm flex-shrink-0 mt-0.5 animate-spin">&#8635;</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-xs font-medium text-stone-800 dark:text-stone-100" x-text="t.description"></p>
+                        <template x-if="t.assigned_agent">
+                          <p class="text-[10px] text-mutedCharcoal dark:text-steelMist mt-1">
+                            <span class="opacity-60">assigned: </span><span x-text="t.assigned_agent"></span>
+                          </p>
+                        </template>
+                        <p class="text-[9px] text-mutedCharcoal dark:text-steelMist mt-1 font-mono opacity-60"
+                          x-text="t.id.slice(0, 8)"></p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- Pending tasks -->
+          <template x-if="pendingTasks.length > 0">
+            <div class="mb-5">
+              <h3 class="text-[10px] font-bold uppercase tracking-widest text-mutedCharcoal dark:text-steelMist mb-2 flex items-center gap-1.5">
+                <span>Pending</span>
+                <span x-text="'(' + pendingTasks.length + ')'"></span>
+              </h3>
+              <div class="space-y-2">
+                <template x-for="t in pendingTasks" :key="t.id">
+                  <div class="rounded-xl border border-[#DEE2E6] dark:border-[#21262D] px-3 py-2.5">
+                    <div class="flex items-start gap-2">
+                      <span class="text-mutedCharcoal dark:text-steelMist text-sm flex-shrink-0 mt-0.5">&#9711;</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-xs font-medium text-stone-800 dark:text-stone-100" x-text="t.description"></p>
+                        <template x-if="t.assigned_agent">
+                          <p class="text-[10px] text-mutedCharcoal dark:text-steelMist mt-1">
+                            <span class="opacity-60">assigned: </span><span x-text="t.assigned_agent"></span>
+                          </p>
+                        </template>
+                        <p class="text-[9px] text-mutedCharcoal dark:text-steelMist mt-1 font-mono opacity-60"
+                          x-text="t.id.slice(0, 8)"></p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- Failed tasks -->
+          <template x-if="failedTasks.length > 0">
+            <div class="mb-5">
+              <h3 class="text-[10px] font-bold uppercase tracking-widest text-red-500 mb-2 flex items-center gap-1.5">
+                <span>Failed</span>
+                <span class="font-normal text-mutedCharcoal dark:text-steelMist"
+                  x-text="'(' + failedTasks.length + ')'"></span>
+              </h3>
+              <div class="space-y-2">
+                <template x-for="t in failedTasks" :key="t.id">
+                  <div class="rounded-xl border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-900/10 px-3 py-2.5">
+                    <div class="flex items-start gap-2">
+                      <span class="text-red-500 text-sm flex-shrink-0 mt-0.5">&#10007;</span>
+                      <div class="flex-1 min-w-0">
+                        <p class="text-xs font-medium text-stone-800 dark:text-stone-100" x-text="t.description"></p>
+                        <template x-if="t.result">
+                          <p class="text-[10px] text-red-500 dark:text-red-400 mt-1 line-clamp-2"
+                            x-text="'Reason: ' + t.result"></p>
+                        </template>
+                        <p class="text-[9px] text-mutedCharcoal dark:text-steelMist mt-1 font-mono opacity-60"
+                          x-text="t.id.slice(0, 8)"></p>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+        </div>
+
+        <!-- Snapshot tab -->
+        <div x-show="tab === 'snapshot'" class="flex-1 overflow-y-auto p-5">
+
+          <template x-if="snapshotLoading">
+            <div class="flex items-center justify-center py-8 opacity-40">
+              <span class="text-sm animate-pulse">Loading snapshot…</span>
+            </div>
+          </template>
+
+          <template x-if="!snapshotLoading && snapshot">
+            <pre class="text-xs font-mono text-stone-700 dark:text-stone-300 whitespace-pre-wrap leading-relaxed
+                        bg-pastelFog dark:bg-charcoalLayer rounded-xl p-4 border border-[#DEE2E6] dark:border-[#21262D]"
+              x-text="snapshot"></pre>
+          </template>
+
+          <template x-if="!snapshotLoading && !snapshot">
+            <div class="flex items-center justify-center py-8 opacity-40">
+              <span class="text-sm">No snapshot available yet</span>
+            </div>
+          </template>
+
+        </div>
+
+        <!-- Footer meta bar -->
+        <div class="flex-shrink-0 px-5 py-2 border-t border-[#DEE2E6] dark:border-[#21262D] bg-pastelFog/30 dark:bg-charcoalLayer/30 flex items-center gap-3">
+          <span class="text-[10px] text-mutedCharcoal dark:text-steelMist font-mono"
+            x-text="'ID: ' + selected.id.slice(0, 12) + '…'"></span>
+          <span class="text-[10px] text-mutedCharcoal dark:text-steelMist">
+            Started <span x-text="formatDate(selected.created_at)"></span>
+          </span>
+          <span class="ml-auto text-[10px] text-mutedCharcoal dark:text-steelMist">
+            Updated <span x-text="formatDate(selected.updated_at)"></span>
+          </span>
+        </div>
+
+      </div>
+    </template>
+
+  </div>
+
+</div>
+
+<script>
+  const STATUS_CLASSES = {
+    active:    'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300',
+    paused:    'bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-300',
+    complete:  'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300',
+    abandoned: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
+    failed:    'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300',
+  };
+
+  const SERVER_RESEARCHES = {{ researches | tojson }};
+
+  function researchApp() {
+    return {
+      researches: SERVER_RESEARCHES,
+      selected: null,
+      tasks: [],
+      tasksLoading: false,
+      snapshot: null,
+      snapshotLoading: false,
+      tab: 'tasks',
+      search: '',
+      activeStatus: '',
+
+      statusFilters: [
+        { value: '', label: 'All' },
+        { value: 'active', label: 'Active' },
+        { value: 'complete', label: 'Complete' },
+        { value: 'paused', label: 'Paused' },
+      ],
+
+      get filteredResearches() {
+        return this.researches.filter(r => {
+          const matchesStatus = !this.activeStatus || r.status === this.activeStatus;
+          const q = this.search.toLowerCase();
+          const matchesSearch = !q
+            || r.title.toLowerCase().includes(q)
+            || r.goal.toLowerCase().includes(q)
+            || (r.user_key || '').toLowerCase().includes(q);
+          return matchesStatus && matchesSearch;
+        });
+      },
+
+      get doneTasks()       { return this.tasks.filter(t => t.status === 'done'); },
+      get inProgressTasks() { return this.tasks.filter(t => t.status === 'in_progress'); },
+      get pendingTasks()    { return this.tasks.filter(t => t.status === 'pending'); },
+      get failedTasks()     { return this.tasks.filter(t => t.status === 'failed'); },
+
+      init() {},
+
+      async selectResearch(r) {
+        if (this.selected && this.selected.id === r.id) return;
+        this.selected = r;
+        this.tasks = [];
+        this.snapshot = null;
+        this.tab = 'tasks';
+        await this.loadTasks();
+      },
+
+      async loadTasks() {
+        if (!this.selected) return;
+        this.tasksLoading = true;
+        try {
+          const res = await fetch(`/api/research/${encodeURIComponent(this.selected.id)}/tasks`);
+          if (res.ok) {
+            this.tasks = await res.json();
+          }
+        } catch (e) {
+          console.error('Failed to load tasks', e);
+        } finally {
+          this.tasksLoading = false;
+        }
+      },
+
+      async loadSnapshot() {
+        this.tab = 'snapshot';
+        if (this.snapshot !== null || !this.selected) return;
+        this.snapshotLoading = true;
+        try {
+          const res = await fetch(`/api/research/${encodeURIComponent(this.selected.id)}/snapshot`);
+          if (res.ok) {
+            const text = await res.text();
+            this.snapshot = text === 'No snapshot available yet.' ? null : text;
+          }
+        } catch (e) {
+          console.error('Failed to load snapshot', e);
+        } finally {
+          this.snapshotLoading = false;
+        }
+      },
+
+      statusClass(status) {
+        return STATUS_CLASSES[status] || STATUS_CLASSES.abandoned;
+      },
+
+      formatDate(tsMs) {
+        if (!tsMs) return '';
+        try {
+          return new Date(tsMs).toLocaleString(undefined, {
+            month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+          });
+        } catch { return String(tsMs); }
+      },
+    };
+  }
+</script>
+{% endblock %}
