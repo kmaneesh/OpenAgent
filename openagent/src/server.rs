@@ -1,7 +1,7 @@
 /// Axum HTTP control plane — TCP port 8080.
 ///
 /// Tower middleware stack (outermost → innermost):
-///   TimeoutLayer → HandleErrorLayer → TraceLayer → GuardLayer → SttLayer → Router
+///   ConcurrencyLimitLayer → HandleErrorLayer → TimeoutLayer → TraceLayer → GuardLayer → SttLayer → TtsLayer → Router
 ///
 /// Routes:
 ///   GET  /health        liveness + tool count
@@ -17,6 +17,7 @@ use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tower::limit::ConcurrencyLimitLayer;
 use tower::timeout::TimeoutLayer;
 use tower::BoxError;
 use tower::ServiceBuilder;
@@ -43,15 +44,18 @@ const STEP_TIMEOUT_SECS: u64 = 130;
 /// Build the Axum router with the Tower middleware stack applied.
 ///
 /// Stack (outermost → innermost):
-///   TimeoutLayer(130s) → HandleErrorLayer(→ 408) → TraceLayer → GuardLayer → SttLayer → TtsLayer → Router
+///   HandleErrorLayer(→ 408/503) → RateLimitLayer(N/s) → TimeoutLayer(130s)
+///     → TraceLayer → CorsLayer → GuardLayer → SttLayer → TtsLayer → Router
 ///
-/// SttLayer and TtsLayer are always registered; they no-op immediately when
-/// their `enabled` flag is false in `config/openagent.toml`.
+/// RateLimitLayer throttles global throughput to protect Cortex from connector floods.
+/// Requests that exceed the rate are queued; the outer TimeoutLayer bounds queue wait.
+/// SttLayer and TtsLayer are always registered; they no-op when disabled in config.
 pub fn build_router(
     manager: Arc<ServiceManager>,
     metrics: MetricsWriter,
     config: MiddlewareConfig,
 ) -> Router {
+    let max_concurrent = config.rate_limit.max_concurrent;
     let state = AppState::new(manager, metrics, config);
 
     Router::new()
@@ -85,20 +89,22 @@ pub fn build_router(
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        // TimeoutLayer + HandleErrorLayer composed via ServiceBuilder.
-        // HandleErrorLayer must wrap TimeoutLayer so it can catch the BoxError
-        // that TimeoutLayer produces when the deadline fires → returns HTTP 408.
+        // HandleErrorLayer + TimeoutLayer: catches Elapsed → 408, other errors → 503.
         .layer(
             ServiceBuilder::new()
                 .layer(HandleErrorLayer::new(|e: BoxError| async move {
                     if e.is::<tower::timeout::error::Elapsed>() {
                         StatusCode::REQUEST_TIMEOUT
                     } else {
-                        StatusCode::INTERNAL_SERVER_ERROR
+                        StatusCode::SERVICE_UNAVAILABLE
                     }
                 }))
                 .layer(TimeoutLayer::new(Duration::from_secs(STEP_TIMEOUT_SECS))),
         )
+        // ConcurrencyLimitLayer (outermost) — caps simultaneous in-flight requests.
+        // Excess requests are backpressured; the inner TimeoutLayer fires after 130s
+        // so flooded requests self-terminate without exhausting server resources.
+        .layer(ConcurrencyLimitLayer::new(max_concurrent))
         .with_state(state)
 }
 

@@ -103,19 +103,29 @@ fn scrub_credentials(input: &str, context: &str) -> String {
             pos += 1;
         }
 
-        // Require `=` or `:` separator.
+        // Require `=` or `:` separator — OR allow no separator for scheme-style
+        // keywords like "bearer" where the value follows directly after whitespace
+        // (e.g. `Authorization: bearer <token>`).
+        let kw_text = &lower[kw_start..kw_start + kw_len];
+        let separator_optional = kw_text == "bearer";
+
         if pos >= bytes.len() || (bytes[pos] != b'=' && bytes[pos] != b':') {
-            out.push_str(&input[kw_start..after_kw]);
-            pos = after_kw;
-            continue;
-        }
+            if separator_optional && pos < bytes.len() && bytes[pos] != b'\n' && bytes[pos] != b'\r' {
+                // Value starts here (no separator consumed).
+                out.push_str(&input[kw_start..pos]);
+            } else {
+                out.push_str(&input[kw_start..after_kw]);
+                pos = after_kw;
+                continue;
+            }
+        } else {
+            out.push_str(&input[kw_start..=pos]);
+            pos += 1; // consume separator
 
-        out.push_str(&input[kw_start..=pos]);
-        pos += 1; // consume separator
-
-        // Skip optional whitespace after separator.
-        while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
-            pos += 1;
+            // Skip optional whitespace after separator.
+            while pos < bytes.len() && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+                pos += 1;
+            }
         }
 
         // Collect value token (non-whitespace run).

@@ -439,12 +439,35 @@ impl Default for TtsConfig {
     }
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RateLimitConfig {
+    /// Max concurrent in-flight requests allowed at once.
+    /// Excess requests are backpressured; combined with TimeoutLayer they fail
+    /// after 130s — prevents connector floods from overwhelming Cortex.
+    #[serde(default = "default_concurrency_limit")]
+    pub max_concurrent: usize,
+}
+
+fn default_concurrency_limit() -> usize {
+    50
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent: default_concurrency_limit(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct MiddlewareConfig {
     #[serde(default)]
     pub stt: SttConfig,
     #[serde(default)]
     pub tts: TtsConfig,
+    #[serde(default)]
+    pub rate_limit: RateLimitConfig,
 }
 
 // ---------------------------------------------------------------------------

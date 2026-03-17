@@ -240,10 +240,15 @@ async fn run_service_loop(
         let socket_str = socket_path.to_string_lossy().to_string();
 
         let child = Command::new(&binary)
-            // Services don't need stdin. Redirecting to /dev/null prevents
-            // child processes from racing on the parent's stdin fd, which would
-            // cause the interactive console's read_line to get spurious EOF.
+            // stdin  → /dev/null: prevents child from racing on parent's stdin fd
+            //          (would cause console read_line to get spurious EOF).
+            // stdout → /dev/null: service logs go to their own OTEL files;
+            //          suppress here so they don't flood the interactive console.
+            // stderr → /dev/null: same reason — services write structured logs
+            //          to files, not to the terminal.
             .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .env("OPENAGENT_SOCKET_PATH", &socket_str)
             .env("OPENAGENT_LOGS_DIR", project_root.join("logs").to_string_lossy().as_ref())
             .envs(env_extras)

@@ -361,13 +361,30 @@ pub fn setup_otel(service_name: &str, logs_dir: &str) -> Result<OTELGuard> {
     let file_appender = tracing_appender::rolling::daily(logs_dir, format!("{service_name}-logs"));
     let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
-    tracing_subscriber::registry()
+    // When running interactively (TTY attached), the console owns the terminal —
+    // suppress the stderr appender so log output doesn't flood the prompt.
+    // In daemon / Docker / systemd mode (no TTY), keep stderr so journal/Docker
+    // logs capture structured output without needing to read JSONL files.
+    #[cfg(unix)]
+    let tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
+    #[cfg(not(unix))]
+    let tty = false;
+
+    let registry = tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(OpenTelemetryLayer::new(tracer))
         .with(otel_log_bridge)
-        .with(tracing_subscriber::fmt::layer().json().with_writer(non_blocking))
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .init();
+        .with(tracing_subscriber::fmt::layer().json().with_writer(non_blocking));
+
+    if tty {
+        // Console mode: file-only. Terminal is for the interactive console.
+        registry.init();
+    } else {
+        // Daemon mode: also emit human-readable logs to stderr for journald/Docker.
+        registry
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .init();
+    }
 
     Ok(OTELGuard { tracer_provider, logger_provider, meter_provider, _log_guard: log_guard })
 }

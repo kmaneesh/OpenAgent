@@ -86,21 +86,29 @@ fn console_loop(
     let stdin = io::stdin();
     let mut lock = stdin.lock();
 
-    // Let initial service log output settle before showing the banner.
-    std::thread::sleep(Duration::from_millis(600));
-
     // If stdin is not a TTY (running as a daemon, pipe, or Docker without -it),
-    // skip the interactive console entirely.  The process will keep running and
-    // can be stopped via SIGTERM / SIGINT only.
+    // skip the interactive console entirely.  The process keeps running, waiting
+    // for OS signals only.
     #[cfg(unix)]
     if !is_tty() {
         return false;
     }
 
+    // Wait for the Tokio runtime and services to start accepting connections
+    // before dropping into the console.  Services startup is async; this gives
+    // them time to emit their initial "service.spawned" log so the console
+    // banner lands at the bottom rather than in the middle of startup noise.
+    // With service stdout/stderr redirected to /dev/null and tracing going to
+    // files only, the terminal should already be quiet by this point.
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Clear the current line and print the banner so it's always visible even
+    // if any stray output arrived during the sleep.
+    print!("\r\x1b[2K");  // CR + erase line
     println!();
-    println!("  ┌──────────────────────────────────────────┐");
-    println!("  │  OpenAgent console — type 'help'          │");
-    println!("  └──────────────────────────────────────────┘");
+    println!("  ┌──────────────────────────────────────────────┐");
+    println!("  │   OpenAgent  —  type 'help' for commands      │");
+    println!("  └──────────────────────────────────────────────┘");
     println!();
     prompt();
 
@@ -197,7 +205,9 @@ fn console_loop(
 }
 
 fn prompt() {
-    print!("openagent❯ ");
+    // \r\x1b[2K: carriage return + erase current line, so even if a stray newline
+    // landed above, the prompt always appears cleanly on its own line.
+    print!("\r\x1b[2K\x1b[1;33mopenagent❯\x1b[0m ");
     let _ = io::stdout().flush();
 }
 
