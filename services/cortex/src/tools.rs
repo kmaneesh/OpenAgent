@@ -21,10 +21,13 @@ pub fn make_tools() -> Vec<ToolDefinition> {
         ToolDefinition {
             name: "cortex.step".to_string(),
             description: concat!(
-                "Execute one Cortex Phase 1 reasoning step. ",
-                "Loads the configured system prompt from OpenAgent config, ",
-                "combines it with the user input, calls the configured LLM provider, ",
-                "and returns plain response text without tool use or planning."
+                "Execute a reasoning step, optionally as a named worker agent. ",
+                "Primary supervisor use: dispatch a research task to a specialised worker ",
+                "by setting agent_name (e.g. search-agent, analysis-agent, code-agent). ",
+                "The worker runs its own full ReAct loop and returns a result string. ",
+                "Pass the task description as user_input, include user_key so the worker ",
+                "has research context, and call research.task_done with the result after ",
+                "the worker returns. Omit agent_name to run as the default agent."
             )
             .to_string(),
             params: json!({
@@ -46,6 +49,10 @@ pub fn make_tools() -> Vec<ToolDefinition> {
                         "type": "string",
                         "description": "Optional turn type. Use generation for normal LLM turns and tool_call for deterministic execution turns.",
                         "enum": ["generation", "tool_call"]
+                    },
+                    "user_key": {
+                        "type": "string",
+                        "description": "Optional user key for research context injection. Used to look up the active research DAG for this user. Defaults to session_id when omitted."
                     }
                 },
                 "required": ["session_id", "user_input"]

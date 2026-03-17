@@ -26,7 +26,7 @@
     },
     {
       "name": "cortex.step",
-      "description": "Execute one Cortex Phase 1 reasoning step. Loads the system prompt from OpenAgent config, combines it with user input, calls the configured LLM provider, and returns plain response text without tool use or planning.",
+      "description": "Execute a reasoning step, optionally as a named worker agent. Primary supervisor use: dispatch a research task to a specialised worker by setting agent_name (e.g. search-agent, analysis-agent, code-agent). The worker runs its own full ReAct loop and returns a result string. Pass the task description as user_input, include user_key so the worker has research context, and call research.task_done with the result after the worker returns. Omit agent_name to run as the default agent.",
       "params": {
         "type": "object",
         "properties": {
@@ -41,6 +41,10 @@
           "agent_name": {
             "type": "string",
             "description": "Optional configured agent name. Defaults to the first configured agent."
+          },
+          "user_key": {
+            "type": "string",
+            "description": "Optional user key for research context injection. Defaults to session_id when omitted."
           }
         },
         "required": ["session_id", "user_input"]

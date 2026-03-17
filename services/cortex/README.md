@@ -10,21 +10,22 @@ Cortex coordinates:
 
 All coordination is MCP-lite JSON over Unix Domain Sockets — permanent internal protocol, never migrating to HTTP/Axum between services.
 
-## Current Status (Phases 0–5 complete)
+## Current Status (Phases 0–6 complete)
 
 Cortex is a production Rust MCP-lite service. The following are all shipped:
 
 - **Transport:** MCP-lite JSON over Unix Domain Sockets (`data/sockets/cortex.sock`) — permanent protocol, never migrating to HTTP/Axum internally
 - **Full ReAct loop** (`src/agent.rs`): LLM → parse → tool dispatch → inject result → repeat, up to `MAX_REACT_ITERATIONS = 10`
-- **Tool routing** (`src/tool_router.rs`): prefix-based dispatch over UDS — `browser.*`, `sandbox.*`, `memory.*`
+- **Tool routing** (`src/tool_router.rs`): prefix-based dispatch over UDS — `browser.*`, `sandbox.*`, `memory.*`, `research.*`, `cortex.*` (self-call for worker dispatch)
 - **Memory system** (`src/memory_adapter.rs`): `HybridMemoryAdapter` — sliding-window STM (40 messages, permanent) + LTM via `memory.search`; diary writes fire-and-forget after each cycle
 - **Prompt system** (`src/prompt.rs`): MiniJinja embedded templates (`prompts/*.j2`) — no recompile to change prompts
-- **Action search** (`src/catalog.rs`): `ActionCatalog` keyword-scores top-k tools from `service.json` manifests + `SKILL.md` files per step; `memory.search` always pinned; `cortex.discover` always available for mid-task expansion
+- **Action search** (`src/action/`): `ActionCatalog` keyword-scores top-k tools from `service.json` manifests + `SKILL.md` files per step; `memory.search`, `research.status`, and `cortex.step` always pinned
 - **Provider fallback chain** (`src/llm.rs`): `dispatch_with_fallback()` tries primary provider then each fallback in order; per-attempt structured logs
+- **Research context injection** (`src/handlers.rs`): at each generation turn, fetches active research via `research.status`, formats runnable tasks into the system prompt so the supervisor picks the next task without an extra tool call
+- **Worker agent dispatch** (`src/handlers.rs` + `src/tool_router.rs`): supervisor calls `cortex.step` with `agent_name` to dispatch tasks to named worker agents; ToolRouter self-routes `cortex.*` back to `cortex.sock`; worker resolves its config from `openagent.yaml` by name and runs a full independent ReAct loop
 - **OTEL** (`sdk-rust`): traces, logs, metrics to `logs/cortex-*.jsonl` (daily rotation)
 
 What does not exist yet:
-- Plan DAG store (Phase 6)
 - Reflection scheduler (Phase 8)
 - Curiosity queue (Phase 9)
 
@@ -345,9 +346,38 @@ The LLM sees a fixed candidate set injected as text in the system prompt (not as
 
 ---
 
-### Multi-agent — deferred to Phase 6
+### Multi-agent — Supervisor/Worker dispatch (Phase 6, complete)
 
-Named agents from `config/openagent.yaml` are config-selectable via `agent_name` in the step request. A single `CortexAgent` is constructed per-request from the selected config block. Actor dispatch (`ractor`) deferred until memory and tool layers are stable.
+Cortex implements the Anthropic Supervisor/Worker pattern. No new service binary is needed per worker — agent identity is config, not code.
+
+**Supervisor flow (every generation turn):**
+1. `fetch_research_context()` calls `research.status` via ToolRouter — result formatted as a `## Active Research` block injected into the system prompt
+2. Supervisor sees runnable tasks, assigned agents, and the `cortex.step` tool schema (always pinned)
+3. For simple tasks: supervisor handles directly in its own ReAct loop
+4. For specialised tasks: supervisor calls `cortex.step` with `agent_name="search-agent"` (or any named agent from config)
+
+**Worker flow (when `cortex.step` is called with `agent_name`):**
+1. `cortex.sock` receives the call — same `handle_step` handler, same process
+2. `resolve_step_config(agent_name)` picks the worker's `system_prompt` and `model` from `config/openagent.yaml`
+3. A fresh `CortexAgent` + `HybridMemoryAdapter` is constructed with the worker identity
+4. Worker runs a full independent ReAct loop (up to `MAX_REACT_ITERATIONS = 10`)
+5. Worker can call `research.task_done`, `research.task_add`, or any service tool directly
+6. Worker returns a result string; supervisor uses it, then calls `research.task_done` to advance the DAG
+
+**Self-call routing:** `ToolRouter` routes `cortex.*` → `cortex.sock` via the same prefix mechanism as all other services — no special-casing. Concurrent worker invocations are handled by Tokio's async runtime.
+
+**Config example** (`config/openagent.yaml`):
+```yaml
+agents:
+  - name: supervisor
+    system_prompt: "You are a research supervisor. Decompose tasks, delegate to workers, synthesise results."
+  - name: search-agent
+    system_prompt: "You are a focused search agent. Execute one search task and return structured findings."
+  - name: analysis-agent
+    system_prompt: "You are an analysis agent. Identify contradictions and synthesise findings across sources."
+```
+
+Workers are **stateless per invocation** — they receive full context in the step request. No session state is shared between the supervisor's turn and a worker invocation.
 
 ---
 
@@ -374,29 +404,47 @@ Libraries intentionally avoided:
 - direct browser/memory/sandbox implementation inside Cortex
 - `axum` or `tower` in any service other than Cortex
 
-## Phase 1 Tools
+## Tools
 
 `cortex.describe_boundary`
 
-Returns a JSON document describing:
-- service ownership
-- non-goals for Phase 0
-- the transport contract
-- the Phase 1 dependency set
+Returns a JSON document describing service ownership, transport contract, and implementation scope.
 
 `cortex.step`
 
-Request:
-- `session_id`
-- `user_input`
-- `agent_name` (optional)
+Request params:
+| Param | Required | Description |
+|-------|----------|-------------|
+| `session_id` | ✅ | Stable session identifier |
+| `user_input` | ✅ | Task description or user message |
+| `agent_name` | optional | Named agent from `openagent.yaml`. Omit for default. Set to dispatch a worker. |
+| `user_key` | optional | User key for research context lookup. Defaults to `session_id`. |
+| `turn_kind` | optional | `"generation"` (default) or `"tool_call"` (skips tool injection). |
 
 Behavior:
-- loads OpenAgent config from `OPENAGENT_CONFIG_PATH`, `config/openagent.yml`, or `config/openagent.yaml`
-- selects the requested agent or falls back to the first configured agent
-- reads `system_prompt` from config
-- sends `system_prompt` + `user_input` to the configured provider
-- returns plain response text plus provider metadata
+1. Loads `config/openagent.yaml` (or `OPENAGENT_CONFIG_PATH`)
+2. Resolves agent by `agent_name` (falls back to first agent)
+3. On generation turns: fetches active research via `research.status`, injects runnable tasks into system prompt; searches ActionCatalog for top-8 relevant tools; always pins `memory.search`, `research.status`, `cortex.step`
+4. Runs full ReAct loop (up to 10 iterations): LLM → parse JSON output → tool dispatch over UDS → inject result → repeat
+5. Returns `response_text` + `react_summary` (iterations, tool calls, candidates)
+
+Response shape:
+```json
+{
+  "session_id": "...",
+  "agent_name": "supervisor",
+  "provider_kind": "openai_compat",
+  "model": "...",
+  "response_type": "final",
+  "response_text": "...",
+  "react_summary": {
+    "iterations": 3,
+    "tool_calls_made": ["research.status", "cortex.step"],
+    "default_tool_count": 11,
+    "candidates": ["memory.search", "research.status", "cortex.step", "..."]
+  }
+}
+```
 
 Observability:
 - traces: `logs/cortex-traces-YYYY-MM-DD.jsonl`

@@ -5,11 +5,12 @@
 //! Cortex to call downstream services.  No extra abstraction needed — just a plain
 //! async connect → write ToolCallRequest → read ToolCallResponse.
 //!
-//! Socket routing is derived from the tool name prefix:
-//!   `browser.*` → `<socket_dir>/browser.sock`
-//!   `sandbox.*` → `<socket_dir>/sandbox.sock`
-//!
-//! Phase 3+: add `memory.*` → `memory.sock` here.
+//! Socket routing is derived from the tool name prefix — fully generic, no hardcoded list:
+//!   `browser.*`  → `<socket_dir>/browser.sock`
+//!   `sandbox.*`  → `<socket_dir>/sandbox.sock`
+//!   `memory.*`   → `<socket_dir>/memory.sock`
+//!   `research.*` → `<socket_dir>/research.sock`
+//!   `<owner>.*`  → `<socket_dir>/<owner>.sock`  (any future service)
 
 use anyhow::{anyhow, Result};
 use sdk_rust::codec::{Decoder, Encoder};
@@ -173,6 +174,20 @@ mod tests {
         let r = router();
         let path = r.resolve_socket("sandbox.execute").unwrap();
         assert_eq!(path, PathBuf::from("data/sockets/sandbox.sock"));
+    }
+
+    #[test]
+    fn research_tool_maps_to_research_sock() {
+        let r = router();
+        let path = r.resolve_socket("research.status").unwrap();
+        assert_eq!(path, PathBuf::from("data/sockets/research.sock"));
+    }
+
+    #[test]
+    fn memory_tool_maps_to_memory_sock() {
+        let r = router();
+        let path = r.resolve_socket("memory.search").unwrap();
+        assert_eq!(path, PathBuf::from("data/sockets/memory.sock"));
     }
 
     #[test]

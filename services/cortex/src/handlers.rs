@@ -15,15 +15,20 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// How many tools the semantic search returns per step.
 /// Keep this tight — every extra tool adds ~80 tokens to the context window.
 const ACTION_SEARCH_LIMIT: usize = 8;
 
 /// Tools always included regardless of search results.
-/// memory.search is mandatory because LTM recall happens on every generation turn.
-const ALWAYS_INCLUDE: &[&str] = &["memory.search"];
+/// - memory.search: LTM recall happens on every generation turn.
+/// - research.status: supervisor always needs the current research task graph so it
+///   can pick the next runnable task without an extra discover round-trip.
+/// - cortex.step: supervisor uses this to dispatch tasks to named worker agents
+///   (e.g. search-agent, analysis-agent). Always pinned so the supervisor never has
+///   to discover it — dispatching a worker is a first-class action at every step.
+const ALWAYS_INCLUDE: &[&str] = &["memory.search", "research.status", "cortex.step"];
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
@@ -109,6 +114,15 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         .map(str::trim)
         .unwrap_or("generation")
         .to_string();
+    // user_key is used to look up the active research for this user.
+    // Falls back to session_id when omitted so single-user sessions work without extra params.
+    let user_key = p
+        .get("user_key")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or(session_id.as_str())
+        .to_string();
 
     let _cx_guard = CortexTelemetry::attach_context(
         &params,
@@ -150,8 +164,21 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     } else {
         render_default_tool_context(&default_tools)
     };
-    let structured_system_prompt = crate::prompt::render_step_system(&resolved.system_prompt)
+    let mut structured_system_prompt = crate::prompt::render_step_system(&resolved.system_prompt)
         .map_err(|e| anyhow!("system prompt render failed: {e}"))?;
+
+    // Phase 6: Proactively inject active research context into the system prompt on
+    // generation turns so the supervisor always knows what tasks are runnable without
+    // needing an extra `research.status` tool call first.
+    let research_context_block = if turn_kind != "tool_call" {
+        fetch_research_context(&router, &user_key)
+    } else {
+        None
+    };
+    if let Some(ref rc) = research_context_block {
+        structured_system_prompt.push_str("\n\n");
+        structured_system_prompt.push_str(rc);
+    }
 
     let data_root = std::env::current_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -180,6 +207,7 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         config_path = %resolved.source_path.display(),
         turn_kind = %turn_kind,
         action_candidates = default_tools.len(),
+        has_research_context = research_context_block.is_some(),
         "cortex.step.start"
     );
 
@@ -484,5 +512,159 @@ pub fn handle_search_tools(params: Value, catalog: Arc<ActionCatalog>) -> Result
 
 pub fn handle_discover(params: Value, catalog: Arc<ActionCatalog>) -> Result<String> {
     handle_search_actions(params, catalog)
+}
+
+// ── Research context injection ─────────────────────────────────────────────────
+
+/// Fetch the active research status for `user_key` via the ToolRouter and format
+/// it as a system-prompt block.
+///
+/// Returns `None` when:
+/// - research.sock does not exist (service not running)
+/// - the user has no active research
+/// - the research has no runnable tasks and no active research
+/// - the call fails (logged as warning, never propagates)
+fn fetch_research_context(router: &ToolRouter, user_key: &str) -> Option<String> {
+    if !router.socket_exists("research.status") {
+        return None;
+    }
+    let args = json!({ "user_key": user_key });
+    let raw = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(router.call("research.status", &args))
+    });
+    match raw {
+        Ok(json_str) => format_research_context(&json_str),
+        Err(e) => {
+            warn!(user_key = %user_key, error = %e, "research.status fetch failed (non-fatal)");
+            None
+        }
+    }
+}
+
+/// Parse the `research.status` JSON response and format it as a markdown block
+/// suitable for injecting into the supervisor's system prompt.
+fn format_research_context(json_str: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(json_str).ok()?;
+
+    // No active research for this user — nothing to inject.
+    if v.get("research").map_or(true, |r| r.is_null()) {
+        return None;
+    }
+    let research = v.get("research")?.as_object()?;
+    let title = research.get("title")?.as_str()?;
+    let goal = research.get("goal")?.as_str()?;
+    let runnable_tasks = v.get("runnable_tasks")?.as_array()?;
+
+    let mut out = format!(
+        "## Active Research: \"{title}\"\n**Goal:** {goal}\n"
+    );
+
+    if runnable_tasks.is_empty() {
+        out.push_str(
+            "\nAll tasks are in progress or complete. \
+             Use `research.status` to review the full task graph.\n"
+        );
+    } else {
+        out.push_str("\n**Runnable tasks — pick one to work on next:**\n");
+        for (i, task) in runnable_tasks.iter().enumerate() {
+            let id = task.get("id").and_then(Value::as_str).unwrap_or("?");
+            let desc = task.get("description").and_then(Value::as_str).unwrap_or("?");
+            let agent = task.get("assigned_agent").and_then(Value::as_str);
+            // Show first 8 chars of the UUID as a compact reference.
+            let id_short = &id[..id.len().min(8)];
+            match agent {
+                Some(a) => out.push_str(&format!(
+                    "{}. [{}] {} → delegate to `{}`\n", i + 1, id_short, desc, a
+                )),
+                None => out.push_str(&format!(
+                    "{}. [{}] {}\n", i + 1, id_short, desc
+                )),
+            }
+        }
+        out.push_str(
+            "\nCall `research.task_done` with the task_id when you finish a task. \
+             Use `research.task_add` to add sub-tasks. \
+             Delegate long-running tasks via `cortex.step` with `agent_name`.\n"
+        );
+    }
+
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_status(title: &str, goal: &str, runnable: &[(&str, &str, Option<&str>)]) -> String {
+        let tasks: Vec<Value> = runnable
+            .iter()
+            .map(|(id, desc, agent)| {
+                json!({
+                    "id": id,
+                    "description": desc,
+                    "assigned_agent": agent,
+                    "status": "pending"
+                })
+            })
+            .collect();
+        json!({
+            "research": { "title": title, "goal": goal },
+            "tasks": tasks,
+            "runnable_tasks": tasks
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn format_research_context_null_research_returns_none() {
+        let json = json!({"research": null, "tasks": [], "runnable_tasks": []}).to_string();
+        assert!(format_research_context(&json).is_none());
+    }
+
+    #[test]
+    fn format_research_context_no_runnable_tasks_shows_all_complete_note() {
+        let json = json!({
+            "research": {"title": "AI Safety", "goal": "Study alignment"},
+            "tasks": [],
+            "runnable_tasks": []
+        })
+        .to_string();
+        let out = format_research_context(&json).unwrap();
+        assert!(out.contains("## Active Research: \"AI Safety\""));
+        assert!(out.contains("Study alignment"));
+        assert!(out.contains("All tasks are in progress or complete"));
+    }
+
+    #[test]
+    fn format_research_context_shows_runnable_tasks() {
+        let json = make_status(
+            "Quantum Computing",
+            "Survey recent advances",
+            &[
+                ("aaaaaaaa-1234-5678-abcd-ef0123456789", "Search papers", None),
+                ("bbbbbbbb-1234-5678-abcd-ef0123456789", "Summarise papers", Some("summarise-agent")),
+            ],
+        );
+        let out = format_research_context(&json).unwrap();
+        assert!(out.contains("## Active Research: \"Quantum Computing\""));
+        assert!(out.contains("Survey recent advances"));
+        assert!(out.contains("1. [aaaaaaa") || out.contains("1. [aaaaaaaa"));
+        assert!(out.contains("Search papers"));
+        assert!(out.contains("summarise-agent"));
+        assert!(out.contains("research.task_done"));
+        assert!(out.contains("cortex.step"));
+    }
+
+    #[test]
+    fn format_research_context_id_short_is_max_8_chars() {
+        let json = make_status(
+            "Test",
+            "Goal",
+            &[("a1b2c3d4e5f6", "Short task", None)],
+        );
+        let out = format_research_context(&json).unwrap();
+        // Only first 8 chars of ID should appear in brackets
+        assert!(out.contains("[a1b2c3d4]"));
+    }
 }
 
