@@ -434,3 +434,226 @@ impl ResearchStore {
         rows.collect::<Result<Vec<_>, _>>().context("collect get_recent_tool_calls")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Open an in-memory SQLite store — no temp files, no cleanup needed.
+    fn mem_store() -> ResearchStore {
+        ResearchStore::open(Path::new(":memory:"), Path::new("/tmp")).unwrap()
+    }
+
+    // ── create / get_current ────────────────────────────────────────────────
+
+    #[test]
+    fn create_research_is_returned_as_current() {
+        let store = mem_store();
+        let r = store.create_research("alice", "AI Safety", "Study alignment").unwrap();
+        assert_eq!(r.user_key, "alice");
+        assert_eq!(r.title, "AI Safety");
+        assert!(r.is_current);
+        assert_eq!(r.status, "active");
+
+        let current = store.get_current("alice").unwrap().unwrap();
+        assert_eq!(current.id, r.id);
+    }
+
+    #[test]
+    fn no_research_get_current_returns_none() {
+        let store = mem_store();
+        assert!(store.get_current("nobody").unwrap().is_none());
+    }
+
+    #[test]
+    fn second_create_clears_first_is_current() {
+        let store = mem_store();
+        let r1 = store.create_research("alice", "First", "Goal 1").unwrap();
+        let r2 = store.create_research("alice", "Second", "Goal 2").unwrap();
+
+        let current = store.get_current("alice").unwrap().unwrap();
+        assert_eq!(current.id, r2.id, "second research should be current");
+
+        // r1 must no longer be current
+        let all = store.list_researches("alice").unwrap();
+        let old = all.iter().find(|r| r.id == r1.id).unwrap();
+        assert!(!old.is_current);
+    }
+
+    // ── list / set_current ──────────────────────────────────────────────────
+
+    #[test]
+    fn list_researches_newest_first() {
+        let store = mem_store();
+        store.create_research("bob", "Alpha", "Goal A").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        store.create_research("bob", "Beta", "Goal B").unwrap();
+
+        let list = store.list_researches("bob").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].title, "Beta");
+        assert_eq!(list[1].title, "Alpha");
+    }
+
+    #[test]
+    fn list_researches_is_user_scoped() {
+        let store = mem_store();
+        store.create_research("alice", "Alice R", "goal").unwrap();
+        store.create_research("bob", "Bob R", "goal").unwrap();
+
+        assert_eq!(store.list_researches("alice").unwrap().len(), 1);
+        assert_eq!(store.list_researches("bob").unwrap().len(), 1);
+        assert_eq!(store.list_researches("carol").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn set_current_switches_active_research() {
+        let store = mem_store();
+        let r1 = store.create_research("alice", "First", "G1").unwrap();
+        let _r2 = store.create_research("alice", "Second", "G2").unwrap();
+
+        // Switch back to r1
+        store.set_current("alice", &r1.id).unwrap();
+        let current = store.get_current("alice").unwrap().unwrap();
+        assert_eq!(current.id, r1.id);
+    }
+
+    // ── update_status ───────────────────────────────────────────────────────
+
+    #[test]
+    fn update_status_changes_research_status() {
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        store.update_status(&r.id, "complete").unwrap();
+
+        let list = store.list_researches("alice").unwrap();
+        assert_eq!(list[0].status, "complete");
+    }
+
+    // ── tasks ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn add_task_appears_in_get_tasks() {
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t = store.add_task(&r.id, "Search papers", None, None, &[]).unwrap();
+
+        let tasks = store.get_tasks(&r.id).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, t.id);
+        assert_eq!(tasks[0].status, "pending");
+        assert_eq!(tasks[0].description, "Search papers");
+    }
+
+    #[test]
+    fn add_task_with_assigned_agent_stores_agent() {
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t = store.add_task(&r.id, "Retrieve data", None, Some("search-agent"), &[]).unwrap();
+
+        let tasks = store.get_tasks(&r.id).unwrap();
+        assert_eq!(tasks[0].id, t.id);
+        assert_eq!(tasks[0].assigned_agent.as_deref(), Some("search-agent"));
+    }
+
+    #[test]
+    fn update_task_changes_status_and_result() {
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t = store.add_task(&r.id, "Task", None, None, &[]).unwrap();
+
+        store.update_task(&t.id, "done", Some("10 papers found")).unwrap();
+
+        let tasks = store.get_tasks(&r.id).unwrap();
+        assert_eq!(tasks[0].status, "done");
+        assert_eq!(tasks[0].result.as_deref(), Some("10 papers found"));
+    }
+
+    // ── dependencies / runnable logic ───────────────────────────────────────
+
+    #[test]
+    fn task_deps_stored_and_retrieved() {
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t1 = store.add_task(&r.id, "First", None, None, &[]).unwrap();
+        let t2 = store.add_task(&r.id, "Second", None, None, &[t1.id.clone()]).unwrap();
+
+        let deps = store.get_task_deps(&r.id).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], (t2.id.clone(), t1.id.clone()));
+    }
+
+    #[test]
+    fn task_with_undone_dep_is_not_in_deps_done_set() {
+        // Verify that when t1 is pending, its dep record is still stored —
+        // the caller (handlers) is responsible for filtering runnable tasks.
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t1 = store.add_task(&r.id, "Blocking", None, None, &[]).unwrap();
+        let t2 = store.add_task(&r.id, "Blocked", None, None, &[t1.id.clone()]).unwrap();
+
+        let deps = store.get_task_deps(&r.id).unwrap();
+        // dep record exists
+        assert!(deps.iter().any(|(tid, dep)| tid == &t2.id && dep == &t1.id));
+        // t1 is still pending
+        let tasks = store.get_tasks(&r.id).unwrap();
+        let t1_row = tasks.iter().find(|t| t.id == t1.id).unwrap();
+        assert_eq!(t1_row.status, "pending");
+    }
+
+    #[test]
+    fn done_dep_unblocks_dependent_in_runnable_simulation() {
+        // Simulate the runnable-task logic from handle_research_status.
+        let store = mem_store();
+        let r = store.create_research("alice", "R", "G").unwrap();
+        let t1 = store.add_task(&r.id, "Search", None, None, &[]).unwrap();
+        let t2 = store.add_task(&r.id, "Analyse", None, None, &[t1.id.clone()]).unwrap();
+
+        // Mark t1 done
+        store.update_task(&t1.id, "done", Some("results")).unwrap();
+
+        let tasks = store.get_tasks(&r.id).unwrap();
+        let deps = store.get_task_deps(&r.id).unwrap();
+
+        let done_ids: std::collections::HashSet<String> = tasks
+            .iter()
+            .filter(|t| t.status == "done")
+            .map(|t| t.id.clone())
+            .collect();
+        let mut dep_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (tid, dep) in &deps {
+            dep_map.entry(tid.clone()).or_default().push(dep.clone());
+        }
+
+        let runnable: Vec<_> = tasks
+            .iter()
+            .filter(|t| {
+                t.status == "pending"
+                    && dep_map.get(&t.id).map_or(true, |ds| ds.iter().all(|d| done_ids.contains(d)))
+            })
+            .collect();
+
+        assert_eq!(runnable.len(), 1);
+        assert_eq!(runnable[0].id, t2.id);
+    }
+
+    // ── get_research_for_task ───────────────────────────────────────────────
+
+    #[test]
+    fn get_research_for_task_returns_parent_research() {
+        let store = mem_store();
+        let r = store.create_research("alice", "Parent Research", "G").unwrap();
+        let t = store.add_task(&r.id, "Task", None, None, &[]).unwrap();
+
+        let found = store.get_research_for_task(&t.id).unwrap().unwrap();
+        assert_eq!(found.id, r.id);
+        assert_eq!(found.title, "Parent Research");
+    }
+
+    #[test]
+    fn get_research_for_nonexistent_task_returns_none() {
+        let store = mem_store();
+        assert!(store.get_research_for_task("no-such-id").unwrap().is_none());
+    }
+}

@@ -1,6 +1,7 @@
 mod action;
 mod agent;
 mod agent_tools;
+mod classifier;
 mod config;
 mod diary;
 mod prompt;

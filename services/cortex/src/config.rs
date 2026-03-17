@@ -11,6 +11,11 @@ const DEFAULT_SYSTEM_PROMPT: &str =
 pub struct CortexConfig {
     #[serde(default)]
     pub provider: ProviderConfig,
+    /// Optional fast-path provider for simple turns.
+    /// When set, the query classifier routes short/tool_call turns here instead of
+    /// the main (strong) provider. Omit to send all turns to the main provider.
+    #[serde(default)]
+    pub fast_provider: Option<ProviderConfig>,
     #[serde(default)]
     pub agents: Vec<AgentConfig>,
     #[serde(default)]
@@ -102,6 +107,9 @@ pub struct AgentConfig {
 #[derive(Debug, Clone)]
 pub struct ResolvedStepConfig {
     pub provider: ProviderConfig,
+    /// Fast-path provider, if configured. When present, the classifier may select
+    /// this instead of `provider` for simple/tool_call turns.
+    pub fast_provider: Option<ProviderConfig>,
     pub agent_name: String,
     pub system_prompt: String,
     pub source_path: PathBuf,
@@ -111,6 +119,7 @@ impl Default for CortexConfig {
     fn default() -> Self {
         Self {
             provider: ProviderConfig::default(),
+            fast_provider: None,
             agents: vec![AgentConfig::default()],
             memory: MemoryConfig::default(),
         }
@@ -171,6 +180,7 @@ impl CortexConfig {
 
         ResolvedStepConfig {
             provider: self.provider.clone(),
+            fast_provider: self.fast_provider.clone(),
             agent_name: agent.name,
             system_prompt: agent.system_prompt,
             source_path: path,
@@ -266,6 +276,7 @@ mod tests {
     fn resolve_step_config_uses_named_agent_when_present() {
         let cfg = CortexConfig {
             provider: ProviderConfig::default(),
+            fast_provider: None,
             agents: vec![
                 AgentConfig {
                     name: "primary".to_string(),

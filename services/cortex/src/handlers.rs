@@ -1,6 +1,7 @@
 use crate::action::catalog::ActionCatalog;
 use crate::action::search::{search_catalog, SearchQuery, SearchResult};
 use crate::agent::CortexAgent;
+use crate::classifier;
 use crate::config::CortexConfig;
 use crate::llm::build_llm_provider;
 use crate::memory_adapter::{HybridMemoryAdapter, DEFAULT_STM_WINDOW};
@@ -180,6 +181,25 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         structured_system_prompt.push_str(rc);
     }
 
+    // Query classifier: select fast vs strong provider based on turn content.
+    // When fast_provider is absent this is a no-op — all turns use the main provider.
+    let selected_provider = match &resolved.fast_provider {
+        Some(fast) => {
+            let tier = classifier::classify(
+                &user_input,
+                research_context_block.is_some(),
+                &turn_kind,
+            );
+            if tier == classifier::ProviderTier::Fast {
+                info!(model = %fast.model, "cortex.classifier.fast");
+                fast.clone()
+            } else {
+                resolved.provider.clone()
+            }
+        }
+        None => resolved.provider.clone(),
+    };
+
     let data_root = std::env::current_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
     let diary_dir = data_root
@@ -190,7 +210,7 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         resolved.agent_name.clone(),
         structured_system_prompt,
         action_context,
-        resolved.provider.clone(),
+        selected_provider.clone(),
         crate::agent_tools::default_tools(),
         Arc::clone(&router),
         session_id.clone(),
@@ -198,12 +218,13 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     );
 
     span.record("agent_name", resolved.agent_name.as_str());
-    span.record("provider_kind", resolved.provider.kind.as_str());
-    span.record("model", resolved.provider.model.as_str());
+    span.record("provider_kind", selected_provider.kind.as_str());
+    span.record("model", selected_provider.model.as_str());
 
     info!(
         agent_name = %resolved.agent_name,
-        provider_kind = %resolved.provider.kind,
+        provider_kind = %selected_provider.kind,
+        model = %selected_provider.model,
         config_path = %resolved.source_path.display(),
         turn_kind = %turn_kind,
         action_candidates = default_tools.len(),
@@ -222,7 +243,8 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         stm_dir,
         Arc::clone(&router),
     );
-    let llm_provider = build_llm_provider(&resolved.provider)
+
+    let llm_provider = build_llm_provider(&selected_provider)
         .map_err(|e| anyhow!("llm provider build failed: {e}"))?;
     let (tx, _rx) = mpsc::channel::<Event>(32);
 
@@ -297,8 +319,8 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
             span.record("duration_ms", duration_ms);
             error!(
                 agent_name = %resolved.agent_name,
-                provider_kind = %resolved.provider.kind,
-                model = %resolved.provider.model,
+                provider_kind = %selected_provider.kind,
+                model = %selected_provider.model,
                 duration_ms,
                 error = %err,
                 "cortex.step.error"
@@ -306,8 +328,8 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
             tel.record(&step_err(
                 &session_id,
                 &resolved.agent_name,
-                &resolved.provider.kind,
-                &resolved.provider.model,
+                &selected_provider.kind,
+                &selected_provider.model,
                 &resolved.source_path.display().to_string(),
                 duration_ms,
                 user_input.len(),

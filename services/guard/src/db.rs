@@ -33,24 +33,9 @@ pub fn open(db_path: &str) -> Result<Connection> {
              last_seen   TEXT NOT NULL,
              hit_count   INTEGER NOT NULL DEFAULT 1,
              UNIQUE(platform, channel_id)
-         );
-
-         -- Migrate existing whitelist entries → guard (status='allowed')
-         INSERT OR IGNORE INTO guard (platform, channel_id, name, status, first_seen, last_seen)
-         SELECT platform, channel_id, COALESCE(NULLIF(label,''), ''), 'allowed', added_at, added_at
-         FROM whitelist WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='whitelist');
-
-         -- Migrate existing blacklist entries → guard (status='blocked')
-         INSERT OR IGNORE INTO guard (platform, channel_id, status, first_seen, last_seen, hit_count)
-         SELECT platform, channel_id, 'blocked', first_seen, last_seen, message_count
-         FROM blacklist WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='blacklist');
-
-         -- Migrate seen_senders → guard (status='unknown')
-         INSERT OR IGNORE INTO guard (platform, channel_id, status, first_seen, last_seen, hit_count)
-         SELECT platform, channel_id, 'unknown', first_seen, last_seen, message_count
-         FROM seen_senders WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='seen_senders');",
+         );",
     )
-    .context("guard db migration")?;
+    .context("guard db init")?;
 
     Ok(conn)
 }
