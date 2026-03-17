@@ -330,25 +330,17 @@ Exit criteria:
 
 ---
 
-## Phase 7: Segmented STM
+## Phase 7: Segmented STM — ❌ CANCELLED
 
-Goal: preserve working cognition shape instead of a flat buffer.
+**Decision (2026-03-17):** Sliding window STM (`SlidingWindowMemory`, 40 messages) is the permanent STM implementation. Segmented STM is cancelled.
 
-- Introduce segmented STM state:
-  - system core
-  - active objective
-  - active plan snapshot
-  - conversation context
-  - tool interaction log
-  - reasoning scratchpad
-  - observation buffer
-  - curiosity queue
-- Add per-segment size budgets
-- Define which segments compact and which never compact
-- Keep STM local to Cortex-managed runtime state
+**Why:** The sliding window is simple, deterministic, and sufficient for the target hardware (Raspberry Pi). Segmented STM adds per-segment budget management and compaction policy complexity without a proven benefit at the current scale. If the window proves too coarse, add structured metadata fields to individual messages rather than splitting into named segments.
 
-Exit criteria:
-- Cortex prompt assembly reads from segmented STM rather than one flat transcript
+**Current state (permanent):**
+- `HybridMemoryAdapter` uses `SlidingWindowMemory` (40-message window, `TrimStrategy::Drop`)
+- Evicted messages dump to `data/stm/{session_id}/{unix_ms}_eviction.md` for offline review
+- `clear()` dumps full window to `{unix_ms}_clear.md`
+- STM is never searchable (internal only); overflow files are pruned per session
 
 ---
 

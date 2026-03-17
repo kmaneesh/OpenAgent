@@ -1,33 +1,34 @@
 # Cortex Service
 
-Rust service target for OpenAgent's cognitive control plane. Cortex is the future agent loop, planner, retrieval orchestrator, and tool router. It does not store all knowledge itself. Instead, it coordinates:
+Rust service — OpenAgent's cognitive control plane and **multi-agent supervisor**. Cortex owns the full ReAct loop, action search, tool routing, and memory orchestration. In the multi-agent setup, Cortex acts as the supervisor: it holds (via the Research service) a persistent task DAG, picks the next runnable task, and dispatches worker agents by name.
 
-- LLM service
-- memory service
-- tool services
+Cortex coordinates:
+- LLM provider (via `autoagents-llm`, with fallback chain)
+- Memory service (STM sliding window + LTM via `memory.sock`)
+- Research service (`research.sock`) — reads task graph, updates task state
+- Tool services (browser, sandbox, and others via `ToolRouter`)
 
-OpenAgent's current Python outer loop is treated as a temporary shell that will call Cortex. The final architecture keeps Cortex as a separate service, not embedded in the Python app.
+All coordination is MCP-lite JSON over Unix Domain Sockets — permanent internal protocol, never migrating to HTTP/Axum between services.
 
-## Phase 1 Status
+## Current Status (Phases 0–5 complete)
 
-Phase 1 is implemented as a minimal single-step reasoning service.
+Cortex is a production Rust MCP-lite service. The following are all shipped:
 
-What exists now:
-- Cortex is a standalone Rust MCP-lite service.
-- Transport is locked to JSON over Unix Domain Sockets.
-- Service identity is declared in `service.json`.
-- `cortex.describe_boundary` reports the current service boundary.
-- `cortex.step` performs one LLM-backed response step.
-- The system prompt is loaded from `config/openagent.yaml` or `config/openagent.yml`.
-- Traces, metrics, and structured logs are emitted for each Cortex step.
+- **Transport:** MCP-lite JSON over Unix Domain Sockets (`data/sockets/cortex.sock`) — permanent protocol, never migrating to HTTP/Axum internally
+- **Full ReAct loop** (`src/agent.rs`): LLM → parse → tool dispatch → inject result → repeat, up to `MAX_REACT_ITERATIONS = 10`
+- **Tool routing** (`src/tool_router.rs`): prefix-based dispatch over UDS — `browser.*`, `sandbox.*`, `memory.*`
+- **Memory system** (`src/memory_adapter.rs`): `HybridMemoryAdapter` — sliding-window STM (40 messages, permanent) + LTM via `memory.search`; diary writes fire-and-forget after each cycle
+- **Prompt system** (`src/prompt.rs`): MiniJinja embedded templates (`prompts/*.j2`) — no recompile to change prompts
+- **Action search** (`src/catalog.rs`): `ActionCatalog` keyword-scores top-k tools from `service.json` manifests + `SKILL.md` files per step; `memory.search` always pinned; `cortex.discover` always available for mid-task expansion
+- **Provider fallback chain** (`src/llm.rs`): `dispatch_with_fallback()` tries primary provider then each fallback in order; per-attempt structured logs
+- **OTEL** (`sdk-rust`): traces, logs, metrics to `logs/cortex-*.jsonl` (daily rotation)
 
 What does not exist yet:
-- tool routing
-- memory retrieval
-- planner / DAG store
-- STM segmentation
+- Plan DAG store (Phase 6)
+- Reflection scheduler (Phase 8)
+- Curiosity queue (Phase 9)
 
-This keeps Phase 1 aligned with [`TODO.md`](./TODO.md): one message in, one LLM response out, no tools or planning yet.
+See [`TODO.md`](./TODO.md) for the full phase breakdown.
 
 ## Role
 
@@ -204,17 +205,9 @@ Later:
 
 ### STM Manager
 
-Segmented STM design currently intended:
-- system core
-- active objective
-- active plan snapshot
-- conversation context
-- tool interaction log
-- reasoning scratchpad
-- observation buffer
-- curiosity queue
+`SlidingWindowMemory` (40-message window, `TrimStrategy::Drop`) is the permanent STM implementation. Segmented STM is cancelled — the flat sliding window is sufficient for the target hardware.
 
-Only selected segments should be compacted.
+Evicted messages dump to `data/stm/{session_id}/{unix_ms}_eviction.md` for offline review. STM is internal only and never searchable.
 
 ### Reflection
 
@@ -373,9 +366,6 @@ Libraries in use:
 - `tower` — `CortexTraceLayer` + `TimeoutLayer` middleware stack
 - `tracing`, `opentelemetry`, `tracing-opentelemetry` — observability
 
-Libraries planned for later phases:
-- `axum` — HTTP/UDS control plane transport (Phase 4 endgame only)
-
 Libraries intentionally avoided:
 - `autoagents-core::prebuilt::ReActAgent` / `TurnEngine` — requires native LLM tool-calling; local models don't support this reliably
 - `autoagents-derive` — tool inputs are `Value` over UDS; proc macros add no benefit
@@ -513,13 +503,7 @@ This is an evolution, not a rewrite. Each phase is independently shippable.
 - Python becomes a thin launcher: config load, service spawn, platform adapter glue
 - Full Tower middleware stack active inside Cortex
 
-**Phase 4 — Axum control plane (endgame):**
-- `axum` over UDS replaces the Python process
-- Platform connectors (Discord, Telegram, Slack) wire directly to Cortex/Axum
-- `service.json` manifest and MCP-lite protocol unchanged for all other services
-- Python retired
-
-**Stability guarantee:** The MCP-lite UDS socket contract is stable across all phases. Downstream services never change protocol because the control plane above them is being replaced.
+**Stability guarantee:** The MCP-lite JSON over UDS socket contract is permanent. Downstream services never change protocol. Axum in `openagent` is external-facing only — it never replaces the UDS protocol between `openagent` and services.
 
 ## Scope for MVP
 

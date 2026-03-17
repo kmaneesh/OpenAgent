@@ -171,6 +171,81 @@ inspire/            # Reference implementations (gitignored)
 - Prefer backward-compatible interface evolution
 - If deviating from OpenClaw/Nanobot patterns, document why in comments or PR notes
 
+## Multi-Agent Architecture
+
+OpenAgent adopts **Anthropic's Supervisor/Worker model** as its canonical multi-agent pattern.
+
+### Pattern
+
+```
+Supervisor (Cortex, strong model)
+  ├── holds the Research DAG
+  ├── picks next runnable task
+  ├── selects which worker agent handles it
+  ├── injects task context + scoped tool set into worker's step request
+  └── receives result → marks task done → advances DAG
+
+Workers (Cortex, fast or specialised model)
+  ├── stateless per invocation — receive full context in the step request
+  ├── execute one task, return result string
+  └── can add subtasks or mark their task done via research service tools
+```
+
+Workers are **tools from the supervisor's perspective** — the supervisor calls `worker.step` over MCP-lite the same way it calls `browser.search`. Each worker is a `CortexAgent` instance with a different system prompt and model from `config/openagent.yaml`. No new service binary needed per worker — agent identity is config, not code.
+
+### Agent types (planned)
+
+| Agent | Model | Responsibility |
+|---|---|---|
+| Supervisor | strong (e.g. qwen3-14b) | Research DAG management, task decomposition, synthesis |
+| SearchAgent | fast (e.g. qwen3-7b) | Web search, PubMed queries, information retrieval |
+| SummariseAgent | fast | Summarise papers, condense tool results |
+| AnalysisAgent | strong | Cross-source contradiction detection, hypothesis generation |
+| CodeAgent | code-tuned | Run experiments in sandbox, parse data, generate scripts |
+
+### Key rules
+
+- **Supervisor handles simple tasks itself.** Cortex only launches a worker when the task genuinely benefits from specialisation — long-running retrieval, multi-step code execution, or analysis that needs a fresh context window. One-shot tool calls, short lookups, and quick synthesis stay in the supervisor's own ReAct loop. Sub-agents are not the default; they are a deliberate escalation.
+- Workers are **stateless** — they receive full task context in each step request; no session carried across worker invocations
+- Workers do **not** hold the Research DAG — only the supervisor reads/writes the DAG via the Research service
+- Workers **can** call research service tools (`research.task_done`, `research.task_add`) directly — this is why Research is a separate service, not embedded in Cortex
+- The supervisor selects the worker via `assigned_agent` in the task record — one field, no routing table
+- Communication is always MCP-lite JSON over UDS — no direct worker-to-worker calls
+
+### `assigned_agent` field
+
+Every research task has an optional `assigned_agent TEXT` column (name matches a key in `config/openagent.yaml` `agents:` block). If null, supervisor handles it directly. Example:
+
+```yaml
+# config/openagent.yaml
+agents:
+  supervisor:
+    model: strong
+    system_prompt: "..."
+  search-agent:
+    model: fast
+    system_prompt: "You are a focused search agent. Execute one search task and return a structured result."
+  analysis-agent:
+    model: strong
+    system_prompt: "You are an analysis agent. Identify contradictions and synthesise findings."
+```
+
+### Alignment with Anthropic's guidance
+
+| Anthropic principle | OpenAgent implementation |
+|---|---|
+| Orchestrator delegates via tool calls | Supervisor calls `cortex.step` with `agent_name` param |
+| Subagents are stateless per invocation | Workers receive full task context in step request |
+| Shared state lives outside agents | Research DAG in `services/research/` — accessible by all |
+| Workers report back to orchestrator | Worker returns result string; supervisor writes to DAG |
+| Clear system prompt per agent role | Per-agent `system_prompt` in `openagent.yaml` |
+
+### Implementation vehicle
+
+Named agents from `config/openagent.yaml` run as **ractor actors** via AutoAgents' `ActorAgent` (deferred to Phase 8). Until then, supervisor constructs a `CortexAgent` per worker invocation using `resolve_step_config(agent_name)` — same pattern as today.
+
+---
+
 ## Agent Workflow
 
 1. Read `CLAUDE.md` first, then `CURSOR.md` before substantial changes.

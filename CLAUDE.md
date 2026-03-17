@@ -6,7 +6,7 @@
 
 - **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
 - **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Cortex (the growing Brain)** — Rust service that will progressively absorb the Python control plane. Middleware migrates to `tower` layers inside Cortex. Endgame: `tower` + `axum` over UDS replaces the Python process entirely.
+- **Cortex (the growing Brain)** — Rust service that owns the full ReAct loop, tool routing, memory, and action search. `openagent` (Rust binary) wraps it with Tower middleware and exposes Axum on :8080 for external callers.
 - **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 All services communicate via **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets). Services run as persistent daemons; the agent's `ServiceManager` owns the full lifecycle: spawn, health-check, restart, graceful shutdown.
@@ -21,10 +21,11 @@ This is an evolution, not a rewrite. Each phase is independently shippable. Pyth
 |---|---|---|---|
 | **Phase 1** ✅ | Python `AgentLoop` calls `cortex.step` via MCP-lite. Cortex does one LLM turn. | Full control plane | None |
 | **Phase 2** ✅ | Rust `openagent` binary is the control plane. Cortex owns full ReAct loop + tool routing + memory. Tower middleware (Guard, STT, TTS) and dispatch loop live in `openagent`. Python middleware deleted. | Web UI only (optional Docker container) | Full Tower stack in `openagent` (GuardLayer → SttLayer → TtsLayer) |
-| **Phase 3 (now)** | `openagent` Axum serves control plane API on :8080. Platform connectors (channels service) connect directly. Python web UI is a separate container. | Retired as control plane; web UI only | Axum in `openagent` is the control plane |
-| **Phase 4 (endgame)** | Axum over UDS replaces raw MCP-lite between openagent and services. All services speak HTTP/1.1 over UDS. | Gone (or thin launcher only) | Tower + Axum is the full stack |
+| **Phase 3 (now)** ✅ | `openagent` Axum serves control plane API on :8080. Platform connectors (channels service) connect directly. Python web UI is a separate container. | Retired as control plane; web UI only | Axum in `openagent` is the control plane |
 
-**Key constraint:** The MCP-lite UDS socket contract is stable across all phases. Services never change their protocol because the control plane is being replaced above them.
+**Permanent protocol decision:** MCP-lite JSON over Unix Domain Sockets is the permanent internal protocol between `openagent` and all services (including Cortex). Axum is external-facing only — it speaks JSON to clients on :8080. There is no "Phase 4 Axum over UDS" endgame — that is cancelled. Services never change their protocol.
+
+**Key constraint:** The MCP-lite UDS socket contract is stable and permanent. Services never change their protocol because the control plane is being replaced above them.
 
 ## Communication Protocol (Rule #1)
 Whenever the user sends an input where their intention needs clarification or the context needs expansion, **do not assume the correct path.** Ask clarifying questions **one by one** (1-by-1) and provide possible **options/paths** for the user to choose from. Apply this explicitly in every conversation.
@@ -486,18 +487,16 @@ Key patterns:
 - **Tools**: small static set of `ToolT` wrappers (memory search, sandbox, browser) + one `ActionDispatcherTool` meta-tool (`action.call`). Candidate action summaries injected into system prompt via `get_messages()` — no two-step search/call pattern.
 - **Multi-agent**: named agents from YAML run as `ractor` actors via AutoAgents' `ActorAgent`. Supervisor dispatches by `agent_name`.
 
-**Tower conventions (`openagent` binary — current):**
-- Tower/Axum lives in `openagent/` (the control plane binary), NOT in Cortex
-- Layer order (outermost → innermost): `TimeoutLayer` → `HandleErrorLayer` → `TraceLayer` → `GuardLayer` → `SttLayer` → `TtsLayer` → Router
+**Tower conventions (`openagent` binary):**
+- Tower/Axum lives in `openagent/` (the control plane binary), NOT in Cortex or any other service
+- Layer order (outermost → innermost): `ConcurrencyLimitLayer` → `HandleErrorLayer` → `TimeoutLayer` → `TraceLayer` → `CorsLayer` → `GuardLayer` → `SttLayer` → `TtsLayer` → Router
 - Use `tower::ServiceBuilder` to compose timeout + error handling; use `axum::middleware::from_fn_with_state` for stateful layers
 - Timeout and retry (`tower::timeout::TimeoutLayer`, `tower::retry::RetryLayer`) replace Python's manual retry logic
-- Do NOT use `axum` until Phase 4
 
-**Axum conventions (Phase 4 only):**
-- `axum` listens on the same UDS path (`data/sockets/cortex.sock`) — protocol changes from raw newline-JSON to HTTP/1.1 over UDS
-- `axum::Router` routes by tool name: `POST /tool/:name` replaces the JSON `type: tool.call` dispatch
-- Tower middleware stack unchanged — Axum sits in front of it
-- Design `McpLiteClient` in Python/sdk-go for a one-line transport swap (raw UDS → HTTP over UDS)
+**Axum scope (permanent):**
+- Axum in `openagent` is external-facing only — it speaks JSON on :8080 to platform connectors and the web UI
+- Axum does NOT replace MCP-lite between `openagent` and services — that protocol is JSON over UDS, permanent
+- Do NOT add `axum` or `tower` to any service other than `openagent`
 
 ## Testing Standards
 
@@ -523,8 +522,9 @@ Key patterns:
 - Rust services: sandbox (VM execution), discord, stt, tts, browser, memory
 - Go services: whatsapp (only). Rust services: discord, telegram, slack, sandbox, stt, tts, browser, memory
 - **Rust services: sandbox** — VM-isolated Python/Node/shell execution via microsandbox (v0.2.0; tools: `sandbox.execute`, `sandbox.shell`)
+- **Rust service: research** — cross-session Research DAG (SQLite + markdown snapshots); tools: `research.start/list/switch/status/complete`, `research.task_add/done/fail`; `assigned_agent` field for multi-agent dispatch; web UI at `/research`
 - Config schema extended: `agents`, `session`, `platforms`, `tools.sandbox` + env overrides
-- Cross-platform build: `make all` / `make local` / `make sandbox` / `make browser`
+- Cross-platform build: `make all` / `make local` / `make sandbox` / `make browser` / `make research`
 
 ### Next (in order)
 
@@ -533,10 +533,15 @@ Key patterns:
 2. ~~**Cortex Phase 2**~~ ✅ — tool routing baseline; Cortex calls memory/browser/sandbox directly over MCP-lite
 3. ~~**Cortex Phase 3**~~ ✅ — memory retrieval + episode writes; STM eviction, diary writes
 4. ~~**Cortex Phase 4**~~ ✅ — prompt system: MiniJinja embedded templates
-4. ~~**Tower middleware (full)**~~ ✅ — `GuardLayer`, `SttLayer`, `TtsLayer` in `openagent`; Python middleware deleted; dispatch loop added
-5. **Cortex Phase 5** — action search: semantic top-k tool selection, shrink LLM context per turn
-6. **Cortex Phase 6+** — plan DAG, segmented STM, reflection, curiosity queue (see TODO.md)
-7. **Axum control plane (endgame)** — Axum over UDS replaces raw MCP-lite between openagent and services
+5. ~~**Tower middleware (full)**~~ ✅ — `GuardLayer`, `SttLayer`, `TtsLayer` in `openagent`; Python middleware deleted; dispatch loop added
+6. ~~**Cortex Phase 5**~~ ✅ — action search: `ActionCatalog` keyword-ranked top-k per step; `memory.search` always pinned
+7. ~~**Provider fallback chain**~~ ✅ — `dispatch_with_fallback()` in `llm.rs`; `fallbacks: Vec<FallbackProvider>` in config
+8. ~~**Rate limiting middleware**~~ ✅ — `ConcurrencyLimitLayer` (max 50) as outermost Tower layer in `openagent`
+9. ~~**Web UI diary + chat refactor**~~ ✅ — `/diary` read-only past session browser; `/chat` simplified to live web session only
+10. ~~**Cortex Phase 7: Segmented STM**~~ ❌ CANCELLED — sliding window (40 messages) is permanent
+11. **Cortex Phase 6: Plan DAG** — SQLite-backed plan store; persistent multi-step task tracking across turns
+12. **Cortex Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection
+13. **Cortex Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 

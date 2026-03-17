@@ -170,9 +170,18 @@ WhatsApp stays in `services/whatsapp/` (Go/whatsmeow) — not part of this omnib
 
 | Item | Owner | Status |
 |---|---|---|
-| Cortex phased plan (Phases 5–10) | `services/cortex/TODO.md` | Phase 5 next |
-| Tower Phase 2 middleware (Whitelist, STT, TTS) | Cortex | After Phase 5 |
-| Axum control plane (Phase 4 endgame) | Cortex | Phase 4 endgame |
+| Cortex phased plan (Phases 0–5) | `services/cortex/TODO.md` | ✅ Complete |
+| Cortex Phase 6: Plan/Research DAG | `services/research/` | 🔄 Building |
+| Research service (`services/research/`) | New Rust service | 🔄 Building |
+| Multi-agent: Supervisor/Worker | Cortex + Research service | Follows Research service |
+| Tower middleware (full stack) | `openagent/src/` | ✅ Complete |
+| Provider fallback chain | `services/cortex/src/llm.rs` | ✅ Complete |
+| Rate limiting middleware | `openagent/src/server.rs` | ✅ Complete |
+| Web UI diary page | `app/routes/diary.py` | ✅ Complete |
+| Web UI research page | `app/routes/research.py` | 🔄 Building |
 | Channels omnibus | `services/channels/` | WIP |
 | Memory offline compaction | `services/memory/` | Deferred |
-| Python control plane removal | Core | After Cortex Phase 3 stable |
+| Cortex Phase 7: Segmented STM | — | ❌ CANCELLED (sliding window is permanent) |
+| Axum over UDS between openagent and services | — | ❌ CANCELLED (MCP-lite JSON is permanent) |
+| Cortex Phase 8: Reflection | `services/cortex/` | After Research stable |
+| Cortex Phase 9: Curiosity queue | `services/cortex/` | After Phase 8 |

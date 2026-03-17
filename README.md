@@ -4,7 +4,7 @@ A deterministic, extension-first agent platform on a **progressive Rust migratio
 
 - **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
 - **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors, compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Cortex (the growing Brain)** — Rust service that will progressively absorb the Python control plane. Middleware migrates to `tower` layers inside Cortex. Endgame: `tower` + `axum` over UDS replaces the Python process entirely.
+- **Cortex (the Supervisor Brain)** — Rust service owning the full ReAct loop, tool routing, memory, and action search. Acts as the multi-agent supervisor: holds the Research DAG, picks runnable tasks, dispatches to worker agents.
 - **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 All services communicate via **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets).
@@ -26,7 +26,7 @@ All services communicate via **MCP-lite wire protocol** (tagged JSON frames over
 - **Web UI** — FastAPI + HTMX (dashboard, chat, services, settings)
 
 **In progress:**
-- Config schema extension (agents, bindings, session, tools)
+- `services/research/` — Research DAG service (cross-session research tracking, multi-agent supervisor/worker)
 
 ## Architecture
 
@@ -124,14 +124,15 @@ OpenAgent/
 │
 ├── services/               # Rust (primary) + Go (WhatsApp only)
 │   ├── sdk-rust/           # Shared MCP-lite Rust SDK
-│   ├── cortex/             # Rust — The growing Brain (progressive Python replacement)
+│   ├── cortex/             # Rust — Supervisor brain (ReAct loop, multi-agent dispatch)
+│   ├── research/           # Rust — Research DAG (persistent task graph, markdown snapshots)
 │   ├── channels/           # Rust — Omnibus channels (Discord, Slack, Telegram, Signal, etc)
 │   ├── sandbox/            # Rust — VM-isolated code/shell execution (microsandbox)
 │   ├── whatsapp/           # Go — WhatsApp (whatsmeow; only Go service retained)
 │   ├── stt/                # Rust — Speech-to-text
 │   ├── tts/                # Rust — Text-to-speech
 │   ├── browser/            # Rust — MCP-lite wrapper for agent-browser CLI
-│   └── memory/             # Rust — Vector memory
+│   └── memory/             # Rust — Vector memory (LanceDB + FastEmbed)
 │
 ├── app/                    # Minimalist web UI (FastAPI + HTMX)
 │   ├── main.py             # FastAPI app
@@ -151,14 +152,15 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 
 | Service | Language | Description |
 |---------|----------|-------------|
-| **cortex** | Rust | Agent execution, AutoAgents + Tower middleware |
+| **cortex** | Rust | Supervisor agent — full ReAct loop, tool routing, action search, multi-agent dispatch |
+| **research** | Rust | Research DAG — persistent cross-session task graph, markdown snapshots, multi-agent task assignment |
 | **channels** | Rust | Omnibus daemon pattern for Discord, Slack, Telegram, Signal, iMessage, etc |
 | **sandbox** | Rust | VM-isolated code/shell execution (microsandbox) |
 | **whatsapp** | Go | WhatsApp (whatsmeow) |
 | **stt** | Rust | Speech-to-text |
 | **tts** | Rust | Text-to-speech |
 | **browser** | Rust | Headless browser automation via agent-browser CLI (`npm install -g agent-browser`) |
-| **memory** | Rust | Vector memory (LanceDB) |
+| **memory** | Rust | Vector memory (LanceDB + FastEmbed) |
 
 Build Rust services:
 ```bash
@@ -218,8 +220,9 @@ Visit `http://<pi-ip>:8080`.
 | Page | URL | Description |
 |------|-----|-------------|
 | Dashboard | `/` | Service status + system stats |
-| Chat | `/chat` | Chat surface |
-| Services | `/services` | Rust/Go services with status and restart controls |
+| Chat | `/chat` | Live web session chat |
+| Diary | `/diary` | Read-only past conversation browser |
+| Research | `/research` | Research DAG browser — tasks, status, markdown snapshots |
 | Settings | `/settings` | Connectors, provider, whitelist, WhatsApp QR |
 
 Logging is OTEL-compliant (OpenTelemetry); traces, logs, and metrics are written to `logs/` as JSONL.

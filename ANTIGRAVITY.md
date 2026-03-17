@@ -21,16 +21,36 @@ IPC (Inter-Process Communication) JSON serialization is a massive tax on low-pow
 - Python receives this path and passes it as an argument to the next service in the workflow. 
 
 ## 4. No East-West Mesh
-Rust and Go services **never** talk to each other directly. 
-- All routing goes strictly through the Python Control Plane.
-- This prevents microservice spaghetti and ensures Python remains the absolute Source of Truth for the state of an agent's workflow.
+Rust and Go services **never** talk to each other directly.
+- All routing goes strictly through the `openagent` control plane (Rust binary).
+- This prevents microservice spaghetti and ensures the control plane remains the absolute Source of Truth for the state of an agent's workflow.
+- Exception: in the multi-agent setup, worker Cortex instances call the Research service directly to update task state. This is the only sanctioned east-west call — Research is the shared blackboard, not a peer service.
 
 ## 5. Hardware Realism (The Pi-First Mindset)
 The platform is designed to run entirely on a single 8GB Raspberry Pi (with the LLM/Vector DB potentially running on a dedicated local API/GPU).
 - **Vector DB (LanceDB):** Uses a direct Python client wrapper to leverage LanceDB's fast, native Rust core. We do *not* isolate this into a Rust service initially, as that would introduce the JSON IPC serialization tax for massive vector arrays. We only shift it if profiling shows it aggressively blocking the `asyncio` event loop.
 - The philosophy is: Build for a single node, monitor, profile, and optimize. Only distribute if absolutely necessary.
 
-## 6. Granular Edge Observability
+## 6. Multi-Agent Model: Supervisor/Worker (Anthropic Pattern)
+
+OpenAgent adopts **Anthropic's Supervisor/Worker** as its canonical multi-agent pattern.
+
+- **Cortex is the Supervisor.** It holds the Research DAG, picks the next runnable task, selects which worker agent handles it, and synthesises results.
+- **Workers are stateless per invocation.** A worker Cortex receives: task description + prior task results + scoped tool set. It returns one result string. No session state carried between worker calls.
+- **The supervisor handles simple tasks itself.** Cortex only launches a worker agent when the task genuinely benefits from specialisation — long-running retrieval, code execution, or analysis that warrants a dedicated context window. For short, self-contained steps it executes the tool calls directly in its own ReAct loop.
+- **Workers are tools from the supervisor's perspective.** The supervisor calls `cortex.step` with `agent_name` the same way it calls `browser.search`. No specialised worker protocol.
+- **Research service is the shared blackboard.** Both supervisor and workers call `research.task_done`, `research.task_add` over MCP-lite. This is the only sanctioned east-west call in the system.
+- **Agent identity is config, not code.** Each named agent in `config/openagent.yaml` has its own `system_prompt`, `model`, and optional `assigned_agent` on research tasks. Adding an agent = editing YAML, not recompiling.
+
+```
+Cortex Supervisor (strong model)
+  ├─ research.status → picks next runnable task
+  ├─ cortex.step(agent_name="search-agent") → SearchAgent executes, returns result
+  ├─ research.task_done(task_id, result)
+  └─ cortex.step(agent_name="analysis-agent") → AnalysisAgent synthesises
+```
+
+## 7. Granular Edge Observability
 - **Modular Data Plane:** All Rust service logic (the Hands) is decoupled into strictly separated `handlers`, `tools`, `state`, and `metrics` modules.
 - **Native Telemetry:** Telemetry is explicitly wired up through the overarching `sdk-rust/otel.rs` implementation natively emitting granular tracing spans for all execution paths.
 - **Trace Ingestion:** We embrace Jaeger UI to ingest these traces, giving the Orchestrator high visibility into sub-component latencies and success metrics without the overhead of heavy polling solutions.
