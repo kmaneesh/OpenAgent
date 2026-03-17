@@ -17,14 +17,13 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-const DEFAULT_TOOL_NAMES: &[&str] = &[
-    "browser.open",
-    "browser.navigate",
-    "browser.snapshot",
-    "sandbox.execute",
-    "sandbox.shell",
-    "memory.search",
-];
+/// How many tools the semantic search returns per step.
+/// Keep this tight — every extra tool adds ~80 tokens to the context window.
+const ACTION_SEARCH_LIMIT: usize = 8;
+
+/// Tools always included regardless of search results.
+/// memory.search is mandatory because LTM recall happens on every generation turn.
+const ALWAYS_INCLUDE: &[&str] = &["memory.search"];
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
@@ -138,7 +137,14 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     let resolved = cfg_file
         .cfg
         .resolve_step_config(cfg_file.path.clone(), requested_agent);
-    let default_tools = collect_default_tools(&catalog);
+    // Phase 5: Action Search — select top-k tools relevant to the user's input
+    // rather than exposing every tool on every step.  On tool-call turns the
+    // model is already mid-ReAct; don't re-inject the candidate list.
+    let default_tools = if turn_kind != "tool_call" {
+        search_tools_for_step(&catalog, &user_input)
+    } else {
+        vec![]
+    };
     let action_context = if turn_kind == "tool_call" {
         None
     } else {
@@ -173,7 +179,7 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         provider_kind = %resolved.provider.kind,
         config_path = %resolved.source_path.display(),
         turn_kind = %turn_kind,
-        inject_default_tools = turn_kind != "tool_call",
+        action_candidates = default_tools.len(),
         "cortex.step.start"
     );
 
@@ -283,15 +289,30 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     }
 }
 
-fn collect_default_tools(catalog: &ActionCatalog) -> Vec<SearchResult> {
-    let by_name = DEFAULT_TOOL_NAMES
-        .iter()
-        .filter_map(|name| {
-            catalog
-                .entries()
-                .iter()
-                .find(|entry| entry.name == *name)
-                .map(|entry| SearchResult {
+/// Phase 5: select the top-k tools most relevant to this user input.
+///
+/// Algorithm (all keyword-based, no embedding needed for Phase 5):
+///   1. Run scored search over the ActionCatalog using user_input as query.
+///   2. Pin any ALWAYS_INCLUDE tools that didn't make the top-k naturally.
+///   3. Append cortex.discover so the agent can fetch more tools mid-task.
+fn search_tools_for_step(catalog: &ActionCatalog, user_input: &str) -> Vec<SearchResult> {
+    let mut results = search_catalog(
+        catalog,
+        SearchQuery {
+            query: user_input.to_string(),
+            kind: None,
+            owner: None,
+            limit: ACTION_SEARCH_LIMIT,
+            include_params: true,
+        },
+    )
+    .results;
+
+    // Always include pinned tools (e.g. memory.search for LTM recall).
+    for pinned_name in ALWAYS_INCLUDE {
+        if !results.iter().any(|r| r.name == *pinned_name) {
+            if let Some(entry) = catalog.entries().iter().find(|e| e.name == *pinned_name) {
+                results.push(SearchResult {
                     kind: entry.kind.as_str().to_string(),
                     owner: entry.owner.clone(),
                     runtime: entry.runtime.clone(),
@@ -306,12 +327,16 @@ fn collect_default_tools(catalog: &ActionCatalog) -> Vec<SearchResult> {
                     completion_criteria: entry.completion_criteria.clone(),
                     guidance: entry.guidance.clone(),
                     params: Some(entry.params.clone()),
-                })
-        })
-        .collect::<Vec<_>>();
-    // cortex.discover disabled — deterministic tool set only (Phase 2+ re-enables via ActionCatalog search)
-    // by_name.push(discover_tool_result());
-    by_name
+                });
+            }
+        }
+    }
+
+    // Always expose cortex.discover so the agent can search for more tools
+    // when the top-k candidates are insufficient for the task.
+    results.push(discover_tool_result());
+
+    results
 }
 
 fn render_default_tool_context(results: &[SearchResult]) -> Option<String> {

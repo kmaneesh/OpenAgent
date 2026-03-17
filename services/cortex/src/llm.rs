@@ -10,7 +10,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone)]
 pub struct StepPrompt {
@@ -61,14 +61,8 @@ pub fn build_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn autoagents_
 
 /// Single-prompt entry point used by `CortexAgent::step()`.
 pub async fn complete(provider: &ProviderConfig, prompt: &StepPrompt) -> Result<StepOutput> {
-    let model_label = requested_model(provider)?;
     let messages = build_messages(prompt);
-    let content = dispatch_llm(provider, &messages, &model_label).await?;
-    Ok(StepOutput {
-        content,
-        provider_kind: provider.kind.clone(),
-        model: model_label,
-    })
+    dispatch_with_fallback(provider, &messages).await
 }
 
 /// Multi-turn entry point used by the ReAct loop in `CortexAgent::run()`.
@@ -79,13 +73,77 @@ pub async fn complete_messages(
     provider: &ProviderConfig,
     messages: &[ChatMessage],
 ) -> Result<StepOutput> {
-    let model_label = requested_model(provider)?;
-    let content = dispatch_llm(provider, messages, &model_label).await?;
-    Ok(StepOutput {
-        content,
-        provider_kind: provider.kind.clone(),
-        model: model_label,
-    })
+    dispatch_with_fallback(provider, messages).await
+}
+
+/// Try the primary provider; on error walk the fallback chain in config order.
+///
+/// Each provider is tried exactly once. The first success wins and its
+/// `provider_kind` + `model` are reflected in `StepOutput` so callers can
+/// log which provider actually answered.
+async fn dispatch_with_fallback(
+    primary: &ProviderConfig,
+    messages: &[ChatMessage],
+) -> Result<StepOutput> {
+    let model_label = requested_model(primary)?;
+    match dispatch_llm(primary, messages, &model_label).await {
+        Ok(content) => {
+            return Ok(StepOutput {
+                content,
+                provider_kind: primary.kind.clone(),
+                model: model_label,
+            });
+        }
+        Err(e) => {
+            if primary.fallbacks.is_empty() {
+                return Err(e);
+            }
+            warn!(
+                error = %e,
+                model = %model_label,
+                fallback_count = primary.fallbacks.len(),
+                "cortex.llm.primary.failed — trying fallbacks"
+            );
+        }
+    }
+
+    for (i, fallback) in primary.fallbacks.iter().enumerate() {
+        let fb = fallback.as_provider_config();
+        let fb_model = match requested_model(&fb) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(fallback_index = i, error = %e, "cortex.llm.fallback.bad_config — skipping");
+                continue;
+            }
+        };
+        match dispatch_llm(&fb, messages, &fb_model).await {
+            Ok(content) => {
+                info!(
+                    fallback_index = i,
+                    model = %fb_model,
+                    "cortex.llm.fallback.ok"
+                );
+                return Ok(StepOutput {
+                    content,
+                    provider_kind: fb.kind.clone(),
+                    model: fb_model,
+                });
+            }
+            Err(e) => {
+                warn!(
+                    fallback_index = i,
+                    error = %e,
+                    model = %fb_model,
+                    "cortex.llm.fallback.failed"
+                );
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "all providers failed (primary + {} fallback(s))",
+        primary.fallbacks.len()
+    ))
 }
 
 /// Shared LLM dispatch — called by both `complete` and `complete_messages`.
@@ -241,6 +299,23 @@ pub fn build_prompt_with_action_context(
     }
 }
 
+/// Build a debug request descriptor (URL + body) without sending it.
+/// Used in tests and debug logging to inspect what would be sent.
+pub fn build_debug_request(provider: &ProviderConfig, prompt: &StepPrompt) -> Value {
+    let messages = build_messages(prompt);
+    let endpoint = match provider.kind.trim() {
+        "anthropic" => "messages",
+        _ => "chat/completions",
+    };
+    let url = format!("{}{}", normalize_base_url(&provider.base_url), endpoint);
+    json!({
+        "url": url,
+        "model": provider.model,
+        "n_messages": messages.len(),
+        "max_tokens": provider.max_tokens,
+    })
+}
+
 pub fn prompt_preview(prompt: &StepPrompt) -> Value {
     json!({
         "system_prompt_len": prompt.system_prompt.len(),
@@ -290,6 +365,7 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: false,
+            fallbacks: vec![],
         };
         assert_eq!(
             requested_model(&provider).expect("model should resolve"),
@@ -307,6 +383,7 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: false,
+            fallbacks: vec![],
         };
         assert!(requested_model(&provider).is_err());
     }
@@ -333,6 +410,7 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: true,
+            fallbacks: vec![],
         };
         let prompt = StepPrompt {
             system_prompt: "system".to_string(),
@@ -356,6 +434,7 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: true,
+            fallbacks: vec![],
         };
         let prompt = StepPrompt {
             system_prompt: "system".to_string(),

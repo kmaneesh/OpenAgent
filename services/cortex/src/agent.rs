@@ -611,6 +611,7 @@ mod tests {
             timeout: 10.0,
             max_tokens: 512,
             debug_llm: false,
+            fallbacks: vec![],
         }
     }
 
@@ -703,6 +704,7 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: false,
+            fallbacks: vec![],
         };
         let (kind, model) = telemetry_labels(&config);
         assert_eq!(kind, "anthropic");

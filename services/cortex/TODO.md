@@ -295,23 +295,22 @@ Exit criteria:
 
 ---
 
-## Phase 5: Action Search
+## Phase 5: Action Search ✅ DONE
 
 Goal: avoid exposing every tool and skill to the LLM at every step.
 
-- Add `action_registry` module
-- Treat action discovery as the main abstraction rather than direct service naming
-- Define action metadata schema: name, kind, summary, tags, owner, schema summary, embedding
-- Add local skill loading from `skills/*/SKILL.md`
-- Keep skills guidance-only first, then move to hybrid/executable skills later
-- Add action embedding/index build process
-- Implement top-k action search
-- Ensure browser and sandbox register many tools through the same discovery path
-- Pass only candidate action summaries into the LLM context on generation turns
-- Keep deterministic tool-call turns free of reinjected action context
+Implementation (keyword-based, no embedding needed for Phase 5):
+- `ActionCatalog` — discovers tools from `services/*/service.json` + skills from `skills/*/SKILL.md` ✅
+- `search_catalog()` — keyword-scored top-k ranking (name, summary, params field scoring) ✅
+- `ACTION_SEARCH_LIMIT = 8` — max candidates per step ✅
+- `ALWAYS_INCLUDE = ["memory.search"]` — pinned regardless of search results ✅
+- `cortex.discover` always appended — agent can search for more tools mid-task ✅
+- Generation turns use `search_tools_for_step(&catalog, &user_input)` ✅
+- Tool-call turns receive empty candidate list (agent is mid-ReAct, no re-injection) ✅
 
 Exit criteria:
-- Cortex can search actions semantically and expose only a limited candidate set
+- Cortex exposes only top-k relevant tools per turn rather than all tools ✅
+- `cortex.discover` available for mid-task tool expansion ✅
 
 ---
 
