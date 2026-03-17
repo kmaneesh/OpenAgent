@@ -29,7 +29,14 @@ const ACTION_SEARCH_LIMIT: usize = 8;
 /// - cortex.step: supervisor uses this to dispatch tasks to named worker agents
 ///   (e.g. search-agent, analysis-agent). Always pinned so the supervisor never has
 ///   to discover it — dispatching a worker is a first-class action at every step.
-const ALWAYS_INCLUDE: &[&str] = &["memory.search", "research.status", "cortex.step"];
+const ALWAYS_INCLUDE: &[&str] = &[
+    "memory.search",
+    "research.status",
+    "cortex.step",
+    "browser.open",
+    "browser.navigate",
+    "browser.snapshot",
+];
 
 #[derive(Clone, Debug)]
 pub struct AppContext {
@@ -211,7 +218,6 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
         structured_system_prompt,
         action_context,
         selected_provider.clone(),
-        crate::agent_tools::default_tools(),
         Arc::clone(&router),
         session_id.clone(),
         diary_dir,
@@ -471,69 +477,6 @@ fn discover_tool_result() -> SearchResult {
             "required": ["query"]
         })),
     }
-}
-
-pub fn handle_search_actions(params: Value, catalog: Arc<ActionCatalog>) -> Result<String> {
-    let p = params
-        .as_object()
-        .ok_or_else(|| anyhow!("params must be an object"))?;
-    let query = p
-        .get("query")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| anyhow!("query is required"))?
-        .to_string();
-
-    let kind = p
-        .get("kind")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|value| {
-            if value == "all" {
-                String::new()
-            } else {
-                value.to_string()
-            }
-        })
-        .filter(|v| !v.is_empty());
-    let owner = p
-        .get("owner")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(ToOwned::to_owned);
-    let include_params = p
-        .get("include_params")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let limit = p
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|v| v as usize)
-        .unwrap_or(8)
-        .clamp(1, 25);
-
-    let response = search_catalog(
-        &catalog,
-        SearchQuery {
-            query,
-            kind,
-            owner,
-            limit,
-            include_params,
-        },
-    );
-    Ok(serde_json::to_string(&response)?)
-}
-
-pub fn handle_search_tools(params: Value, catalog: Arc<ActionCatalog>) -> Result<String> {
-    handle_search_actions(params, catalog)
-}
-
-pub fn handle_discover(params: Value, catalog: Arc<ActionCatalog>) -> Result<String> {
-    handle_search_actions(params, catalog)
 }
 
 // ── Research context injection ─────────────────────────────────────────────────

@@ -27,50 +27,11 @@ pub struct MemoryConfig {
     /// Root directory for per-session diary markdown files.
     #[serde(default = "default_diary_path")]
     pub diary_path: String,
-    /// Root directory for STM overflow markdown files.
-    #[serde(default = "default_stm_path")]
-    pub stm_path: String,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { diary_path: default_diary_path(), stm_path: default_stm_path() }
-    }
-}
-
-/// A fallback LLM provider tried when the primary fails.
-/// Same fields as `ProviderConfig` but without nested fallbacks (no recursion).
-#[derive(Debug, Clone, Deserialize)]
-pub struct FallbackProvider {
-    #[serde(default = "default_provider_kind")]
-    pub kind: String,
-    #[serde(default = "default_provider_base_url")]
-    pub base_url: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default = "default_provider_timeout")]
-    pub timeout: f64,
-    #[serde(default = "default_provider_max_tokens")]
-    pub max_tokens: u32,
-    #[serde(default)]
-    pub debug_llm: bool,
-}
-
-impl FallbackProvider {
-    /// Promote to a full `ProviderConfig` (with empty fallback list).
-    pub fn as_provider_config(&self) -> ProviderConfig {
-        ProviderConfig {
-            kind: self.kind.clone(),
-            base_url: self.base_url.clone(),
-            api_key: self.api_key.clone(),
-            model: self.model.clone(),
-            timeout: self.timeout,
-            max_tokens: self.max_tokens,
-            debug_llm: self.debug_llm,
-            fallbacks: vec![],
-        }
+        Self { diary_path: default_diary_path() }
     }
 }
 
@@ -90,10 +51,6 @@ pub struct ProviderConfig {
     pub max_tokens: u32,
     #[serde(default)]
     pub debug_llm: bool,
-    /// Optional fallback chain — tried in order when the primary fails.
-    /// Configure in openagent.yaml under `provider.fallbacks`.
-    #[serde(default)]
-    pub fallbacks: Vec<FallbackProvider>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -136,7 +93,6 @@ impl Default for ProviderConfig {
             timeout: default_provider_timeout(),
             max_tokens: default_provider_max_tokens(),
             debug_llm: false,
-            fallbacks: vec![],
         }
     }
 }
@@ -254,10 +210,6 @@ fn default_provider_max_tokens() -> u32 {
 
 fn default_diary_path() -> String {
     "data/diary".to_string()
-}
-
-fn default_stm_path() -> String {
-    "data/stm".to_string()
 }
 
 fn default_agent_name() -> String {

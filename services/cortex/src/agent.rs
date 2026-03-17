@@ -229,8 +229,6 @@ pub struct CortexAgent {
     /// Provider config — used for `provider_kind`/`model` labels in telemetry
     /// and for `debug_llm` logging.  LLM calls go through `context.llm()`.
     pub provider_config: ProviderConfig,
-    /// Tool set declared for AgentDeriveT — stubs wired in Phase 2+.
-    tools: Vec<Box<dyn autoagents_core::tool::ToolT>>,
     /// Tool router — routes tool names from LLM output to UDS service sockets.
     router: Arc<ToolRouter>,
     /// Session identifier — written into diary entries for traceability.
@@ -245,7 +243,6 @@ impl CortexAgent {
         system_prompt: String,
         action_context: Option<String>,
         provider_config: ProviderConfig,
-        tools: Vec<Box<dyn autoagents_core::tool::ToolT>>,
         router: Arc<ToolRouter>,
         session_id: String,
         diary_dir: PathBuf,
@@ -256,7 +253,6 @@ impl CortexAgent {
             system_prompt,
             action_context,
             provider_config,
-            tools,
             router,
             session_id,
             diary_dir,
@@ -611,7 +607,6 @@ mod tests {
             timeout: 10.0,
             max_tokens: 512,
             debug_llm: false,
-            fallbacks: vec![],
         }
     }
 
@@ -625,7 +620,6 @@ mod tests {
             "System prompt".to_string(),
             None,
             dummy_provider(),
-            vec![],
             make_router(),
             "test-session".to_string(),
             PathBuf::from("data/diary/test-session"),
@@ -704,7 +698,6 @@ mod tests {
             timeout: 60.0,
             max_tokens: 2048,
             debug_llm: false,
-            fallbacks: vec![],
         };
         let (kind, model) = telemetry_labels(&config);
         assert_eq!(kind, "anthropic");

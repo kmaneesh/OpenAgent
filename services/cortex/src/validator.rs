@@ -12,34 +12,18 @@ const VALIDATOR_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct ValidationOutcome {
     pub content: String,
-    pub was_repaired: bool,
 }
 
 pub async fn maybe_validate_response(content: &str) -> Result<ValidationOutcome> {
     let candidate = extract_json_candidate(content).unwrap_or_else(|| content.trim().to_string());
     if !looks_like_json_candidate(&candidate) {
-        return Ok(ValidationOutcome {
-            content: content.to_string(),
-            was_repaired: false,
-        });
+        return Ok(ValidationOutcome { content: content.to_string() });
     }
 
     match repair_json(&candidate).await {
-        Ok(Some(repaired)) => {
-            let was_repaired = repaired != candidate;
-            Ok(ValidationOutcome {
-                content: repaired,
-                was_repaired,
-            })
-        }
-        Ok(None) => Ok(ValidationOutcome {
-            content: content.to_string(),
-            was_repaired: false,
-        }),
-        Err(_) => Ok(ValidationOutcome {
-            content: content.to_string(),
-            was_repaired: false,
-        }),
+        Ok(Some(repaired)) => Ok(ValidationOutcome { content: repaired }),
+        Ok(None) => Ok(ValidationOutcome { content: content.to_string() }),
+        Err(_) => Ok(ValidationOutcome { content: content.to_string() }),
     }
 }
 

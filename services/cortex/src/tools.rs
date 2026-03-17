@@ -2,9 +2,7 @@ use sdk_rust::{McpLiteServer, ToolDefinition};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::handlers::{
-    handle_describe_boundary, handle_discover, handle_search_tools, handle_step, AppContext,
-};
+use crate::handlers::{handle_describe_boundary, handle_step, AppContext};
 
 pub fn make_tools() -> Vec<ToolDefinition> {
     vec![
