@@ -29,6 +29,11 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             description: "Close this browser session and release resources.".into(),
             params: json!({ "type":"object","properties":{ "session_id":{"type":"string"} },"required":["session_id"] }),
         },
+        ToolDefinition {
+            name: "browser.close_all".into(),
+            description: "Close all open browser sessions and release all resources. Called automatically by Cortex at the start of each step.".into(),
+            params: json!({ "type":"object","properties":{} }),
+        },
         // ── Page observation ─────────────────────────────────────────────────
         ToolDefinition {
             name: "browser.snapshot".into(),

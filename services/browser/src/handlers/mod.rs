@@ -17,7 +17,8 @@ pub use interaction::{
     handle_scrollinto, handle_select, handle_type, handle_upload,
 };
 pub use page::{
-    handle_back, handle_close, handle_forward, handle_navigate, handle_open, handle_reload,
+    handle_back, handle_close, handle_close_all, handle_forward, handle_navigate, handle_open,
+    handle_reload,
 };
 pub use query::{
     handle_console, handle_diff, handle_errors, handle_eval, handle_extract, handle_get,

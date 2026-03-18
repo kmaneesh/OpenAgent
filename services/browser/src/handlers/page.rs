@@ -132,3 +132,22 @@ pub fn handle_close(params: Value, sessions: SessionMap) -> Result<String> {
         &json!({ "ok": true, "session_id": session_id, "closed": true }),
     )?)
 }
+
+/// Close all active browser sessions. Called by Cortex at the start of each
+/// new step to release Chromium resources left open from the previous turn.
+pub fn handle_close_all(_params: Value, sessions: SessionMap) -> Result<String> {
+    let ids: Vec<String> = {
+        let mut guard = sessions.lock().expect("sessions poisoned");
+        guard.drain().map(|(id, _)| id).collect()
+    };
+    let count = ids.len();
+    for session_id in &ids {
+        let _ = run_session(session_id, &["close"]);
+    }
+    if count > 0 {
+        warn!(count, "browser.close_all: closed all sessions");
+    }
+    Ok(serde_json::to_string(
+        &json!({ "ok": true, "closed": count, "session_ids": ids }),
+    )?)
+}

@@ -118,6 +118,10 @@ async fn main() -> anyhow::Result<()> {
         "browser.close",
         handler!("browser.close", handle_close, sessions, tel),
     );
+    server.register_tool(
+        "browser.close_all",
+        handler!("browser.close_all", handle_close_all, sessions, tel),
+    );
     // ── Page observation ─────────────────────────────────────────────────────
     server.register_tool(
         "browser.snapshot",
