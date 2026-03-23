@@ -100,11 +100,14 @@ pub struct ActionEntry {
     pub runtime: String,
     pub manifest_path: PathBuf,
     pub name: String,
+    /// Short description shown in semantic search (description + hint for skills).
     pub summary: String,
     pub params: Value,
     pub required: Vec<String>,
     pub param_names: Vec<String>,
     pub allowed_tools: Vec<String>,
+    /// When true, Cortex enforces allowed_tools — rejects calls outside the list.
+    pub enforce: bool,
     pub steps: Vec<String>,
     pub constraints: Vec<String>,
     pub completion_criteria: Vec<String>,
@@ -168,6 +171,7 @@ impl ActionEntry {
             required,
             param_names,
             allowed_tools: Vec::new(),
+            enforce: false,
             steps: Vec::new(),
             constraints: Vec::new(),
             completion_criteria: Vec::new(),
@@ -184,6 +188,8 @@ impl ActionEntry {
             .and_then(|v| v.to_str())
             .unwrap_or("skills")
             .to_string();
+        // summary = description only. Full SKILL.md body is injected automatically
+        // when the skill scores into the top-k action search results (Claude Code alignment).
         let summary = parsed
             .frontmatter
             .description
@@ -194,6 +200,7 @@ impl ActionEntry {
             .name
             .clone()
             .unwrap_or_else(|| owner.clone());
+        let enforce = parsed.frontmatter.enforce;
         let search_blob = build_search_blob(
             ActionKind::SkillGuidance.as_str(),
             &owner,
@@ -219,6 +226,7 @@ impl ActionEntry {
             required: Vec::new(),
             param_names: Vec::new(),
             allowed_tools: parsed.allowed_tools,
+            enforce,
             steps: parsed.steps,
             constraints: parsed.constraints,
             completion_criteria: parsed.completion_criteria,
@@ -275,14 +283,36 @@ struct ManifestTool {
     params: Value,
 }
 
+/// Frontmatter parsed from SKILL.md. Schema aligned with Claude Code skill format.
+///
+/// Model-invoked fields: name, description, version, license, tools, enforce
+/// User-invoked (slash command) fields: argument-hint, model
+///
+/// `enforce` is an OpenAgent extension — Claude Code has no enforcement gate.
 #[derive(Debug, Default, Deserialize)]
 struct SkillFrontmatter {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    #[serde(rename = "allowed-tools", default)]
-    allowed_tools: Option<Value>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    license: Option<String>,
+    /// Tools this skill uses. Equivalent to Claude Code `tools:` on model-invoked skills
+    /// and `allowed-tools:` on user-invoked skills. Accepts comma string or YAML list.
+    #[serde(default)]
+    tools: Option<Value>,
+    /// OpenAgent extension: when true, Cortex rejects tool calls outside `tools` list.
+    /// Default false — soft guidance only (same as Claude Code behaviour).
+    #[serde(default)]
+    enforce: bool,
+    /// Hint for slash-command arguments shown to the user. Claude Code `argument-hint`.
+    #[serde(rename = "argument-hint", default)]
+    argument_hint: Option<String>,
+    /// Override the LLM model for this skill invocation. Claude Code `model`.
+    #[serde(default)]
+    model: Option<String>,
 }
 
 #[derive(Debug)]
@@ -307,7 +337,7 @@ fn parse_skill_file(raw: &str) -> Result<ParsedSkill> {
     };
 
     Ok(ParsedSkill {
-        allowed_tools: parse_allowed_tools(frontmatter.allowed_tools.as_ref()),
+        allowed_tools: parse_allowed_tools(frontmatter.tools.as_ref()),
         steps: extract_numbered_steps(body),
         constraints: extract_section_bullets(body, &["constraints", "guardrails"]),
         completion_criteria: extract_section_bullets(

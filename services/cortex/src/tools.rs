@@ -2,7 +2,7 @@ use sdk_rust::{McpLiteServer, ToolDefinition};
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::handlers::{handle_describe_boundary, handle_step, AppContext};
+use crate::handlers::{handle_describe_boundary, handle_skill_read, handle_step, AppContext};
 
 pub fn make_tools() -> Vec<ToolDefinition> {
     vec![
@@ -56,6 +56,39 @@ pub fn make_tools() -> Vec<ToolDefinition> {
                 "required": ["session_id", "user_input"]
             }),
         },
+        ToolDefinition {
+            name: "skill.read".to_string(),
+            description: concat!(
+                "Load bundled resources from a skill (references, scripts, assets). ",
+                "The full skill guidance is already in your context when a skill matches — ",
+                "use this only to load deep-dive reference docs, executable scripts, or assets. ",
+                "Call with name only to see a table of contents of all available resources. ",
+                "Call with name + reference/script/asset to load a specific file."
+            )
+            .to_string(),
+            params: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Skill name as shown in your context (e.g. agent-browser)"
+                    },
+                    "reference": {
+                        "type": "string",
+                        "description": "Reference file name (without .md) from the skill's references/ directory"
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "Script file name from the skill's scripts/ directory"
+                    },
+                    "asset": {
+                        "type": "string",
+                        "description": "Asset file name from the skill's assets/ directory"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
         // cortex.discover and cortex.search_tools temporarily disabled for deterministic tool exposure only
         // ToolDefinition { ... cortex.discover ... },
         // ToolDefinition { ... cortex.search_tools ... },
@@ -70,6 +103,10 @@ pub fn register_handlers(server: &mut McpLiteServer, ctx: Arc<AppContext>) {
     let step_ctx = Arc::clone(&ctx);
     server.register_tool("cortex.step", move |params| {
         handle_step(params, Arc::clone(&step_ctx))
+    });
+    let skill_ctx = Arc::clone(&ctx);
+    server.register_tool("skill.read", move |params| {
+        Ok(handle_skill_read(&params, skill_ctx.project_root()))
     });
     // cortex.discover and cortex.search_tools handler registration temporarily disabled
 }

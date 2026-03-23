@@ -19,7 +19,7 @@ Cortex is a production Rust MCP-lite service. The following are all shipped:
 - **Tool routing** (`src/tool_router.rs`): prefix-based dispatch over UDS — `browser.*`, `sandbox.*`, `memory.*`, `research.*`, `cortex.*` (self-call for worker dispatch)
 - **Memory system** (`src/memory_adapter.rs`): `HybridMemoryAdapter` — sliding-window STM (40 messages, permanent) + LTM via `memory.search`; diary writes fire-and-forget after each cycle
 - **Prompt system** (`src/prompt.rs`): MiniJinja embedded templates (`prompts/*.j2`) — no recompile to change prompts
-- **Action search** (`src/action/`): `ActionCatalog` keyword-scores top-k tools from `service.json` manifests + `SKILL.md` files per step; `memory.search`, `research.status`, and `cortex.step` always pinned
+- **Action search** (`src/action/`): `ActionCatalog` keyword-scores top-k entries from `service.json` manifests + `SKILL.md` files per step; skills injected as one-line summaries only; tools never pre-injected; three Capabilities always pinned (see below)
 - **Provider fallback chain** (`src/llm.rs`): `dispatch_with_fallback()` tries primary provider then each fallback in order; per-attempt structured logs
 - **Research context injection** (`src/handlers.rs`): at each generation turn, fetches active research via `research.status`, formats runnable tasks into the system prompt so the supervisor picks the next task without an extra tool call
 - **Worker agent dispatch** (`src/handlers.rs` + `src/tool_router.rs`): supervisor calls `cortex.step` with `agent_name` to dispatch tasks to named worker agents; ToolRouter self-routes `cortex.*` back to `cortex.sock`; worker resolves its config from `openagent.yaml` by name and runs a full independent ReAct loop
@@ -162,35 +162,44 @@ Longer term:
 - richer routing by task type and uncertainty
 - tighter coupling between plan state and retrieval query construction
 
+### Capabilities, Skills, and Tools
+
+The action context has three tiers with different injection rules:
+
+| Tier | What | Injected in context? | How LLM gets more |
+|---|---|---|---|
+| **Capability** | Fixed meta-tools for discovery and recall | ✅ Always, every generation turn | N/A — always present |
+| **Skill** | Domain knowledge, patterns, guidance | Summary (one line) when top-k matched | `skill.read(name=...)` for full body |
+| **Tool** | Service integrations (browser, sandbox, …) | ❌ Never pre-injected | `cortex.discover` → schema in result → call |
+
+**The three Capabilities (always in context — they are the discovery layer itself):**
+
+| Capability | Purpose |
+|---|---|
+| `memory.search` | Recall from long-term memory (LTM) on every generation turn |
+| `cortex.discover` | Search the action catalog — returns tool schemas and skill summaries on demand |
+| `skill.read` | Load a skill's full body or deep-dive reference file on demand |
+
+Capabilities are not skills or tools — they are the fixed scaffolding that lets the LLM navigate everything else. They are always injected, never discoverable.
+
 ### Action Registry and Action Search
 
-Because the number of tools and skills will grow, Cortex should not expose the full action set to the LLM every cycle.
-
-Instead:
-- maintain an action registry
-- index service tools and local skills together
-- search top-k candidate actions for the current task
-- pass only a small candidate set to the LLM
-
-Action discovery is the main abstraction, not service names. Browser and sandbox are important because they expose many tools each, while local skills provide guidance about how to use those tools. Cortex should discover and rank available actions across tool services and local skills rather than hardcode one-off integrations.
+Because the number of tools and skills will grow, Cortex exposes only what's relevant each turn and lets the LLM pull the rest.
 
 Current design:
-- discover service tools from `services/*/service.json` at boot
-- discover local skills from `skills/*/SKILL.md` at boot
-- keep the catalog only in transient Cortex memory for now
-- inject top candidate action summaries only on generation turns
-- inject nothing on deterministic tool-call turns
+- Discover service tools from `services/*/service.json` at boot
+- Discover local skills from `skills/*/SKILL.md` at boot
+- Keep the catalog in transient Cortex memory
+- On each generation turn: keyword-score catalog against user input, select top-k
+- Skills in top-k: inject one-line summary only (name + description)
+- Tools in top-k: **not injected** — the LLM calls `cortex.discover` to get schema before calling
+- Inject nothing (beyond Capabilities) on deterministic `tool_call` turns
 
-Each action record should include:
-- name
-- kind
-- summary
-- owner
-- input schema summary
-- tags
-- embedding later
+Each action record:
+- name, kind, summary, owner, input schema, param names
+- `guidance` field — full SKILL.md body for skills (served by `skill.read`, never auto-injected)
 
-Skills are guidance-first in the current phase. Later they should move to a hybrid model where some skills become executable workflows.
+Skills are guidance-first. Later phases may make some skills executable workflows.
 
 ### Tool Router
 
@@ -424,7 +433,7 @@ Request params:
 Behavior:
 1. Loads `config/openagent.yaml` (or `OPENAGENT_CONFIG_PATH`)
 2. Resolves agent by `agent_name` (falls back to first agent)
-3. On generation turns: fetches active research via `research.status`, injects runnable tasks into system prompt; searches ActionCatalog for top-8 relevant tools; always pins `memory.search`, `research.status`, `cortex.step`
+3. On generation turns: fetches active research via `research.status`, injects runnable tasks into system prompt; searches ActionCatalog for top-k relevant entries; injects Capabilities (`memory.search`, `cortex.discover`, `skill.read`) always; injects matched skill summaries (one line each); does **not** inject tool schemas (LLM discovers tools via `cortex.discover`)
 4. Runs full ReAct loop (up to 10 iterations): LLM → parse JSON output → tool dispatch over UDS → inject result → repeat
 5. Returns `response_text` + `react_summary` (iterations, tool calls, candidates)
 
@@ -441,7 +450,7 @@ Response shape:
     "iterations": 3,
     "tool_calls_made": ["research.status", "cortex.step"],
     "default_tool_count": 11,
-    "candidates": ["memory.search", "research.status", "cortex.step", "..."]
+    "candidates": ["memory.search", "cortex.discover", "skill.read", "skill:rust-guidelines", "..."]
   }
 }
 ```

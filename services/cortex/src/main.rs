@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("data/sockets"));
     let tool_router = Arc::new(ToolRouter::new(socket_dir));
-    let ctx = Arc::new(AppContext::new(Arc::clone(&tel), action_catalog, tool_router));
+    let ctx = Arc::new(AppContext::new(Arc::clone(&tel), action_catalog, tool_router, root.clone()));
 
     let mut server = McpLiteServer::new(tools::make_tools(), "phase1");
     tools::register_handlers(&mut server, ctx);

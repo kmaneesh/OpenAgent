@@ -34,7 +34,7 @@ Whenever the user sends an input where their intention needs clarification or th
 
 OpenAgent uses a **custom ReAct loop** and thin httpx-based provider layer — no framework dependency. This gives full control over tool schema format, retry logic, and iteration limits for sub-30B models. Session/memory uses a `SessionBackend` protocol (SQLite now; Go/Rust service later). See `roadmap.md` for rationale and build order.
 
-**LLM deployment note:** The primary LLM is an **external model with a 36K token context window** (served via OpenAI-compatible API). Tool injection overhead is ~900 tokens per prompt (8 candidate tools + 2 pinned + cortex.discover), leaving ~35K tokens for conversation history, STM, and system prompt. Token pressure is not a constraint at current scale — do not add token-reduction complexity unless profiling proves otherwise.
+**LLM deployment note:** The primary LLM is an **external model with a 36K token context window** (served via OpenAI-compatible API). Context overhead per prompt is minimal: 3 fixed Capability schemas + top-k skill summaries (one line each). Tools are not injected — the LLM discovers them via `cortex.discover` on demand. Token pressure is not a constraint at current scale — do not add token-reduction complexity unless profiling proves otherwise.
 
 ## Reference Implementations
 
@@ -135,6 +135,13 @@ data/                       # Runtime storage (gitignored)
 
 config/
   openagent.yaml            # Primary config file
+
+skills/                     # Domain knowledge for the agent (human-authored, agent-enriched)
+  <name>/
+    SKILL.md              # Entry point — frontmatter (name, description, hint, allowed-tools, enforce) + body
+    references/           # Deep-dive docs — loaded on demand via skill.read(reference=...)
+    templates/            # Ready-to-run scripts
+    drafts/               # Agent-generated learning candidates — pending human review (gitignored)
 
 inspire/                    # Reference implementations (gitignored)
   openclaw/
@@ -390,6 +397,142 @@ services:
 | Filesystem | Artifacts, media | `data/artifacts/` |
 | Unix sockets | Service IPC files | `data/sockets/*.sock` |
 
+## Skills (`skills/`)
+
+### Three-Tier Model: Capabilities → Skills → Tools
+
+The action context has three distinct tiers with different injection rules:
+
+| Tier | What | Always in context? | How LLM gets more |
+|---|---|---|---|
+| **Capability** | Fixed meta-tools for discovery and recall | ✅ Always, every turn | N/A — always present |
+| **Skill** | Domain knowledge, patterns, guidance | Summary only (top-k match) | `skill.read(name=...)` |
+| **Tool** | Service integrations (browser, sandbox, …) | ❌ Never injected | `cortex.discover` → read schema → call |
+
+**The three Capabilities (always injected, never discoverable — they are the discovery layer):**
+- `memory.search` — recall from long-term memory (LTM)
+- `cortex.discover` — search the action catalog for tools and skill summaries
+- `skill.read` — load a skill's full body or deep-dive reference on demand
+
+**Skills** appear as one-line summaries in the top-k action search results. The LLM reads the summary and calls `skill.read` to get the full body. Skills never auto-inject their full content.
+
+**Tools** are never injected. The LLM calls `cortex.discover` to find a tool, reads its schema in the result, then calls it. This keeps the initial context small and forces intentional tool selection.
+
+### What a Skill Is
+
+**Tools execute. Skills carry knowledge.**
+
+A tool is an integration with an external system (browser, sandbox, memory). Its callables (`browser.open`, `sandbox.shell`) are its API surface, defined in `service.json`.
+
+A skill is domain knowledge — it teaches the LLM **what** to do and **how** to think when using one or more tools together. The LLM uses skills to know the patterns, gotchas, and sequences; it uses tools to actually execute them.
+
+Skills are not planned one-per-tool. They emerge from real repeatable workflows that span one or more tools. A skill is born when a pattern recurs enough to be worth capturing.
+
+### Skill File Structure
+
+```
+skills/
+  <skill-name>/
+    SKILL.md              ← entry point (required)
+    references/           ← deep-dive docs (optional)
+      authentication.md
+      commands.md
+    templates/            ← ready-to-run scripts (optional)
+      form-automation.sh
+```
+
+### SKILL.md Format
+
+```markdown
+---
+name: agent-browser
+description: Browser automation CLI for AI agents.
+hint: Call skill.read(name="agent-browser") for commands, patterns, and auth workflows.
+allowed-tools: browser.open, browser.navigate, browser.snapshot
+enforce: false
+---
+
+# Full skill body here...
+## Essential Commands
+...
+## Authentication
+...
+```
+
+**Frontmatter fields:**
+
+| Field | Required | Purpose |
+|---|---|---|
+| `name` | yes | Unique skill identifier — used by `skill.read` |
+| `description` | yes | One-line summary injected in semantic search |
+| `hint` | yes | Call-to-action appended to description in search context — tells LLM exactly how to get more |
+| `allowed-tools` | no | Tools this skill uses. Enforcement depends on `enforce` flag |
+| `enforce` | no | `true` = Cortex rejects tool calls outside `allowed-tools`. `false` (default) = soft guidance only |
+
+### Progressive Disclosure
+
+Skills use three-level progressive disclosure. Full bodies are never auto-injected.
+
+**Level 1 — Semantic search (automatic, summary only)**
+Every `cortex.step`, Cortex scores the user input against all catalog entries. If a skill matches the top-k, the LLM sees one line:
+```
+skill: agent-browser
+description: Browser automation CLI for AI agents.
+```
+The body of SKILL.md is never injected at this level.
+
+**Level 2 — Full skill on-demand**
+LLM calls `skill.read(name="agent-browser")` → receives the full SKILL.md body + a table of contents of available references:
+```
+## Available References
+- authentication — Login flows, OAuth, 2FA
+- commands — Full command reference
+- session-management — Parallel sessions, state persistence
+```
+
+**Level 3 — Reference on-demand**
+LLM calls `skill.read(name="agent-browser", reference="authentication")` → receives that reference file's content.
+
+`skill.read` is a **Capability** — always present, no discovery needed.
+
+### Knowledge Lifecycle
+
+Skills grow through agent experience, audited by a human before assimilation:
+
+```
+1. Human writes seed SKILL.md
+       ↓
+2. Agent runs tasks → diary entries written per session
+       ↓
+3. Phase 8 Reflection scans diary → extracts skill-relevant learnings → draft files
+       (drafts live in skills/<name>/drafts/ — never auto-promoted)
+       ↓
+4. Human reviews drafts in editor → edits, approves, or discards
+       ↓
+5. Approved content merged into live SKILL.md manually
+```
+
+Agent-generated learnings **never automatically modify a live skill**. They sit in `drafts/` until a human promotes them. This is the knowledge assimilation output of Phase 8 Reflection.
+
+### Management
+
+Skills are managed as files. No web UI. Your editor is the interface.
+
+```
+skills/<name>/SKILL.md        ← live skill (human-maintained)
+skills/<name>/drafts/         ← agent-generated candidates (pending human review)
+skills/<name>/references/     ← deep-dive reference docs
+skills/<name>/templates/      ← ready-to-run scripts
+```
+
+### Authoring Rules
+
+- Every skill **must** have `name`, `description`, and `hint` in frontmatter
+- `hint` must name the exact tool call: `Call skill.read(name="<name>") for ...`
+- Keep `description` to one sentence — it appears in the 8-tool context block
+- `enforce: true` only for critical, non-negotiable workflows — use sparingly
+- Skills are born from real usage — do not pre-create skills for tools that haven't been used in multi-step patterns yet
+
 ## Web UI (`app/`)
 
 A minimalist admin/debug UI for the agent. POC only — **no authentication**, isolated network assumed (Raspberry Pi on private LAN).
@@ -486,7 +629,7 @@ Cortex is the only service that uses [AutoAgents](https://github.com/liquidos-ai
 Key patterns:
 - **`CortexAgent`**: single generic struct implementing `AgentDeriveT` manually; fully driven by `config/openagent.yaml`. No `#[agent]` macro — adding an agent is a YAML edit, not a Rust recompile.
 - **`HybridMemoryAdapter`**: implements AutoAgents' `MemoryProvider` trait with sliding-window STM (40 messages, permanent) + LTM via `memory.search` over UDS.
-- **Tool dispatch**: `ToolRouter` prefix-routes to owning service sockets; `cortex.*` self-routes back to `cortex.sock` (worker dispatch). `memory.search`, `research.status`, and `cortex.step` are always pinned in the action context.
+- **Tool dispatch**: `ToolRouter` prefix-routes to owning service sockets; `cortex.*` self-routes back to `cortex.sock` (worker dispatch). Three Capabilities are always pinned: `memory.search`, `cortex.discover`, `skill.read`. All other tools are discovered via `cortex.discover` — never pre-injected.
 - **Research context injection**: each generation turn calls `research.status` proactively, formats runnable tasks into the system prompt (`## Active Research` block) so the supervisor selects the next task without a round-trip tool call.
 - **Worker dispatch**: supervisor calls `cortex.step` with `agent_name` to spawn a worker; same handler, same process, fresh `CortexAgent` with worker config. Workers are stateless — full context in the request. Actor dispatch (`ractor`) deferred to Phase 9+.
 
@@ -537,14 +680,15 @@ Key patterns:
 3. ~~**Cortex Phase 3**~~ ✅ — memory retrieval + episode writes; STM eviction, diary writes
 4. ~~**Cortex Phase 4**~~ ✅ — prompt system: MiniJinja embedded templates
 5. ~~**Tower middleware (full)**~~ ✅ — `GuardLayer`, `SttLayer`, `TtsLayer` in `openagent`; Python middleware deleted; dispatch loop added
-6. ~~**Cortex Phase 5**~~ ✅ — action search: `ActionCatalog` keyword-ranked top-k per step; `memory.search` always pinned
+6. ~~**Cortex Phase 5**~~ ✅ — action search: `ActionCatalog` keyword-ranked top-k per step; three Capabilities always pinned (`memory.search`, `cortex.discover`, `skill.read`); skills injected as summary-only; tools not injected (LLM discovers via `cortex.discover`)
 7. ~~**Provider fallback chain**~~ ✅ — `dispatch_with_fallback()` in `llm.rs`; `fallbacks: Vec<FallbackProvider>` in config
 8. ~~**Rate limiting middleware**~~ ✅ — `ConcurrencyLimitLayer` (max 50) as outermost Tower layer in `openagent`
 9. ~~**Web UI diary + chat refactor**~~ ✅ — `/diary` read-only past session browser; `/chat` simplified to live web session only
 10. ~~**Cortex Phase 7: Segmented STM**~~ ❌ CANCELLED — sliding window (40 messages) is permanent
 11. ~~**Cortex Phase 6: Research DAG + Supervisor task selection + Worker dispatch**~~ ✅ — `services/research/` Rust service (SQLite + markdown snapshots, 8 tools); research context injected into system prompt each generation turn (`fetch_research_context` via ToolRouter); `cortex.step` self-call worker dispatch (ToolRouter routes `cortex.*` → `cortex.sock`); `cortex.step` always pinned alongside `memory.search` and `research.status`; `user_key` param for cross-channel research ownership
-12. **Cortex Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection after research tasks complete
-13. **Cortex Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions
+12. **Skills — `skill.read` in Cortex** — `hint` + `enforce` fields in `SkillFrontmatter`; `handle_skill_read()` in `handlers.rs`; registered in `service.json`; progressive disclosure: summary in semantic search, full body + references TOC on `skill.read(name=...)`, reference content on `skill.read(name=..., reference=...)`; existing SKILL.md files updated with `hint` + `enforce`
+13. **Cortex Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection after research tasks complete; **also triggers skill knowledge assimilation** — scans diary entries for skill-relevant learnings, writes draft files to `skills/<name>/drafts/` for human review
+14. **Cortex Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 

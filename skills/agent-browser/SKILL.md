@@ -1,7 +1,9 @@
 ---
 name: agent-browser
-description: Browser automation CLI for AI agents. Use when the user needs to interact with websites, including navigating pages, filling forms, clicking buttons, taking screenshots, extracting data, testing web apps, or automating any browser task. Triggers include "open a website", "fill out a form", "click a button", "take a screenshot", "scrape data from a page", "test this web app", "login to a site", "automate browser actions", "mail.gov.in", "NICeMail", "load saved session", or any task requiring programmatic web interaction.
-allowed-tools: Bash(npx agent-browser:*), Bash(agent-browser:*)
+description: Browser automation CLI for AI agents. Use when the user needs to interact with websites — navigate pages, fill forms, click buttons, take screenshots, extract data, handle auth flows, or run parallel sessions.
+tools: browser.open, browser.navigate, browser.snapshot
+enforce: false
+version: 0.2.0
 ---
 
 # Browser Automation with agent-browser
@@ -495,7 +497,7 @@ For mail.gov.in / NICeMail, use [references/mailgov-multistep-login.md](referenc
 - **Login flow:** Email → Next → Password → OTP (multi-step; auth vault not supported)
 - **Save session:** `agent-browser state save ./data/mailgov-auth.json`
 - **Load for AI:** `agent-browser close` → `state load ./data/mailgov-auth.json` → `open https://mail.mgovcloud.in`
-- **Template:** [templates/mailgov-login.sh](templates/mailgov-login.sh)
+- **Template:** not yet available — follow the manual steps in [references/mailgov-multistep-login.md](references/mailgov-multistep-login.md)
 
 ## Experimental: Native Mode
 
@@ -534,19 +536,16 @@ Supported engines:
 
 Lightpanda does not support `--extension`, `--profile`, `--state`, or `--allow-file-access`. Install Lightpanda from https://lightpanda.io/docs/open-source/installation.
 
-## Ready-to-Use Templates
+## Ready-to-Use Scripts
 
-| Template | Description |
-|----------|-------------|
-| [templates/form-automation.sh](templates/form-automation.sh) | Form filling with validation |
-| [templates/authenticated-session.sh](templates/authenticated-session.sh) | Login once, reuse state |
-| [templates/capture-workflow.sh](templates/capture-workflow.sh) | Content extraction with screenshots |
-| [templates/mailgov-login.sh](templates/mailgov-login.sh) | mail.gov.in multi-step login (email → password → OTP) |
+| Script | Description |
+|--------|-------------|
+| [scripts/form-automation.sh](scripts/form-automation.sh) | Form filling with validation |
+| [scripts/authenticated-session.sh](scripts/authenticated-session.sh) | Login once, reuse state |
+| [scripts/capture-workflow.sh](scripts/capture-workflow.sh) | Content extraction with screenshots |
 
 ```bash
-./templates/form-automation.sh https://example.com/form
-./templates/authenticated-session.sh https://app.example.com/login
-./templates/capture-workflow.sh https://example.com ./output
-# mail.gov.in: export APP_USERNAME APP_PASSWORD, then:
-./templates/mailgov-login.sh --headed --pause
+./scripts/form-automation.sh https://example.com/form
+./scripts/authenticated-session.sh https://app.example.com/login
+./scripts/capture-workflow.sh https://example.com ./output
 ```

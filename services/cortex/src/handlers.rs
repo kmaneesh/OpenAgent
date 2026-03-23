@@ -22,22 +22,16 @@ use tracing::{error, info, warn};
 /// Keep this tight — every extra tool adds ~80 tokens to the context window.
 const ACTION_SEARCH_LIMIT: usize = 8;
 
-/// Tools always included regardless of search results.
-/// - memory.search: LTM recall happens on every generation turn.
-/// - cortex.step: supervisor uses this to dispatch tasks to named worker agents.
-/// - browser.open/navigate/snapshot: primary interaction tools for web tasks.
+/// The single catalog-based Capability pinned on every generation turn.
+/// memory.search provides LTM recall and is the only Capability sourced from
+/// the ActionCatalog. cortex.discover and skill.read are injected via their own
+/// hardcoded result builders (discover_tool_result / skill_read_tool_result).
 ///
 /// NOTE: research.status is NOT pinned here — it is only added when the input
 /// matches RESEARCH_KEYWORDS or when active research already exists (see
 /// search_tools_for_step). This prevents the LLM from launching research DAGs
-/// for ordinary conversational turns.
-const ALWAYS_INCLUDE: &[&str] = &[
-    "memory.search",
-    "cortex.step",
-    "browser.open",
-    "browser.navigate",
-    "browser.snapshot",
-];
+/// on ordinary conversational turns.
+const CAPABILITIES: &[&str] = &["memory.search"];
 
 /// Keywords that indicate the user explicitly wants research/investigation work.
 /// When matched, research.status and research.start are added to the tool context.
@@ -66,6 +60,7 @@ pub struct AppContext {
     tel: Arc<CortexTelemetry>,
     action_catalog: Arc<ActionCatalog>,
     tool_router: Arc<ToolRouter>,
+    project_root: std::path::PathBuf,
 }
 
 impl AppContext {
@@ -73,8 +68,9 @@ impl AppContext {
         tel: Arc<CortexTelemetry>,
         action_catalog: Arc<ActionCatalog>,
         tool_router: Arc<ToolRouter>,
+        project_root: std::path::PathBuf,
     ) -> Self {
-        Self { tel, action_catalog, tool_router }
+        Self { tel, action_catalog, tool_router, project_root }
     }
 
     pub fn tel(&self) -> Arc<CortexTelemetry> {
@@ -87,6 +83,10 @@ impl AppContext {
 
     pub fn tool_router(&self) -> Arc<ToolRouter> {
         Arc::clone(&self.tool_router)
+    }
+
+    pub fn project_root(&self) -> &std::path::Path {
+        &self.project_root
     }
 }
 
@@ -385,14 +385,21 @@ pub fn handle_step(params: Value, ctx: Arc<AppContext>) -> Result<String> {
     }
 }
 
-/// Phase 5: select the top-k tools most relevant to this user input.
+/// Select the action context for this generation turn.
 ///
-/// Algorithm (all keyword-based, no embedding needed for Phase 5):
-///   1. Run scored search over the ActionCatalog using user_input as query.
-///   2. Pin any ALWAYS_INCLUDE tools that didn't make the top-k naturally.
-///   3. Conditionally pin research tools when input matches RESEARCH_KEYWORDS
+/// Three-tier model:
+///   Capabilities — always injected with full schema (discovery layer).
+///   Skills       — top-k matched, injected as one-line summary only.
+///   Tools        — never pre-injected; LLM discovers via cortex.discover.
+///
+/// Algorithm:
+///   1. Run keyword-scored search over the ActionCatalog.
+///   2. Discard all tool-kind results — tools are never pre-injected.
+///   3. Pin catalog-based Capability (memory.search) if not already present.
+///   4. Conditionally pin research tools when input matches RESEARCH_KEYWORDS
 ///      or when active research already exists (`has_active_research`).
-///   4. Append cortex.discover so the agent can fetch more tools mid-task.
+///   5. Append skill.read Capability (always available for on-demand skill loading).
+///   6. Append cortex.discover Capability (always available for tool discovery).
 fn search_tools_for_step(
     catalog: &ActionCatalog,
     user_input: &str,
@@ -410,17 +417,21 @@ fn search_tools_for_step(
     )
     .results;
 
-    // Always include pinned tools (e.g. memory.search for LTM recall).
-    for pinned_name in ALWAYS_INCLUDE {
-        if !results.iter().any(|r| r.name == *pinned_name) {
-            if let Some(entry) = catalog.entries().iter().find(|e| e.name == *pinned_name) {
+    // Keep only skill_guidance entries from the top-k search.
+    // Tool schemas are never pre-injected — the LLM calls cortex.discover to get them.
+    results.retain(|r| r.kind == "skill_guidance");
+
+    // Pin catalog-based Capabilities (memory.search for LTM recall).
+    for cap_name in CAPABILITIES {
+        if !results.iter().any(|r| r.name == *cap_name) {
+            if let Some(entry) = catalog.entries().iter().find(|e| e.name == *cap_name) {
                 results.push(catalog_entry_to_result(entry));
             }
         }
     }
 
     // Conditionally pin research tools only when explicitly requested or active.
-    // This prevents ordinary conversational turns from triggering the research DAG.
+    // These are injected with schema so the LLM can call them directly.
     if has_active_research || input_wants_research(user_input) {
         for research_tool in &["research.status", "research.start"] {
             if !results.iter().any(|r| r.name == *research_tool) {
@@ -431,8 +442,10 @@ fn search_tools_for_step(
         }
     }
 
-    // Always expose cortex.discover so the agent can search for more tools
-    // when the top-k candidates are insufficient for the task.
+    // Always append skill.read Capability — LLM uses this to load any skill body on demand.
+    results.push(skill_read_tool_result());
+
+    // Always append cortex.discover Capability — LLM uses this to find tool schemas on demand.
     results.push(discover_tool_result());
 
     results
@@ -479,6 +492,13 @@ fn render_default_tool_context(results: &[SearchResult]) -> Option<String> {
 }
 
 fn render_tool_schema(result: &SearchResult) -> String {
+    // Skills: summary only — name + description, one line.
+    // The LLM calls skill.read(name=...) to load the full body on demand.
+    if result.kind == "skill_guidance" {
+        return format!("skill: {}\ndescription: {}", result.name, result.summary);
+    }
+
+    // Capabilities and conditionally-pinned tools (research.status etc.): full schema.
     let params = result
         .params
         .as_ref()
@@ -496,6 +516,54 @@ fn render_tool_schema(result: &SearchResult) -> String {
     )
 }
 
+/// Hardcoded SearchResult for the skill.read Capability.
+/// skill.read is not in the ActionCatalog (it is an internal Cortex tool) so it
+/// is always injected directly rather than pinned via catalog lookup.
+fn skill_read_tool_result() -> SearchResult {
+    SearchResult {
+        kind: "tool".to_string(),
+        owner: "cortex".to_string(),
+        runtime: "rust".to_string(),
+        manifest_path: "services/cortex/service.json".to_string(),
+        name: "skill.read".to_string(),
+        summary: "Load a skill's full body or a deep-dive reference file on demand. Call with name only to get a table of contents; add reference/script/asset to load a specific file.".to_string(),
+        required: vec!["name".to_string()],
+        param_names: vec![
+            "name".to_string(),
+            "reference".to_string(),
+            "script".to_string(),
+            "asset".to_string(),
+        ],
+        allowed_tools: Vec::new(),
+        steps: Vec::new(),
+        constraints: Vec::new(),
+        completion_criteria: Vec::new(),
+        guidance: String::new(),
+        params: Some(json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Skill name as shown in your context (e.g. rust-guidelines)"
+                },
+                "reference": {
+                    "type": "string",
+                    "description": "Reference file name (without .md) from the skill's references/ directory"
+                },
+                "script": {
+                    "type": "string",
+                    "description": "Script file name from the skill's scripts/ directory"
+                },
+                "asset": {
+                    "type": "string",
+                    "description": "Asset file name from the skill's assets/ directory"
+                }
+            },
+            "required": ["name"]
+        })),
+    }
+}
+
 fn discover_tool_result() -> SearchResult {
     SearchResult {
         kind: "tool".to_string(),
@@ -503,7 +571,7 @@ fn discover_tool_result() -> SearchResult {
         runtime: "rust".to_string(),
         manifest_path: "services/cortex/service.json".to_string(),
         name: "cortex.discover".to_string(),
-        summary: "Discover additional tools and guidance skills beyond the default six. Use kind=tool|skill_guidance|all."
+        summary: "Discover tools and skills by keyword search. Returns schemas for tools and summaries for skills. Use kind=tool|skill_guidance|all to filter."
             .to_string(),
         required: vec!["query".to_string()],
         param_names: vec![
@@ -517,7 +585,7 @@ fn discover_tool_result() -> SearchResult {
         steps: Vec::new(),
         constraints: Vec::new(),
         completion_criteria: Vec::new(),
-        guidance: "Use this only when the default six tools are insufficient.".to_string(),
+        guidance: "Primary tool discovery mechanism — call before invoking any tool whose schema you don't have.".to_string(),
         params: Some(json!({
             "type": "object",
             "properties": {
@@ -546,6 +614,91 @@ fn discover_tool_result() -> SearchResult {
             "required": ["query"]
         })),
     }
+}
+
+// ── skill.read ─────────────────────────────────────────────────────────────────
+
+/// Handle `skill.read` Capability calls.
+///
+/// Skills appear as one-line summaries in the action context. The LLM calls
+/// `skill.read` to load deeper content on demand:
+///
+/// Modes (determined by params):
+/// - `{name}` only                      → full SKILL.md body + references/scripts/assets TOC
+/// - `{name, reference}`                → content of `skills/<name>/references/<file>.md`
+/// - `{name, script}`                   → content of `skills/<name>/scripts/<file>`
+/// - `{name, asset}`                    → content of `skills/<name>/assets/<file>`
+pub fn handle_skill_read(params: &Value, project_root: &std::path::Path) -> String {
+    let name = match params.get("name").and_then(Value::as_str) {
+        Some(n) => n,
+        None => return r#"{"error":"name is required"}"#.to_string(),
+    };
+
+    let skill_dir = project_root.join("skills").join(name);
+    if !skill_dir.is_dir() {
+        return json!({"error": format!("skill '{}' not found", name)}).to_string();
+    }
+
+    // Reference mode.
+    if let Some(file) = params.get("reference").and_then(Value::as_str) {
+        let path = skill_dir.join("references").join(format!("{}.md", file));
+        return serve_skill_file(name, "reference", file, &path);
+    }
+
+    // Script mode.
+    if let Some(file) = params.get("script").and_then(Value::as_str) {
+        let path = skill_dir.join("scripts").join(file);
+        return serve_skill_file(name, "script", file, &path);
+    }
+
+    // Asset mode.
+    if let Some(file) = params.get("asset").and_then(Value::as_str) {
+        let path = skill_dir.join("assets").join(file);
+        return serve_skill_file(name, "asset", file, &path);
+    }
+
+    // TOC mode — list all bundled resources.
+    json!({
+        "skill": name,
+        "note": "Full skill body is injected automatically when the skill matches your query. Use the fields below to load specific bundled resources.",
+        "references": list_dir_files(&skill_dir.join("references"), &["md"], name, "reference"),
+        "scripts":    list_dir_files(&skill_dir.join("scripts"),    &["sh", "py", "js", "ts", "rb"], name, "script"),
+        "assets":     list_dir_files(&skill_dir.join("assets"),     &[], name, "asset"),
+    })
+    .to_string()
+}
+
+fn serve_skill_file(skill: &str, kind: &str, file: &str, path: &std::path::Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(content) => json!({"skill": skill, kind: file, "content": content}).to_string(),
+        Err(_) => json!({"error": format!("{} '{}' not found in skill '{}'", kind, file, skill)}).to_string(),
+    }
+}
+
+fn list_dir_files(dir: &std::path::Path, extensions: &[&str], skill: &str, param: &str) -> Vec<serde_json::Value> {
+    if !dir.is_dir() {
+        return Vec::new();
+    }
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_file() {
+                let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+                if extensions.is_empty() || extensions.contains(&ext) {
+                    return p.file_name().and_then(|s| s.to_str()).map(ToOwned::to_owned);
+                }
+            }
+            None
+        })
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .map(|n| json!({"file": n, "how_to_read": format!("skill.read(name=\"{}\", {}=\"{}\")", skill, param, n)}))
+        .collect()
 }
 
 // ── Research context injection ─────────────────────────────────────────────────
