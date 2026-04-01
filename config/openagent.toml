@@ -99,7 +99,7 @@ app_token = "${SLACK_APP_TOKEN}"
 [platforms.whatsapp]
 enabled      = false
 phone_number = "${WHATSAPP_PHONE}"
-data_dir     = "data"
+data_dir     = "data"          # whatsapp.db stored at data/whatsapp.db
 
 # ---------------------------------------------------------------------------
 # Guard (whitelist / security middleware)
