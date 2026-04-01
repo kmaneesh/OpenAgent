@@ -17,6 +17,7 @@ use anyhow::Result;
 use handlers::AppContext;
 use metrics::CortexTelemetry;
 use sdk_rust::{setup_otel, McpLiteServer};
+use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,7 +44,21 @@ async fn main() -> Result<()> {
     let socket_dir = env::var("OPENAGENT_SOCKET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("data/sockets"));
-    let tool_router = Arc::new(ToolRouter::new(socket_dir));
+    // Build the tool→socket map from service.json declarations so ToolRouter can
+    // route tools like web.search → browser.sock without any prefix hacks.
+    let tool_sockets = action_catalog
+        .tool_socket_map()
+        .into_iter()
+        .map(|(tool, sock)| {
+            let path = if std::path::Path::new(&sock).is_absolute() {
+                PathBuf::from(&sock)
+            } else {
+                root.join(&sock)
+            };
+            (tool, path)
+        })
+        .collect();
+    let tool_router = Arc::new(ToolRouter::new(tool_sockets, socket_dir));
     let ctx = Arc::new(AppContext::new(Arc::clone(&tel), action_catalog, tool_router, root.clone()));
 
     let mut server = McpLiteServer::new(tools::make_tools(), "phase1");

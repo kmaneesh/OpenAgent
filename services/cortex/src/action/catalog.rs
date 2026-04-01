@@ -55,6 +55,7 @@ impl ActionCatalog {
                 entries.push(ActionEntry::from_tool(
                     manifest.name.clone(),
                     manifest.runtime.clone(),
+                    manifest.socket.clone(),
                     manifest_path.clone(),
                     tool,
                 ));
@@ -97,6 +98,17 @@ impl ActionCatalog {
     pub fn entries(&self) -> &[ActionEntry] {
         &self.entries
     }
+
+    /// Build a map from tool name to its socket path for all tool-kind entries
+    /// that have a socket declared in their service.json.
+    #[must_use]
+    pub fn tool_socket_map(&self) -> std::collections::HashMap<String, String> {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e.kind, ActionKind::Tool) && !e.socket_path.is_empty())
+            .map(|e| (e.name.clone(), e.socket_path.clone()))
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +117,8 @@ pub struct ActionEntry {
     pub owner: String,
     pub runtime: String,
     pub manifest_path: PathBuf,
+    /// Absolute or relative socket path from service.json. Empty for skill entries.
+    pub socket_path: String,
     pub name: String,
     /// Short description shown in semantic search. For skills: description + hint line.
     pub summary: String,
@@ -127,6 +141,7 @@ impl ActionEntry {
     fn from_tool(
         owner: String,
         runtime: String,
+        socket_path: String,
         manifest_path: PathBuf,
         tool: ManifestTool,
     ) -> Self {
@@ -173,6 +188,7 @@ impl ActionEntry {
             owner,
             runtime,
             manifest_path,
+            socket_path,
             name: tool.name,
             summary: tool.description,
             params: tool.params,
@@ -238,6 +254,7 @@ impl ActionEntry {
             owner,
             runtime: "markdown".to_string(),
             manifest_path,
+            socket_path: String::new(), // skills have no socket
             name,
             summary,
             params: Value::Null,
@@ -289,6 +306,9 @@ struct ServiceManifest {
     name: String,
     #[serde(default)]
     runtime: String,
+    /// Unix socket path declared in service.json, e.g. "data/sockets/browser.sock".
+    #[serde(default)]
+    socket: String,
     #[serde(default)]
     tools: Vec<ManifestTool>,
 }

@@ -5,17 +5,16 @@
 //! Cortex to call downstream services.  No extra abstraction needed — just a plain
 //! async connect → write ToolCallRequest → read ToolCallResponse.
 //!
-//! Socket routing is derived from the tool name prefix — fully generic, no hardcoded list:
-//!   `browser.*`  → `<socket_dir>/browser.sock`
-//!   `sandbox.*`  → `<socket_dir>/sandbox.sock`
-//!   `memory.*`   → `<socket_dir>/memory.sock`
-//!   `research.*` → `<socket_dir>/research.sock`
-//!   `<owner>.*`  → `<socket_dir>/<owner>.sock`  (any future service)
+//! Socket routing is looked up from the `tool_name → socket_path` map built at
+//! startup from all `service.json` manifests (via ActionCatalog).  This means the
+//! tool namespace and the socket name are fully decoupled — a service can expose
+//! tools under any name prefix without any routing special-cases here.
 
 use anyhow::{anyhow, Result};
 use sdk_rust::codec::{Decoder, Encoder};
 use sdk_rust::types::Frame;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::UnixStream;
@@ -27,17 +26,24 @@ const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Routes tool calls to the correct service socket.
 ///
-/// Created once at startup and shared across request handlers.
+/// Created once at startup from the ActionCatalog's tool→socket map.
 #[derive(Debug, Clone)]
 pub struct ToolRouter {
+    /// Direct tool-name → absolute socket path lookup.
+    /// Populated from service.json `socket` fields via ActionCatalog.
+    tool_sockets: HashMap<String, PathBuf>,
+    /// Fallback socket directory for tools not in the map (e.g. cortex self-calls).
     socket_dir: PathBuf,
 }
 
 impl ToolRouter {
-    /// Create a router that resolves sockets relative to `socket_dir`.
-    /// Typical value: `data/sockets` (or `OPENAGENT_SOCKET_DIR` env var).
-    pub fn new(socket_dir: PathBuf) -> Self {
-        Self { socket_dir }
+    /// Create a router.
+    ///
+    /// `tool_sockets` maps every tool name to its socket path as declared in
+    /// `service.json`.  `socket_dir` is the fallback for tools not in the map
+    /// (prefix convention: `memory.search` → `<socket_dir>/memory.sock`).
+    pub fn new(tool_sockets: HashMap<String, PathBuf>, socket_dir: PathBuf) -> Self {
+        Self { tool_sockets, socket_dir }
     }
 
     /// Dispatch `tool` with `arguments` to the owning service.
@@ -54,8 +60,17 @@ impl ToolRouter {
         call_service(&socket_path, tool, arguments).await
     }
 
-    /// Map a tool name to its socket path via the tool name prefix.
+    /// Map a tool name to its socket path.
+    ///
+    /// Primary: direct lookup in the catalog-populated tool_sockets map.
+    /// Fallback: prefix convention (`memory.search` → `<socket_dir>/memory.sock`).
     fn resolve_socket(&self, tool: &str) -> Result<PathBuf> {
+        // 1. Direct lookup from service.json declarations (authoritative).
+        if let Some(path) = self.tool_sockets.get(tool) {
+            return Ok(path.clone());
+        }
+
+        // 2. Prefix fallback for cortex self-calls and any tool not in the catalog.
         if !tool.contains('.') {
             return Err(anyhow!(
                 "tool name must have a dot-separated owner prefix: {tool}"
@@ -158,47 +173,50 @@ fn request_id() -> String {
 mod tests {
     use super::*;
 
-    fn router() -> ToolRouter {
-        ToolRouter::new(PathBuf::from("data/sockets"))
+    fn router_with_map(map: HashMap<String, PathBuf>) -> ToolRouter {
+        ToolRouter::new(map, PathBuf::from("data/sockets"))
+    }
+
+    fn empty_router() -> ToolRouter {
+        router_with_map(HashMap::new())
     }
 
     #[test]
-    fn browser_tool_maps_to_browser_sock() {
-        let r = router();
-        let path = r.resolve_socket("browser.open").unwrap();
-        assert_eq!(path, PathBuf::from("data/sockets/browser.sock"));
+    fn web_tool_maps_to_browser_sock_via_catalog_map() {
+        // The browser service declares socket "data/sockets/browser.sock" in service.json.
+        // The catalog populates the tool_sockets map; ToolRouter does a direct lookup.
+        let mut map = HashMap::new();
+        map.insert("web.search".to_string(), PathBuf::from("data/sockets/browser.sock"));
+        map.insert("web.fetch".to_string(), PathBuf::from("data/sockets/browser.sock"));
+        let r = router_with_map(map);
+        assert_eq!(r.resolve_socket("web.search").unwrap(), PathBuf::from("data/sockets/browser.sock"));
+        assert_eq!(r.resolve_socket("web.fetch").unwrap(), PathBuf::from("data/sockets/browser.sock"));
     }
 
     #[test]
-    fn sandbox_tool_maps_to_sandbox_sock() {
-        let r = router();
+    fn sandbox_tool_maps_to_sandbox_sock_via_prefix_fallback() {
+        // sandbox.execute not in map → prefix fallback: sandbox → sandbox.sock
+        let r = empty_router();
         let path = r.resolve_socket("sandbox.execute").unwrap();
         assert_eq!(path, PathBuf::from("data/sockets/sandbox.sock"));
     }
 
     #[test]
-    fn research_tool_maps_to_research_sock() {
-        let r = router();
-        let path = r.resolve_socket("research.status").unwrap();
-        assert_eq!(path, PathBuf::from("data/sockets/research.sock"));
-    }
-
-    #[test]
-    fn memory_tool_maps_to_memory_sock() {
-        let r = router();
+    fn memory_tool_maps_to_memory_sock_via_prefix_fallback() {
+        let r = empty_router();
         let path = r.resolve_socket("memory.search").unwrap();
         assert_eq!(path, PathBuf::from("data/sockets/memory.sock"));
     }
 
     #[test]
     fn tool_without_prefix_returns_error() {
-        let r = router();
+        let r = empty_router();
         assert!(r.resolve_socket("notool").is_err());
     }
 
     #[test]
     fn empty_tool_name_returns_error() {
-        let r = router();
+        let r = empty_router();
         assert!(r.resolve_socket("").is_err());
     }
 }
