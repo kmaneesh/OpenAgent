@@ -611,7 +611,7 @@ mod tests {
     }
 
     fn make_router() -> Arc<ToolRouter> {
-        Arc::new(ToolRouter::new(PathBuf::from("data/sockets")))
+        Arc::new(ToolRouter::new(std::collections::HashMap::new(), PathBuf::from("data/sockets")))
     }
 
     fn make_agent(name: &str) -> CortexAgent {
