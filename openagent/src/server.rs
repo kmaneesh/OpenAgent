@@ -26,6 +26,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use crate::config::MiddlewareConfig;
+use crate::guard::GuardDb;
 use crate::manager::ServiceManager;
 use crate::middleware::guard_middleware;
 use crate::routes;
@@ -51,12 +52,13 @@ const STEP_TIMEOUT_SECS: u64 = 130;
 /// Requests that exceed the rate are queued; the outer TimeoutLayer bounds queue wait.
 /// SttLayer and TtsLayer are always registered; they no-op when disabled in config.
 pub fn build_router(
-    manager: Arc<ServiceManager>,
-    metrics: MetricsWriter,
-    config: MiddlewareConfig,
+    manager:  Arc<ServiceManager>,
+    metrics:  MetricsWriter,
+    config:   MiddlewareConfig,
+    guard_db: GuardDb,
 ) -> Router {
     let max_concurrent = config.rate_limit.max_concurrent;
-    let state = AppState::new(manager, metrics, config);
+    let state = AppState::new(manager, metrics, config, guard_db);
 
     Router::new()
         .route("/health", get(routes::health))
@@ -110,12 +112,13 @@ pub fn build_router(
 
 /// Start the Axum server on `0.0.0.0:{port}`.
 pub async fn start(
-    manager: Arc<ServiceManager>,
-    metrics: MetricsWriter,
-    config: MiddlewareConfig,
-    port: u16,
+    manager:  Arc<ServiceManager>,
+    metrics:  MetricsWriter,
+    config:   MiddlewareConfig,
+    guard_db: GuardDb,
+    port:     u16,
 ) -> Result<()> {
-    let app = build_router(manager, metrics, config);
+    let app = build_router(manager, metrics, config, guard_db);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!(addr = %addr, "openagent.server.start");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -123,15 +126,16 @@ pub async fn start(
     Ok(())
 }
 
-/// Start with the default port (8000), or `OPENAGENT_PORT` env var override.
+/// Start with the default port (8080), or `OPENAGENT_PORT` env var override.
 pub async fn start_default(
-    manager: Arc<ServiceManager>,
-    metrics: MetricsWriter,
-    config: MiddlewareConfig,
+    manager:  Arc<ServiceManager>,
+    metrics:  MetricsWriter,
+    config:   MiddlewareConfig,
+    guard_db: GuardDb,
 ) -> Result<()> {
     let port = std::env::var("OPENAGENT_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    start(manager, metrics, config, port).await
+    start(manager, metrics, config, guard_db, port).await
 }

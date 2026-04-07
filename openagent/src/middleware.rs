@@ -1,12 +1,12 @@
 /// Tower middleware for the openagent control plane.
 ///
-/// Phase 1: GuardLayer — calls `guard.check` before every `/step` request.
+/// GuardLayer — inline whitelist check before every `/step` request.
+///   Uses GuardDb (direct SQLite, no network hop) for a fast, deterministic check.
 ///   Allowed  → passes through to Cortex.
 ///   Blocked  → returns HTTP 403 with JSON error body.
-///   Guard down → fails open with a warning (service unavailable should not
-///                brick the whole platform; re-evaluate in Phase 2+).
+///   DB error → fails open with a warning (a DB error should not brick the platform).
 ///
-/// Phase 2+ slots: SttLayer, TtsLayer, RateLimitLayer — same pattern.
+/// SttLayer, TtsLayer — same pattern, registered after GuardLayer.
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
@@ -23,8 +23,8 @@ use crate::state::AppState;
 /// Axum `from_fn_with_state` middleware that enforces the Guard whitelist.
 ///
 /// Reads the request body once, parses `platform` + `channel_id`, calls
-/// `guard.check`, then reconstructs the request (with the buffered bytes)
-/// before handing it to the next layer.
+/// `guard_db.check()` (direct SQLite — no TCP), then reconstructs the request
+/// with the buffered bytes before handing it to the next layer.
 pub async fn guard_middleware(
     State(state): State<AppState>,
     req: Request<Body>,
@@ -52,7 +52,7 @@ pub async fn guard_middleware(
     // Requests without these fields (e.g. GET /health) bypass the guard.
     if let Ok(mut body_json) = serde_json::from_slice::<Value>(&bytes) {
         // Scrub credentials and detect injection in user_input before it reaches
-        // STT or Cortex.  Fires even if the guard check is skipped (no platform field).
+        // STT or Cortex.  Runs even if the guard check is skipped (no platform field).
         if let Some(raw) = body_json.get("user_input").and_then(Value::as_str) {
             let ctx = format!(
                 "platform:{} channel_id:{}",
@@ -72,23 +72,22 @@ pub async fn guard_middleware(
             body_json.get("platform").and_then(Value::as_str),
             body_json.get("channel_id").and_then(Value::as_str),
         ) {
-            match state
-                .manager
-                .call_tool(
-                    "guard.check",
-                    json!({"platform": platform, "channel_id": channel_id}),
-                    2000,
-                )
-                .await
-            {
-                Ok(payload) => {
-                    let v: Value = serde_json::from_str(&payload).unwrap_or_default();
-                    let allowed = v.get("allowed").and_then(Value::as_bool).unwrap_or(false);
-                    let reason = v.get("reason").and_then(Value::as_str).unwrap_or("unknown");
+            let guard_db    = state.guard_db.clone();
+            let platform_s  = platform.to_string();
+            let channel_id_s = channel_id.to_string();
 
+            // rusqlite is sync — run in a blocking thread so we don't stall the
+            // async executor.  The lookup is a single indexed SQLite read: ~50µs.
+            let check_result = tokio::task::spawn_blocking(move || {
+                guard_db.check(&platform_s, &channel_id_s)
+            })
+            .await;
+
+            match check_result {
+                Ok(Ok((allowed, reason))) => {
                     if allowed {
                         info!(platform, channel_id, reason, "guard.allowed");
-                        state.metrics.record(&guard_metric(platform, channel_id, reason, guard_started));
+                        state.metrics.record(&guard_metric(platform, channel_id, &reason, guard_started));
                     } else {
                         info!(platform, channel_id, reason, "guard.blocked");
                         state.metrics.record(&guard_metric(platform, channel_id, "blocked", guard_started));
@@ -104,17 +103,21 @@ pub async fn guard_middleware(
                             .into_response();
                     }
                 }
+                Ok(Err(e)) => {
+                    // DB error — fail open, log warning.
+                    warn!(platform, channel_id, error = %e, "guard.check.db_error — failing open");
+                    state.metrics.record(&guard_metric(platform, channel_id, "db_error", guard_started));
+                }
                 Err(e) => {
-                    // Guard service is down — fail open with a warning.
-                    // In Phase 2+ this becomes configurable (fail_open vs fail_closed).
-                    warn!(platform, channel_id, error = %e, "guard.check.unavailable — failing open");
-                    state.metrics.record(&guard_metric(platform, channel_id, "unavailable", guard_started));
+                    // spawn_blocking panicked — should never happen.
+                    warn!(platform, channel_id, error = %e, "guard.check.spawn_error — failing open");
+                    state.metrics.record(&guard_metric(platform, channel_id, "spawn_error", guard_started));
                 }
             }
         }
     }
 
-    // Reconstruct request with the original body bytes and pass through.
+    // Reconstruct request with the (possibly scrubbed) body bytes and pass through.
     let req = Request::from_parts(parts, Body::from(bytes));
     next.run(req).await
 }

@@ -5,6 +5,7 @@ static GLOBAL: MiMalloc = MiMalloc;
 mod config;
 mod console;
 mod dispatch;
+mod guard;
 mod scrub;
 mod manifest;
 mod manager;
@@ -81,6 +82,25 @@ async fn main() -> Result<()> {
         "openagent.config.loaded"
     );
 
+    // ---- Open guard database ------------------------------------------------
+    // Guard is now inline — no separate service process.
+    // The same data/guard.db file is shared read-write with the FastAPI app
+    // for management operations (list/allow/block).  WAL mode allows concurrent
+    // readers and one writer without blocking.
+    let guard_db_path = project_root.join(&cfg.guard.db_path);
+    let guard_db_path_str = guard_db_path.to_string_lossy().to_string();
+    let guard_db = guard::GuardDb::open(&guard_db_path_str, cfg.guard.enabled)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, path = %guard_db_path_str, "guard.db.open.error — guard disabled");
+            // Construct a disabled stub so the rest of startup is unaffected.
+            guard::GuardDb::open(":memory:", false).expect("in-memory guard db always works")
+        });
+    info!(
+        path = %guard_db_path_str,
+        enabled = cfg.guard.enabled,
+        "guard.db.opened"
+    );
+
     // Connect to externally-managed services (systemd / services.sh).
     // openagent does not spawn or restart services — that is the supervisor's job.
     let manager = Arc::new(ServiceManager::new());
@@ -89,18 +109,20 @@ async fn main() -> Result<()> {
     // ---- Dispatch loop — events → cortex → channel.send --------------------
     {
         let dispatch_manager = Arc::clone(&manager);
+        let dispatch_guard   = guard_db.clone();
         tokio::spawn(async move {
-            dispatch::run(dispatch_manager).await;
+            dispatch::run(dispatch_manager, dispatch_guard).await;
         });
     }
 
-    // ---- Axum control plane (TCP :8000) -------------------------------------
+    // ---- Axum control plane (TCP :8080) -------------------------------------
     // Spawn server in background — shutdown is handled by Ctrl-C below.
     let server_manager = Arc::clone(&manager);
     let server_metrics = metrics.clone();
-    let server_cfg = cfg.middleware.clone();
+    let server_cfg     = cfg.middleware.clone();
+    let server_guard   = guard_db.clone();
     tokio::spawn(async move {
-        if let Err(e) = server::start_default(server_manager, server_metrics, server_cfg).await {
+        if let Err(e) = server::start_default(server_manager, server_metrics, server_cfg, server_guard).await {
             tracing::error!(error = %e, "openagent.server.error");
         }
     });
@@ -110,8 +132,8 @@ async fn main() -> Result<()> {
     // ONLY when the user types `quit`/`shutdown`.  stdin EOF (no TTY / daemon)
     // exits the console loop silently and the Notify is never triggered —
     // the process keeps running until a signal arrives.
-    let logs_path = PathBuf::from(&logs_dir);
-    let quit_notify = console::run(Arc::clone(&manager), logs_path).await;
+    let logs_path    = PathBuf::from(&logs_dir);
+    let quit_notify  = console::run(Arc::clone(&manager), guard_db.clone(), logs_path).await;
 
     // ---- SIGTERM / Ctrl-C shutdown ------------------------------------------
     #[cfg(unix)]

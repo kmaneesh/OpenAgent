@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
+use crate::guard::GuardDb;
 use crate::manager::ServiceManager;
 use crate::scrub;
 
@@ -29,7 +30,7 @@ const STEP_TIMEOUT_MS: u64 = 330_000;
 /// channel.send / typing_start timeouts (ms).
 const SEND_TIMEOUT_MS: u64 = 10_000;
 
-pub async fn run(manager: Arc<ServiceManager>) {
+pub async fn run(manager: Arc<ServiceManager>, guard_db: GuardDb) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut event_rx = manager.subscribe_events();
 
@@ -115,9 +116,10 @@ pub async fn run(manager: Arc<ServiceManager>) {
 
         let mgr = Arc::clone(&manager);
         let sem = Arc::clone(&semaphore);
+        let gdb = guard_db.clone();
 
         tokio::spawn(async move {
-            handle_message(mgr, sem, session_id, channel, sender, content_raw, artifact_path).await;
+            handle_message(mgr, sem, gdb, session_id, channel, sender, content_raw, artifact_path).await;
         });
     }
 }
@@ -132,6 +134,7 @@ fn platform_from_channel(channel: &str) -> &str {
 async fn handle_message(
     manager: Arc<ServiceManager>,
     semaphore: Arc<Semaphore>,
+    guard_db: GuardDb,
     session_id: String,
     channel: String,
     sender: String,
@@ -178,33 +181,29 @@ async fn handle_message(
     };
 
     // ---- Guard check --------------------------------------------------------
-    // Mirrors the GuardLayer in the HTTP stack — same guard.check call,
-    // same fail-open behaviour when the guard service is unavailable.
+    // Inline GuardDb lookup (direct SQLite, no TCP).
+    // Same fail-open policy as GuardLayer: a DB error logs a warning but
+    // does not drop the message.
     let platform = platform_from_channel(&channel);
-    match manager
-        .call_tool(
-            "guard.check",
-            json!({"platform": platform, "channel_id": sender}),
-            2_000,
-        )
-        .await
     {
-        Ok(payload) => {
-            let v: Value = serde_json::from_str(&payload).unwrap_or_default();
-            let allowed = v.get("allowed").and_then(Value::as_bool).unwrap_or(false);
-            let reason = v
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            if allowed {
-                info!(session_id, platform, sender, reason, "dispatch.guard.allowed");
-            } else {
-                info!(session_id, platform, sender, reason, "dispatch.guard.blocked — dropping");
-                return;
+        let gdb      = guard_db.clone();
+        let plat_s   = platform.to_string();
+        let sender_s = sender.clone();
+        match tokio::task::spawn_blocking(move || gdb.check(&plat_s, &sender_s)).await {
+            Ok(Ok((allowed, reason))) => {
+                if allowed {
+                    info!(session_id, platform, sender, reason, "dispatch.guard.allowed");
+                } else {
+                    info!(session_id, platform, sender, reason, "dispatch.guard.blocked — dropping");
+                    return;
+                }
             }
-        }
-        Err(e) => {
-            warn!(session_id, error = %e, "dispatch.guard.unavailable — failing open");
+            Ok(Err(e)) => {
+                warn!(session_id, error = %e, "dispatch.guard.db_error — failing open");
+            }
+            Err(e) => {
+                warn!(session_id, error = %e, "dispatch.guard.spawn_error — failing open");
+            }
         }
     }
 
