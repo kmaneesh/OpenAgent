@@ -36,21 +36,17 @@ HOST_SUFFIX="${HOST_OS}-${HOST_ARCH}"
 # Port map — must match services/<name>/service.json "address" field
 # (plain strings — no associative arrays, compatible with bash 3.x on macOS)
 # ---------------------------------------------------------------------------
-ALL_SERVICES="browser channels cortex guard memory research sandbox stt tts validator whatsapp"
+ALL_SERVICES="browser memory sandbox stt tts validator whatsapp"
 
 svc_port() {
   case "$1" in
+    memory)    echo 9000 ;;
     browser)   echo 9001 ;;
-    channels)  echo 9002 ;;
-    cortex)    echo 9003 ;;
-    guard)     echo 9004 ;;
-    memory)    echo 9005 ;;
-    research)  echo 9006 ;;
-    sandbox)   echo 9007 ;;
-    stt)       echo 9008 ;;
-    tts)       echo 9009 ;;
-    validator) echo 9010 ;;
-    whatsapp)  echo 9011 ;;
+    sandbox)   echo 9002 ;;
+    stt)       echo 9003 ;;
+    tts)       echo 9004 ;;
+    validator) echo 9005 ;;
+    whatsapp)  echo 9010 ;;
     *)         echo "" ;;
   esac
 }
