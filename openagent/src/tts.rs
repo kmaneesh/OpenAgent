@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tracing::{info, warn};
 
-use crate::metrics::tts_metric;
+use crate::observability::metrics::tts_metric;
 use crate::state::AppState;
 
 pub async fn tts_middleware(

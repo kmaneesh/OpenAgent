@@ -1,3 +1,5 @@
+pub mod scrub;
+
 /// Guard — inline contact whitelist.
 ///
 /// Replaces the external `services/guard` daemon.  The SQLite database

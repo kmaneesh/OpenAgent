@@ -3,7 +3,7 @@
 /// Same pattern as `services/sdk-rust/src/telemetry.rs`:
 /// - [`MetricsWriter`] — daily JSONL metrics sink
 /// - [`ts_ms`] / [`elapsed_ms`] — time helpers
-use crate::otel::DailyFileWriter;
+use super::otel::DailyFileWriter;
 use serde_json::Value;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 

@@ -22,8 +22,8 @@ use std::time::Instant;
 use tracing::{error, info, warn};
 
 use crate::agent::handlers::handle_step;
-use crate::metrics::guard_metric;
-use crate::scrub;
+use crate::guard::scrub;
+use crate::observability::metrics::guard_metric;
 use crate::state::AppState;
 
 // ---------------------------------------------------------------------------

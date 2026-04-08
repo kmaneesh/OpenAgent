@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tracing::{info, warn};
 
-use crate::metrics::stt_metric;
+use crate::observability::metrics::stt_metric;
 use crate::state::AppState;
 
 pub async fn stt_middleware(

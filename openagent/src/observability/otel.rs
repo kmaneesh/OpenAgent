@@ -253,7 +253,7 @@ fn serialize_metrics(rm: &ResourceMetrics) -> String {
             data
         })
     }).collect();
-    serde_json::to_string(&json!({"ts_ms": crate::telemetry::ts_ms(), "service": "openagent", "metrics": points})).unwrap_or_default()
+    serde_json::to_string(&json!({"ts_ms": super::telemetry::ts_ms(), "service": "openagent", "metrics": points})).unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,7 @@ use crate::middleware::{agent_middleware, guard_middleware};
 use crate::routes;
 use crate::state::AppState;
 use crate::stt::stt_middleware;
-use crate::telemetry::MetricsWriter;
+use crate::observability::telemetry::MetricsWriter;
 use crate::tts::tts_middleware;
 
 const DEFAULT_PORT: u16 = 8080;

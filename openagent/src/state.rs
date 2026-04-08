@@ -2,7 +2,7 @@ use crate::agent::handlers::AgentContext;
 use crate::config::MiddlewareConfig;
 use crate::guard::GuardDb;
 use crate::manager::ServiceManager;
-use crate::telemetry::MetricsWriter;
+use crate::observability::telemetry::MetricsWriter;
 use std::sync::Arc;
 use std::time::Instant;
 

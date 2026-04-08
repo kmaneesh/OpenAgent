@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use std::time::Instant;
 use tracing::info;
 
-use crate::metrics::{step_metric, tool_metric};
+use crate::observability::metrics::{step_metric, tool_metric};
 use crate::middleware::AgentResult;
 use crate::state::AppState;
 

@@ -7,13 +7,11 @@ mod config;
 mod console;
 mod dispatch;
 mod guard;
-mod scrub;
 mod manifest;
 mod manager;
 mod mcplite;
-mod metrics;
 mod middleware;
-mod otel;
+mod observability;
 mod stt;
 mod tts;
 mod platform;
@@ -31,7 +29,6 @@ pub mod sop;
 pub mod doctor;
 pub mod health;
 mod state;
-mod telemetry;
 
 use agent::action::catalog::ActionCatalog;
 use agent::handlers::AgentContext;
@@ -42,14 +39,14 @@ use manager::ServiceManager;
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
-use telemetry::MetricsWriter;
+use observability::telemetry::MetricsWriter;
 use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // ---- OTEL (traces + logs + metrics) ------------------------------------
     let logs_dir = env::var("OPENAGENT_LOGS_DIR").unwrap_or_else(|_| "logs".to_string());
-    let _otel_guard = otel::setup_otel("openagent", &logs_dir)
+    let _otel_guard = observability::otel::setup_otel("openagent", &logs_dir)
         .inspect_err(|e| eprintln!("{{\"level\":\"WARN\",\"message\":\"otel init failed\",\"error\":\"{e}\"}}"))
         .ok();
 

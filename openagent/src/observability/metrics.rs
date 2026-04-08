@@ -2,7 +2,7 @@
 ///
 /// Each function returns a `serde_json::Value` suitable for `MetricsWriter::record`.
 /// All metrics include `ts_ms`, `service = "openagent"`, and `op`.
-use crate::telemetry::{elapsed_ms, ts_ms};
+use super::telemetry::{elapsed_ms, ts_ms};
 use serde_json::{json, Value};
 use std::time::Instant;
 
