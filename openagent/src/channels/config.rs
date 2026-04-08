@@ -1,7 +1,10 @@
 //! Top-level channels configuration — aggregates all per-channel config structs.
 //!
-//! Loaded from `config/channels.toml` (or `$OPENAGENT_CHANNELS_CONFIG`).
-//! Every `${VAR}` placeholder is replaced with the matching environment variable.
+//! Loaded as `[channels]` within `config/openagent.toml` via `OpenAgentConfig`.
+//! Every `${VAR}` placeholder in the TOML is resolved by `crate::config::load()`.
+//!
+//! Per-channel config structs live in their own modules and are re-exported here
+//! so `registry.rs` can `use crate::channels::config::*`.
 
 use serde::Deserialize;
 
