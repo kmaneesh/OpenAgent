@@ -2,6 +2,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+pub mod agent;
 mod config;
 mod console;
 mod dispatch;
@@ -18,9 +19,24 @@ mod tts;
 mod platform;
 mod routes;
 mod server;
+
+// Merged from ZeroClaw
+pub mod hardware;
+pub mod peripherals;
+pub mod channels;
+pub mod tunnel;
+pub mod gateway;
+pub mod cron;
+pub mod sop;
+pub mod doctor;
+pub mod health;
 mod state;
 mod telemetry;
 
+use agent::action::catalog::ActionCatalog;
+use agent::handlers::AgentContext;
+use agent::metrics::AgentTelemetry;
+use agent::tool_router::ToolRouter;
 use anyhow::Result;
 use manager::ServiceManager;
 use std::env;
@@ -106,12 +122,30 @@ async fn main() -> Result<()> {
     let manager = Arc::new(ServiceManager::new());
     manager.start_all(manifests, &cfg.services.disabled).await;
 
-    // ---- Dispatch loop — events → cortex → channel.send --------------------
+    // ---- Build in-process AgentContext (action catalog + tool router + telemetry) ----
+    let action_catalog = Arc::new(ActionCatalog::load(&project_root.join("services")));
+    let tool_addresses = action_catalog.tool_address_map();
+    let tool_router = Arc::new(ToolRouter::new(tool_addresses, project_root.clone()));
+    let agent_tel = Arc::new(
+        AgentTelemetry::new(&logs_dir).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "agent telemetry init failed — using no-op");
+            AgentTelemetry::new("/dev/null").expect("fallback agent telemetry failed")
+        }),
+    );
+    let agent_ctx = Arc::new(AgentContext::new(agent_tel, action_catalog, tool_router, project_root.clone()));
+
+    info!(
+        tool_count = agent_ctx.action_catalog().entries().len(),
+        "agent.context.ready"
+    );
+
+    // ---- Dispatch loop — events → agent → channel.send --------------------
     {
         let dispatch_manager = Arc::clone(&manager);
         let dispatch_guard   = guard_db.clone();
+        let dispatch_ctx     = Arc::clone(&agent_ctx);
         tokio::spawn(async move {
-            dispatch::run(dispatch_manager, dispatch_guard).await;
+            dispatch::run(dispatch_manager, dispatch_guard, dispatch_ctx).await;
         });
     }
 
@@ -121,8 +155,9 @@ async fn main() -> Result<()> {
     let server_metrics = metrics.clone();
     let server_cfg     = cfg.middleware.clone();
     let server_guard   = guard_db.clone();
+    let server_ctx     = Arc::clone(&agent_ctx);
     tokio::spawn(async move {
-        if let Err(e) = server::start_default(server_manager, server_metrics, server_cfg, server_guard).await {
+        if let Err(e) = server::start_default(server_manager, server_metrics, server_cfg, server_guard, server_ctx).await {
             tracing::error!(error = %e, "openagent.server.error");
         }
     });

@@ -1,12 +1,12 @@
 /// Axum HTTP control plane — TCP port 8080.
 ///
 /// Tower middleware stack (outermost → innermost):
-///   ConcurrencyLimitLayer → HandleErrorLayer → TimeoutLayer → TraceLayer → GuardLayer → SttLayer → TtsLayer → Router
+///   ConcurrencyLimitLayer → HandleErrorLayer → TimeoutLayer → TraceLayer → GuardLayer → SttLayer → AgentLayer → TtsLayer → Router
 ///
 /// Routes:
 ///   GET  /health        liveness + tool count
 ///   GET  /tools         all registered tools
-///   POST /step          run one Cortex reasoning step (guard-checked)
+///   POST /step          run one in-process agent reasoning step (guard-checked)
 ///   POST /tool/:name    raw tool call (internal / debug)
 use anyhow::Result;
 use axum::error_handling::HandleErrorLayer;
@@ -25,10 +25,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use crate::agent::handlers::AgentContext;
 use crate::config::MiddlewareConfig;
 use crate::guard::GuardDb;
 use crate::manager::ServiceManager;
-use crate::middleware::guard_middleware;
+use crate::middleware::{agent_middleware, guard_middleware};
 use crate::routes;
 use crate::state::AppState;
 use crate::stt::stt_middleware;
@@ -45,20 +46,20 @@ const STEP_TIMEOUT_SECS: u64 = 130;
 /// Build the Axum router with the Tower middleware stack applied.
 ///
 /// Stack (outermost → innermost):
-///   HandleErrorLayer(→ 408/503) → RateLimitLayer(N/s) → TimeoutLayer(130s)
-///     → TraceLayer → CorsLayer → GuardLayer → SttLayer → TtsLayer → Router
+///   HandleErrorLayer(→ 408/503) → ConcurrencyLimitLayer → TimeoutLayer(130s)
+///     → TraceLayer → CorsLayer → GuardLayer → SttLayer → AgentLayer → TtsLayer → Router
 ///
-/// RateLimitLayer throttles global throughput to protect Cortex from connector floods.
-/// Requests that exceed the rate are queued; the outer TimeoutLayer bounds queue wait.
+/// AgentLayer runs the in-process ReAct loop for POST /step; all other routes pass through.
 /// SttLayer and TtsLayer are always registered; they no-op when disabled in config.
 pub fn build_router(
-    manager:  Arc<ServiceManager>,
-    metrics:  MetricsWriter,
-    config:   MiddlewareConfig,
-    guard_db: GuardDb,
+    manager:   Arc<ServiceManager>,
+    metrics:   MetricsWriter,
+    config:    MiddlewareConfig,
+    guard_db:  GuardDb,
+    agent_ctx: Arc<AgentContext>,
 ) -> Router {
     let max_concurrent = config.rate_limit.max_concurrent;
-    let state = AppState::new(manager, metrics, config, guard_db);
+    let state = AppState::new(manager, metrics, config, guard_db, agent_ctx);
 
     Router::new()
         .route("/health", get(routes::health))
@@ -71,7 +72,13 @@ pub fn build_router(
             state.clone(),
             tts_middleware,
         ))
-        // SttLayer — transcribes audio_path → user_input before the handler.
+        // AgentLayer — runs the in-process ReAct loop for POST /step.
+        // Stores AgentResult in request extensions; route handler returns it as JSON.
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
+            agent_middleware,
+        ))
+        // SttLayer — transcribes audio_path → user_input before AgentLayer.
         // No-ops when stt.enabled = false in config/openagent.toml.
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -112,13 +119,14 @@ pub fn build_router(
 
 /// Start the Axum server on `0.0.0.0:{port}`.
 pub async fn start(
-    manager:  Arc<ServiceManager>,
-    metrics:  MetricsWriter,
-    config:   MiddlewareConfig,
-    guard_db: GuardDb,
-    port:     u16,
+    manager:   Arc<ServiceManager>,
+    metrics:   MetricsWriter,
+    config:    MiddlewareConfig,
+    guard_db:  GuardDb,
+    agent_ctx: Arc<AgentContext>,
+    port:      u16,
 ) -> Result<()> {
-    let app = build_router(manager, metrics, config, guard_db);
+    let app = build_router(manager, metrics, config, guard_db, agent_ctx);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!(addr = %addr, "openagent.server.start");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -128,14 +136,15 @@ pub async fn start(
 
 /// Start with the default port (8080), or `OPENAGENT_PORT` env var override.
 pub async fn start_default(
-    manager:  Arc<ServiceManager>,
-    metrics:  MetricsWriter,
-    config:   MiddlewareConfig,
-    guard_db: GuardDb,
+    manager:   Arc<ServiceManager>,
+    metrics:   MetricsWriter,
+    config:    MiddlewareConfig,
+    guard_db:  GuardDb,
+    agent_ctx: Arc<AgentContext>,
 ) -> Result<()> {
     let port = std::env::var("OPENAGENT_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    start(manager, metrics, config, guard_db, port).await
+    start(manager, metrics, config, guard_db, agent_ctx, port).await
 }

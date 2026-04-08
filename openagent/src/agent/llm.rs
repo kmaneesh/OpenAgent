@@ -1,4 +1,4 @@
-use crate::config::ProviderConfig;
+use crate::agent::config::ProviderConfig;
 use anyhow::Result;
 use autoagents_llm::backends::anthropic::Anthropic;
 use autoagents_llm::backends::openai::OpenAI;
@@ -6,8 +6,7 @@ use autoagents_llm::builder::LLMBuilder;
 use std::sync::Arc;
 use tracing::warn;
 
-/// Resolved system prompt passed to `CortexAgent`. Only `system_prompt` is read
-/// by the agent; the struct wraps it so callers get a named return type.
+/// Resolved system prompt passed to `AgentCore`.
 #[derive(Debug, Clone)]
 pub struct StepPrompt {
     pub system_prompt: String,
@@ -42,20 +41,20 @@ pub fn build_llm_provider(config: &ProviderConfig) -> Result<Arc<dyn autoagents_
     }
 }
 
-pub fn build_prompt_with_action_context(
+/// Return a `StepPrompt` with skill summaries optionally appended.
+pub fn build_prompt_with_skill_context(
     system_prompt: &str,
-    _user_input: &str,
-    action_context: Option<String>,
+    skill_context: Option<String>,
 ) -> StepPrompt {
     StepPrompt {
-        system_prompt: append_action_context(system_prompt.trim(), action_context.as_deref()),
+        system_prompt: append_skill_context(system_prompt.trim(), skill_context.as_deref()),
     }
 }
 
-fn append_action_context(system_prompt: &str, action_context: Option<&str>) -> String {
-    crate::prompt::render_tool_context(system_prompt, action_context.unwrap_or(""))
+fn append_skill_context(system_prompt: &str, skill_context: Option<&str>) -> String {
+    crate::agent::prompt::render_skill_context(system_prompt, skill_context.unwrap_or(""))
         .unwrap_or_else(|e| {
-            warn!(error = %e, "tool_context render failed — using bare system prompt");
+            warn!(error = %e, "skill_context render failed — using bare system prompt");
             system_prompt.to_string()
         })
 }
@@ -66,19 +65,23 @@ mod tests {
 
     #[test]
     fn build_prompt_trims_system_prompt() {
-        let prompt = build_prompt_with_action_context("  system  ", "user", None);
+        let prompt = build_prompt_with_skill_context("  system  ", None);
         assert_eq!(prompt.system_prompt, "system");
     }
 
     #[test]
-    fn build_prompt_appends_action_context() {
-        let prompt = build_prompt_with_action_context(
+    fn build_prompt_appends_skill_context() {
+        let prompt = build_prompt_with_skill_context(
             "system",
-            "user",
-            Some("- browser.open [browser] - Open a URL".to_string()),
+            Some("skill: agent-browser\ndescription: Browser automation.".to_string()),
         );
-        assert!(prompt.system_prompt.contains("## Available tools"));
-        assert!(prompt.system_prompt.contains("browser.open"));
-        assert!(prompt.system_prompt.contains("Start your response with"));
+        assert!(prompt.system_prompt.contains("## Available Skills"));
+        assert!(prompt.system_prompt.contains("agent-browser"));
+    }
+
+    #[test]
+    fn build_prompt_no_skills_returns_bare() {
+        let prompt = build_prompt_with_skill_context("system", None);
+        assert_eq!(prompt.system_prompt, "system");
     }
 }

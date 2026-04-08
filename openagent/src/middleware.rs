@@ -1,24 +1,93 @@
 /// Tower middleware for the openagent control plane.
 ///
-/// GuardLayer — inline whitelist check before every `/step` request.
+/// GuardLayer  — inline whitelist check before every `/step` request.
 ///   Uses GuardDb (direct SQLite, no network hop) for a fast, deterministic check.
-///   Allowed  → passes through to Cortex.
+///   Allowed  → passes through to AgentLayer.
 ///   Blocked  → returns HTTP 403 with JSON error body.
 ///   DB error → fails open with a warning (a DB error should not brick the platform).
 ///
 /// SttLayer, TtsLayer — same pattern, registered after GuardLayer.
+///
+/// AgentLayer  — runs the in-process ReAct loop via `handle_step`.
+///   Stores the result as an `AgentResult` request extension so the route handler
+///   can return it as the HTTP response body.  TtsLayer post-processes that body.
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
+use crate::agent::handlers::handle_step;
 use crate::metrics::guard_metric;
 use crate::scrub;
 use crate::state::AppState;
+
+// ---------------------------------------------------------------------------
+// AgentResult — request extension set by agent_middleware, read by routes::step
+// ---------------------------------------------------------------------------
+
+/// Wraps the JSON result of a completed `handle_step` call.
+/// Stored as an Axum request extension so the route handler can return it
+/// without re-running the agent.
+#[derive(Clone, Debug)]
+pub struct AgentResult(pub Value);
+
+/// AgentLayer middleware — runs the in-process ReAct loop for POST /step.
+///
+/// Parses the (already scrubbed) JSON body, calls `handle_step`, and inserts
+/// the result into the request extensions.  Non-step routes are passed through
+/// unchanged.  On error, returns HTTP 500 immediately — TtsLayer never runs.
+pub async fn agent_middleware(
+    State(state): State<AppState>,
+    mut req: Request<Body>,
+    next: Next,
+) -> Response {
+    // Only intercept POST /step — all other routes pass through unchanged.
+    if req.uri().path() != "/step" {
+        return next.run(req).await;
+    }
+
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 4 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "agent.body.read.error");
+            return (StatusCode::BAD_REQUEST, axum::Json(json!({"error": "body_read_error"}))).into_response();
+        }
+    };
+
+    let params: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, axum::Json(json!({"error": "invalid_json", "detail": e.to_string()}))).into_response();
+        }
+    };
+
+    let agent_ctx = Arc::clone(&state.agent_ctx);
+    let result = tokio::task::spawn_blocking(move || handle_step(params, agent_ctx))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("agent task panicked: {e}")));
+
+    match result {
+        Ok(json_str) => {
+            let v: Value = serde_json::from_str(&json_str).unwrap_or(Value::String(json_str));
+            let mut req = Request::from_parts(parts, Body::from(bytes));
+            req.extensions_mut().insert(AgentResult(v));
+            next.run(req).await
+        }
+        Err(e) => {
+            error!(error = %e, "agent.step.error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(json!({"error": "agent_step_failed", "detail": e.to_string()})),
+            ).into_response()
+        }
+    }
+}
 
 /// Axum `from_fn_with_state` middleware that enforces the Guard whitelist.
 ///

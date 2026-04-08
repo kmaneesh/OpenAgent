@@ -8,12 +8,10 @@ const DEFAULT_SYSTEM_PROMPT: &str =
     "You are a helpful assistant. Use tools only when necessary. Be concise.";
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct CortexConfig {
+pub struct AgentCoreConfig {
     #[serde(default)]
     pub provider: ProviderConfig,
     /// Optional fast-path provider for simple turns.
-    /// When set, the query classifier routes short/tool_call turns here instead of
-    /// the main (strong) provider. Omit to send all turns to the main provider.
     #[serde(default)]
     pub fast_provider: Option<ProviderConfig>,
     #[serde(default)]
@@ -24,7 +22,6 @@ pub struct CortexConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryConfig {
-    /// Root directory for per-session diary markdown files.
     #[serde(default = "default_diary_path")]
     pub diary_path: String,
 }
@@ -64,15 +61,13 @@ pub struct AgentConfig {
 #[derive(Debug, Clone)]
 pub struct ResolvedStepConfig {
     pub provider: ProviderConfig,
-    /// Fast-path provider, if configured. When present, the classifier may select
-    /// this instead of `provider` for simple/tool_call turns.
     pub fast_provider: Option<ProviderConfig>,
     pub agent_name: String,
     pub system_prompt: String,
     pub source_path: PathBuf,
 }
 
-impl Default for CortexConfig {
+impl Default for AgentCoreConfig {
     fn default() -> Self {
         Self {
             provider: ProviderConfig::default(),
@@ -106,7 +101,7 @@ impl Default for AgentConfig {
     }
 }
 
-impl CortexConfig {
+impl AgentCoreConfig {
     pub fn load() -> Result<ResolvedConfigFile> {
         let path = resolve_config_path();
         let raw = fs::read_to_string(&path)
@@ -146,7 +141,7 @@ impl CortexConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResolvedConfigFile {
-    pub cfg: CortexConfig,
+    pub cfg: AgentCoreConfig,
     pub path: PathBuf,
 }
 
@@ -191,7 +186,7 @@ fn default_provider_kind() -> String {
 }
 
 fn default_provider_base_url() -> String {
-    "http://100.74.210.70:1234/v1".to_string()
+    "http://localhost:1234/v1".to_string()
 }
 
 fn default_provider_timeout() -> f64 {
@@ -220,7 +215,7 @@ mod tests {
 
     #[test]
     fn resolve_step_config_uses_named_agent_when_present() {
-        let cfg = CortexConfig {
+        let cfg = AgentCoreConfig {
             provider: ProviderConfig::default(),
             fast_provider: None,
             agents: vec![

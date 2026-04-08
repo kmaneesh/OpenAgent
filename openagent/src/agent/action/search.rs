@@ -1,4 +1,4 @@
-use crate::action::catalog::{ActionCatalog, ActionEntry, ActionKind};
+use crate::agent::action::catalog::{ActionCatalog, ActionEntry, ActionKind};
 use serde::Serialize;
 
 #[derive(Clone, Debug)]
@@ -176,7 +176,7 @@ fn tokenize(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{search_catalog, SearchQuery};
-    use crate::action::catalog::ActionCatalog;
+    use crate::agent::action::catalog::ActionCatalog;
     use std::env;
     use std::fs;
     use std::path::PathBuf;
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn prefers_skill_for_procedural_browser_query() {
-        let temp = unique_temp_dir("cortex-action-search");
+        let temp = unique_temp_dir("agent-action-search");
         let services_dir = temp.join("services").join("browser");
         let skills_dir = temp.join("skills").join("browser-skill");
         fs::create_dir_all(&services_dir).unwrap();

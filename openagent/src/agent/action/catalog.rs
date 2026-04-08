@@ -55,7 +55,7 @@ impl ActionCatalog {
                 entries.push(ActionEntry::from_tool(
                     manifest.name.clone(),
                     manifest.runtime.clone(),
-                    manifest.socket.clone(),
+                    manifest.address.clone(),
                     manifest_path.clone(),
                     tool,
                 ));
@@ -83,9 +83,6 @@ impl ActionCatalog {
             let raw = fs::read_to_string(&skill_path)
                 .with_context(|| format!("failed to read {}", skill_path.display()))?;
             let entry = ActionEntry::from_skill(skill_path, &raw)?;
-            // Only load skills that have explicitly opted in with `enabled: true`.
-            // Skills without the field (or with `enabled: false`) are not loaded into
-            // the catalog — they don't appear in search or in the action context.
             if entry.enabled {
                 entries.push(entry);
             }
@@ -99,14 +96,14 @@ impl ActionCatalog {
         &self.entries
     }
 
-    /// Build a map from tool name to its socket path for all tool-kind entries
-    /// that have a socket declared in their service.json.
+    /// Build a map from tool name to its TCP address for all tool-kind entries
+    /// that have an address declared in their service.json.
     #[must_use]
-    pub fn tool_socket_map(&self) -> std::collections::HashMap<String, String> {
+    pub fn tool_address_map(&self) -> std::collections::HashMap<String, String> {
         self.entries
             .iter()
-            .filter(|e| matches!(e.kind, ActionKind::Tool) && !e.socket_path.is_empty())
-            .map(|e| (e.name.clone(), e.socket_path.clone()))
+            .filter(|e| matches!(e.kind, ActionKind::Tool) && !e.address.is_empty())
+            .map(|e| (e.name.clone(), e.address.clone()))
             .collect()
     }
 }
@@ -117,8 +114,8 @@ pub struct ActionEntry {
     pub owner: String,
     pub runtime: String,
     pub manifest_path: PathBuf,
-    /// Absolute or relative socket path from service.json. Empty for skill entries.
-    pub socket_path: String,
+    /// TCP address from service.json (e.g. "0.0.0.0:9001"). Empty for skill entries.
+    pub address: String,
     pub name: String,
     /// Short description shown in semantic search. For skills: description + hint line.
     pub summary: String,
@@ -126,7 +123,7 @@ pub struct ActionEntry {
     pub required: Vec<String>,
     pub param_names: Vec<String>,
     pub allowed_tools: Vec<String>,
-    /// When true, Cortex enforces allowed_tools — rejects calls outside the list.
+    /// When true, the agent enforces allowed_tools — rejects calls outside the list.
     pub enforce: bool,
     /// When false (default), this skill is not loaded into the catalog.
     pub enabled: bool,
@@ -141,7 +138,7 @@ impl ActionEntry {
     fn from_tool(
         owner: String,
         runtime: String,
-        socket_path: String,
+        address: String,
         manifest_path: PathBuf,
         tool: ManifestTool,
     ) -> Self {
@@ -188,7 +185,7 @@ impl ActionEntry {
             owner,
             runtime,
             manifest_path,
-            socket_path,
+            address,
             name: tool.name,
             summary: tool.description,
             params: tool.params,
@@ -196,7 +193,7 @@ impl ActionEntry {
             param_names,
             allowed_tools: Vec::new(),
             enforce: false,
-            enabled: true,  // tools are always enabled; filtering is per skill only
+            enabled: true,
             steps: Vec::new(),
             constraints: Vec::new(),
             completion_criteria: Vec::new(),
@@ -220,9 +217,6 @@ impl ActionEntry {
             .clone()
             .unwrap_or_else(|| "Local skill guidance".to_string());
 
-        // summary = description + hint line (if present).
-        // The hint is rendered in the action context so the LLM knows exactly how
-        // to invoke skill.read for this skill.
         let summary = match parsed.frontmatter.hint.as_deref() {
             Some(hint) if !hint.is_empty() => format!("{}\nhint: {}", description, hint),
             _ => description,
@@ -254,7 +248,7 @@ impl ActionEntry {
             owner,
             runtime: "markdown".to_string(),
             manifest_path,
-            socket_path: String::new(), // skills have no socket
+            address: String::new(),
             name,
             summary,
             params: Value::Null,
@@ -306,9 +300,8 @@ struct ServiceManifest {
     name: String,
     #[serde(default)]
     runtime: String,
-    /// Unix socket path declared in service.json, e.g. "data/sockets/browser.sock".
     #[serde(default)]
-    socket: String,
+    address: String,
     #[serde(default)]
     tools: Vec<ManifestTool>,
 }
@@ -322,36 +315,20 @@ struct ManifestTool {
     params: Value,
 }
 
-/// Frontmatter parsed from SKILL.md.
-///
-/// `enabled` is the gate — only skills with `enabled: true` are loaded into the
-/// ActionCatalog and appear in the LLM's action context.  Default is `false`
-/// (opt-in) so new skills are invisible until explicitly activated.
-///
-/// `hint` is appended to `description` in the rendered context block so the LLM
-/// knows exactly which `skill.read(name=...)` call to make for this skill.
-///
-/// `allowed-tools` (preferred) or `tools` both accepted for backward compat.
 #[derive(Debug, Default, Deserialize)]
 struct SkillFrontmatter {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    /// One-line call-to-action appended to description in context.
-    /// Example: `hint: Call skill.read(name="agent-browser") for commands and patterns.`
     #[serde(default)]
     hint: Option<String>,
-    /// When true, this skill is loaded into the ActionCatalog. Default false (opt-in).
     #[serde(default)]
     enabled: bool,
-    /// Preferred key for listing the tools this skill uses.
     #[serde(rename = "allowed-tools", default)]
     allowed_tools: Option<Value>,
-    /// Legacy alias for `allowed-tools`. Ignored when `allowed-tools` is present.
     #[serde(default)]
     tools: Option<Value>,
-    /// When true, Cortex rejects tool calls outside `allowed-tools`. Default false.
     #[serde(default)]
     enforce: bool,
     #[serde(default)]
@@ -380,7 +357,6 @@ fn parse_skill_file(raw: &str) -> Result<ParsedSkill> {
     };
 
     Ok(ParsedSkill {
-        // `allowed-tools` takes precedence; `tools` is the legacy alias.
         allowed_tools: parse_allowed_tools(
             frontmatter.allowed_tools.as_ref().or(frontmatter.tools.as_ref())
         ),
@@ -469,7 +445,7 @@ mod tests {
 
     #[test]
     fn discovers_tools_and_skills_from_root() {
-        let temp = unique_temp_dir("cortex-action-catalog");
+        let temp = unique_temp_dir("agent-action-catalog");
         let services_dir = temp.join("services").join("demo");
         let skills_dir = temp.join("skills").join("demo-skill");
         fs::create_dir_all(&services_dir).unwrap();

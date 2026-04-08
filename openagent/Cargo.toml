@@ -36,6 +36,20 @@ futures-util          = "0.3"
 hex                   = "0.4"
 rusqlite              = { version = "0.32", features = ["bundled"] }
 libc                  = "0.2"
+cron = "0.16.0"
+tokio-serial = "5.4.5"
+tokio-tungstenite = "0.29.0"
+async-imap = "0.11.2"
+tokio-rustls = "0.26.4"
+
+# Agent module (moved from services/cortex/)
+sdk-rust          = { path = "../services/sdk-rust" }
+autoagents-llm    = { version = "0.3.6", features = ["openai", "anthropic"] }
+autoagents-core   = "0.3.6"
+autoagents-protocol = "0.3.6"
+minijinja         = "2"
+futures           = "0.3"
+serde_yaml        = "0.9"
 
 [dev-dependencies]
 tempfile = "3"

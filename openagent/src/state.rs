@@ -1,3 +1,4 @@
+use crate::agent::handlers::AgentContext;
 use crate::config::MiddlewareConfig;
 use crate::guard::GuardDb;
 use crate::manager::ServiceManager;
@@ -15,14 +16,17 @@ pub struct AppState {
     pub guard_db:   GuardDb,
     /// Process start time — used to compute uptime in /health.
     pub started_at: Arc<Instant>,
+    /// In-process agent context — AgentLayer and dispatch loop call handle_step directly.
+    pub agent_ctx:  Arc<AgentContext>,
 }
 
 impl AppState {
     pub fn new(
-        manager:  Arc<ServiceManager>,
-        metrics:  MetricsWriter,
-        config:   MiddlewareConfig,
-        guard_db: GuardDb,
+        manager:   Arc<ServiceManager>,
+        metrics:   MetricsWriter,
+        config:    MiddlewareConfig,
+        guard_db:  GuardDb,
+        agent_ctx: Arc<AgentContext>,
     ) -> Self {
         Self {
             manager,
@@ -30,6 +34,7 @@ impl AppState {
             config,
             guard_db,
             started_at: Arc::new(Instant::now()),
+            agent_ctx,
         }
     }
 }

@@ -1,19 +1,7 @@
 //! Diary write — fire-and-forget session summary written after each final answer.
-//!
-//! Called from `CortexAgent::execute()` via `tokio::spawn` so it never blocks
-//! the step response.  Failures are logged as warnings and silently swallowed —
-//! the caller has already returned its answer.
-//!
-//! # What gets written
-//!
-//! 1. A markdown file at `<diary_dir>/<unix_timestamp>.md` rendered from
-//!    `prompts/diary_entry.j2` via `crate::prompt::render_diary_entry`.
-//! 2. A stub row in the memory service's `diary` LanceDB table (zero vector +
-//!    enriched metadata).  The memory compaction job will back-fill real
-//!    embeddings, summaries, and keywords later.
 
-use crate::prompt::{render_diary_entry, DiaryEntryContext};
-use crate::tool_router::ToolRouter;
+use crate::agent::prompt::{render_diary_entry, DiaryEntryContext};
+use crate::agent::tool_router::ToolRouter;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,8 +12,7 @@ use tracing::{info, warn};
 ///
 /// Creates `<diary_dir>/<ts>.md` from the `diary_entry.j2` template, then calls
 /// `memory.diary_write` over the `ToolRouter` to insert a stub LanceDB row.
-/// Both steps are best-effort — if either fails the error is logged and the
-/// function returns without propagating.
+/// Both steps are best-effort — failures are logged and silently swallowed.
 pub async fn write_diary_entry(
     session_id: String,
     diary_dir: PathBuf,
@@ -39,7 +26,6 @@ pub async fn write_diary_entry(
         .unwrap_or_default()
         .as_secs();
 
-    // ── 1. Render markdown via MiniJinja template ──────────────────────────────
     let ctx = DiaryEntryContext {
         session_id:    &session_id,
         timestamp:     ts,
@@ -55,7 +41,6 @@ pub async fn write_diary_entry(
         }
     };
 
-    // ── 2. Write markdown to disk ──────────────────────────────────────────────
     if let Err(e) = tokio::fs::create_dir_all(&diary_dir).await {
         warn!(session_id = %session_id, error = %e, "diary: failed to create directory");
         return;
@@ -73,9 +58,6 @@ pub async fn write_diary_entry(
         "diary: markdown written"
     );
 
-    // ── 3. Stub LanceDB row (zero vector) via memory service ───────────────────
-    // `summary` is a 200-char truncation of the response — compact enough for
-    // the diary index row without duplicating the full text already on disk.
     let summary: String = response_text.chars().take(200).collect();
     let params = json!({
         "session_id":       session_id,

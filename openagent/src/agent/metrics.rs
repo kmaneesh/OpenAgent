@@ -3,14 +3,14 @@ use sdk_rust::{attach_context, ts_ms, MetricsWriter};
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone)]
-pub struct CortexTelemetry {
+pub struct AgentTelemetry {
     writer: MetricsWriter,
 }
 
-impl CortexTelemetry {
+impl AgentTelemetry {
     pub fn new(logs_dir: &str) -> anyhow::Result<Self> {
         Ok(Self {
-            writer: MetricsWriter::new(logs_dir, "cortex").map_err(|e| anyhow::anyhow!("{e}"))?,
+            writer: MetricsWriter::new(logs_dir, "agent").map_err(|e| anyhow::anyhow!("{e}"))?,
         })
     }
 
@@ -35,7 +35,7 @@ pub fn step_ok(
 ) -> Value {
     json!({
         "ts_ms": ts_ms(),
-        "service": "cortex",
+        "service": "agent",
         "op": "step",
         "status": "ok",
         "session_id": session_id,
@@ -60,7 +60,7 @@ pub fn step_err(
 ) -> Value {
     json!({
         "ts_ms": ts_ms(),
-        "service": "cortex",
+        "service": "agent",
         "op": "step",
         "status": "error",
         "session_id": session_id,
