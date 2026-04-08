@@ -111,6 +111,19 @@ async fn main() -> Result<()> {
     let manager = Arc::new(ServiceManager::new());
     manager.start_all(manifests, &cfg.services.disabled).await;
 
+    // ---- In-process channels (replaces services/channels/ daemon) ---------------
+    // Listeners push message.received events onto the same broadcast bus used by
+    // the ServiceManager, so dispatch.rs receives them transparently.
+    let channel_handle = channels::init(
+        &project_root,
+        metrics.clone(),
+        manager.event_sender(),
+    ).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "channels.init.error — channel operations will fail");
+        // Return a no-op handle backed by an empty registry.
+        channels::ChannelHandle::disabled()
+    });
+
     // ---- Build in-process AgentContext (action catalog + tool router + telemetry) ----
     let action_catalog = Arc::new(ActionCatalog::load(&project_root.join("services")));
     let tool_addresses = action_catalog.tool_address_map();
@@ -133,8 +146,9 @@ async fn main() -> Result<()> {
         let dispatch_manager = Arc::clone(&manager);
         let dispatch_guard   = guard_db.clone();
         let dispatch_ctx     = Arc::clone(&agent_ctx);
+        let dispatch_ch      = channel_handle.clone();
         tokio::spawn(async move {
-            dispatch::run(dispatch_manager, dispatch_guard, dispatch_ctx).await;
+            dispatch::run(dispatch_manager, dispatch_guard, dispatch_ctx, dispatch_ch).await;
         });
     }
 

@@ -12,7 +12,6 @@ pub mod mcplite;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
@@ -70,6 +69,12 @@ impl ServiceManager {
     /// Subscribe to events pushed by any connected service.
     pub fn subscribe_events(&self) -> broadcast::Receiver<Value> {
         self.event_tx.subscribe()
+    }
+
+    /// Clone the event sender so other in-process components can push events
+    /// onto the same bus (e.g. the in-process channels module).
+    pub fn event_sender(&self) -> broadcast::Sender<Value> {
+        self.event_tx.clone()
     }
 
     /// Return a snapshot of all currently connected services.
