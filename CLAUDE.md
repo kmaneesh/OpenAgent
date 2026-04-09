@@ -444,7 +444,6 @@ disabled = []   # service names to skip even if binary exists
 **LanceDB Note:** Vector search uses a direct Python client wrapper to access LanceDB's fast native Rust core. This avoids JSON IPC serialization overhead on massive vector arrays and keeps the single-node setup lean. We only consider decoupling LanceDB into a Go service if rigorous profiling shows it aggressively blocking the `asyncio` event loop.
 
 | Filesystem | Artifacts, media | `data/artifacts/` |
-| Unix sockets | Service IPC files | `data/sockets/*.sock` |
 
 ## Skills (`skills/`)
 
@@ -649,22 +648,25 @@ app/
 
 ### Go Services (WhatsApp only)
 - WhatsApp: standalone Go module (`go.mod`) in `services/whatsapp/`
-- Socket path received via env var `OPENAGENT_SOCKET_PATH` or CLI flag
+- TCP address received via env var `OPENAGENT_TCP_ADDRESS` (set by `services.sh`)
 - Goroutine per request — never block the accept loop
-- Graceful SIGTERM: drain in-flight requests, close socket, exit 0
-- Include `service.json` manifest
+- Graceful SIGTERM: drain in-flight requests, close listener, exit 0
+- Include `service.json` manifest with `address` field
 - Cross-compile targets: `linux/arm64`, `linux/amd64`, `darwin/arm64`
-- Compiled binaries go in `bin/` (gitignored)
+- Compiled binaries go in project-root `bin/` as `bin/<name>-<os>-<arch>` (gitignored)
 
 ### Rust Services
 - Each service: standalone Rust crate in `services/<name>/` with `Cargo.toml`
-- Use `sdk-rust` local crate for MCP-lite server boilerplate
-- Socket path read from `OPENAGENT_SOCKET_PATH` env var (same convention as Go)
+- Use `sdk-rust` local crate for MCP-lite server boilerplate (`McpLiteServer`, `setup_otel`)
+- TCP address set via env var `OPENAGENT_TCP_ADDRESS` (injected by `services.sh`); `serve_auto(default)` reads it
+- tokio features: `["rt-multi-thread", "macros", "sync", "net"]` — never `"full"`
+- `mimalloc` as `#[global_allocator]`
+- `[profile.release]`: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`
 - Use `tokio` async runtime; blocking I/O (e.g. HTTP) via `tokio::task::spawn_blocking` or sync crate (`minreq`)
 - Graceful SIGTERM: tokio runtime shutdown signal
-- Include `service.json` manifest — identical schema to Go services
+- Include `service.json` manifest with `address` field — identical schema to Go services
 - Cross-compile targets: `aarch64-apple-darwin` (native on Mac), `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl` (via `cross`)
-- Compiled binaries go in `bin/` (gitignored)
+- Compiled binaries go in project-root `bin/` as `bin/<name>-<os>-<arch>` (gitignored)
 - External runtime deps (e.g. MSB) must be documented in `service.json` or service README
 
 ### Rust Patterns (apply to all Rust code in this repo)
@@ -718,32 +720,15 @@ Use `tokio::sync::mpsc` with an explicit capacity. Never use `unbounded_channel`
 
 
 
-Cortex is the only service that uses [AutoAgents](https://github.com/liquidos-ai/AutoAgents) as its agent execution framework, `tower` for middleware, and eventually `axum` for the control plane. Other services remain plain `tokio` + `sdk-rust` daemons — do not add any of these to non-Cortex services.
-
-**AutoAgents integration (selective — see `services/cortex/README.md` for full detail):**
-
-| Adopted | Excluded |
-|---|---|
-| `autoagents-llm` — unified `LLMProvider` trait | `autoagents-core::memory` — own `MemoryProvider` impl |
-| `autoagents-core` — `BaseAgent`, `ToolT`, `ActorAgent` | `autoagents-protocol` — own MCP-lite protocol |
-| `autoagents-derive` — tool input/output proc macros | `autoagents-telemetry` — own OTEL via `sdk-rust` |
-
-Key patterns:
-- **`CortexAgent`**: single generic struct implementing `AgentDeriveT` manually; fully driven by `config/openagent.yaml`. No `#[agent]` macro — adding an agent is a YAML edit, not a Rust recompile.
-- **`HybridMemoryAdapter`**: implements AutoAgents' `MemoryProvider` trait with sliding-window STM (40 messages, permanent) + LTM via `memory.search` over UDS.
-- **Tool dispatch**: `ToolRouter` prefix-routes to owning service sockets; `cortex.*` self-routes back to `cortex.sock` (worker dispatch). Three Capabilities are always pinned: `memory.search`, `cortex.discover`, `skill.read`. All other tools are discovered via `cortex.discover` — never pre-injected.
-- **Research context injection**: each generation turn calls `research.status` proactively, formats runnable tasks into the system prompt (`## Active Research` block) so the supervisor selects the next task without a round-trip tool call.
-- **Worker dispatch**: supervisor calls `cortex.step` with `agent_name` to spawn a worker; same handler, same process, fresh `CortexAgent` with worker config. Workers are stateless — full context in the request. Actor dispatch (`ractor`) deferred to Phase 9+.
-
 **Tower conventions (`openagent` binary):**
-- Tower/Axum lives in `openagent/` (the control plane binary), NOT in Cortex or any other service
+- Tower/Axum lives in `openagent/` (the control plane binary), NOT in any service crate
 - Layer order (outermost → innermost): `ConcurrencyLimitLayer` → `HandleErrorLayer` → `TimeoutLayer` → `TraceLayer` → `CorsLayer` → `GuardLayer` → `SttLayer` → `TtsLayer` → Router
 - Use `tower::ServiceBuilder` to compose timeout + error handling; use `axum::middleware::from_fn_with_state` for stateful layers
 - Timeout and retry (`tower::timeout::TimeoutLayer`, `tower::retry::RetryLayer`) replace Python's manual retry logic
 
 **Axum scope (permanent):**
 - Axum in `openagent` is external-facing only — it speaks JSON on :8080 to platform connectors and the web UI
-- Axum does NOT replace MCP-lite between `openagent` and services — that protocol is JSON over UDS, permanent
+- Axum does NOT replace MCP-lite between `openagent` and services — that protocol is JSON over TCP, permanent
 - Do NOT add `axum` or `tower` to any service other than `openagent`
 
 ## Testing Standards
@@ -752,7 +737,7 @@ Key patterns:
 - App tests: `app/tests/`
 - Extension tests: `extensions/<name>/tests/` only (self-contained per extension)
 - Service tests: `services/<name>/` (Go `_test.go` files)
-- Mock Go/Rust services in Python tests with a minimal asyncio socket stub that speaks MCP-lite
+- Mock Go/Rust services in Python tests with a minimal asyncio TCP stub that speaks MCP-lite
 - No real network calls in tests, no real LLM calls in tests
 - `pytest-asyncio` for async Python tests
 - Do not keep active test suites under project-root `tests/`; tests belong to their owning vertical.
@@ -787,7 +772,7 @@ Key patterns:
 8. ~~**Rate limiting middleware**~~ ✅ — `ConcurrencyLimitLayer` (max 50) as outermost Tower layer in `openagent`
 9. ~~**Web UI diary + chat refactor**~~ ✅ — `/diary` read-only past session browser; `/chat` simplified to live web session only
 10. ~~**Cortex Phase 7: Segmented STM**~~ ❌ CANCELLED — sliding window (40 messages) is permanent
-11. ~~**Cortex Phase 6: Research DAG + Supervisor task selection + Worker dispatch**~~ ✅ — `services/research/` Rust service (SQLite + markdown snapshots, 8 tools); research context injected into system prompt each generation turn (`fetch_research_context` via ToolRouter); `cortex.step` self-call worker dispatch (ToolRouter routes `cortex.*` → `cortex.sock`); `cortex.step` always pinned alongside `memory.search` and `research.status`; `user_key` param for cross-channel research ownership
+11. ~~**Cortex Phase 6: Research DAG + Supervisor task selection + Worker dispatch**~~ ✅ — research and cortex merged into `openagent`; research context injected into system prompt each generation turn; `cortex.step` self-call worker dispatch; `cortex.step` always pinned alongside `memory.search` and `research.status`; `user_key` param for cross-channel research ownership
 12. **Skills — `skill.read` in Cortex** — `hint` + `enforce` fields in `SkillFrontmatter`; `handle_skill_read()` in `handlers.rs`; registered in `service.json`; progressive disclosure: summary in semantic search, full body + references TOC on `skill.read(name=...)`, reference content on `skill.read(name=..., reference=...)`; existing SKILL.md files updated with `hint` + `enforce`
 13. **Cortex Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection after research tasks complete; **also triggers skill knowledge assimilation** — scans diary entries for skill-relevant learnings, writes draft files to `skills/<name>/drafts/` for human review
 14. **Cortex Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions

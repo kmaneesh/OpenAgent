@@ -116,7 +116,7 @@ RestartMaxDelaySec=30s
 
 # TCP address this service binds on
 Environment=OPENAGENT_TCP_ADDRESS=0.0.0.0:$port
-Environment=OPENAGENT_LOGS_DIR=$ROOT/logs
+Environment=OPENAGENT_LOGS_DIR=/var/log/openagent
 
 # Load secrets (.env) if present — ignored if file missing
 ${env_file}
@@ -209,9 +209,9 @@ if [ "$UNINSTALL" = "1" ]; then
   exit 0
 fi
 
-# Ensure log dir exists and is writable by the service user
-mkdir -p "$ROOT/logs" "$ROOT/data/artifacts"
-chown -R "$RUN_USER:$RUN_GROUP" "$ROOT/logs" "$ROOT/data" 2>/dev/null || true
+# Ensure log and data dirs exist and are writable by the service user
+mkdir -p /var/log/openagent "$ROOT/data/artifacts"
+chown -R "$RUN_USER:$RUN_GROUP" /var/log/openagent "$ROOT/data" 2>/dev/null || true
 
 echo "Installing OpenAgent systemd units"
 echo "  root:   $ROOT"

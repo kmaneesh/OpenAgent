@@ -148,7 +148,7 @@ fn days_to_ymd(days: i64) -> (i64, u32, u32) {
 }
 
 // ---------------------------------------------------------------------------
-// Span exporter
+// Span exporter — OTLP resourceSpans envelope
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -156,11 +156,13 @@ struct FileSpanExporter {
     inner: Arc<Mutex<DailyWriterInner>>,
     logs_dir: PathBuf,
     prefix: String,
+    service_name: String,
 }
 
 impl SpanExporter for FileSpanExporter {
     fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
-        let lines: Vec<String> = batch.iter().map(serialize_span).collect();
+        let svc = self.service_name.clone();
+        let lines: Vec<String> = batch.iter().map(|s| serialize_span(s, &svc)).collect();
         let inner = self.inner.clone();
         let logs_dir = self.logs_dir.clone();
         let prefix = self.prefix.clone();
@@ -184,38 +186,146 @@ impl SpanExporter for FileSpanExporter {
     }
 }
 
-fn serialize_span(span: &SpanData) -> String {
-    serde_json::to_string(&json!({
-        "trace_id": format!("{:032x}", span.span_context.trace_id()),
-        "span_id":  format!("{:016x}", span.span_context.span_id()),
-        "name":     span.name.as_ref(),
-        "start_ms": span.start_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
-        "end_ms":   span.end_time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
-        "status":   format!("{:?}", span.status),
-        "attrs":    span.attributes.iter().map(|kv| json!({kv.key.as_str(): kv.value.as_str()})).collect::<Vec<_>>(),
-    })).unwrap_or_default()
+/// Serialise a span as an OTLP `resourceSpans` envelope (one line of JSONL).
+fn serialize_span(span: &SpanData, service_name: &str) -> String {
+    use opentelemetry::trace::Status as TraceStatus;
+
+    let ctx = &span.span_context;
+    let trace_id = format!("{:032x}", ctx.trace_id());
+    let span_id  = format!("{:016x}", ctx.span_id());
+    let parent_span_id = if span.parent_span_id != opentelemetry::trace::SpanId::INVALID {
+        format!("{:016x}", span.parent_span_id)
+    } else {
+        String::new()
+    };
+
+    let attrs: Vec<Value> = span.attributes.iter()
+        .map(|kv| json!({"key": kv.key.as_str(), "value": otel_value(&kv.value)}))
+        .collect();
+
+    let start_ns = span.start_time.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos().to_string();
+    let end_ns = span.end_time.duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos().to_string();
+
+    let (status_code, status_msg) = match &span.status {
+        TraceStatus::Ok => (1i32, String::new()),
+        TraceStatus::Error { description } => (2, description.to_string()),
+        _ => (0, String::new()),
+    };
+
+    let scope_name = span.instrumentation_scope.name();
+    let span_val = json!({
+        "traceId": trace_id, "spanId": span_id, "parentSpanId": parent_span_id,
+        "name": span.name.as_ref(),
+        "kind": span.span_kind.clone() as i32,
+        "startTimeUnixNano": start_ns, "endTimeUnixNano": end_ns,
+        "attributes": attrs,
+        "status": {"code": status_code, "message": status_msg},
+    });
+
+    json!({
+        "resourceSpans": [{
+            "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": service_name}}]},
+            "scopeSpans": [{"scope": {"name": scope_name}, "spans": [span_val]}]
+        }]
+    }).to_string()
+}
+
+fn otel_value(v: &opentelemetry::Value) -> Value {
+    match v {
+        opentelemetry::Value::String(s) => json!({"stringValue": s.as_str()}),
+        opentelemetry::Value::Bool(b)   => json!({"boolValue": b}),
+        opentelemetry::Value::I64(i)    => json!({"intValue": i.to_string()}),
+        opentelemetry::Value::F64(f)    => json!({"doubleValue": f}),
+        _ => json!({"stringValue": v.to_string()}),
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Log exporter
+// Log exporter — OTLP resourceLogs envelope
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 struct FileLogExporter {
     writer: DailyFileWriter,
+    service_name: String,
 }
 
 #[async_trait]
 impl LogExporter for FileLogExporter {
     async fn export(&mut self, batch: LogBatch<'_>) -> LogResult<()> {
-        for (record, _scope) in batch.iter() {
-            let body = record.body.as_ref().map_or_else(String::new, |b| format!("{b:?}"));
-            let severity = format!("{:?}", record.severity_number);
-            let line = serde_json::to_string(&json!({"ts": record.observed_timestamp.map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64), "severity": severity, "body": body})).unwrap_or_default();
+        for (record, scope) in batch.iter() {
+            let line = serialize_log_record(record, scope, &self.service_name);
             let _ = self.writer.write_line(&line);
         }
         Ok(())
     }
+}
+
+/// Serialise a log record as an OTLP `resourceLogs` envelope (one line of JSONL).
+fn serialize_log_record(
+    record: &opentelemetry_sdk::logs::LogRecord,
+    scope: &opentelemetry::InstrumentationScope,
+    service_name: &str,
+) -> String {
+    use opentelemetry::logs::AnyValue;
+    use std::time::UNIX_EPOCH;
+
+    let observed_ns = record.observed_timestamp
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().to_string());
+    let timestamp_ns = record.timestamp
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos().to_string());
+
+    let severity = record.severity_text.map(|s| s.to_owned())
+        .or_else(|| record.severity_number.map(|n| format!("{n:?}")));
+
+    let body = record.body.as_ref().map(|v| match v {
+        AnyValue::String(s) => json!({"stringValue": s.as_ref()}),
+        AnyValue::Int(i)    => json!({"intValue": i}),
+        AnyValue::Double(f) => json!({"doubleValue": f}),
+        AnyValue::Boolean(b) => json!({"boolValue": b}),
+        _ => json!({"stringValue": format!("{v:?}")}),
+    });
+
+    let attrs: Vec<Value> = record.attributes_iter()
+        .map(|(k, v)| {
+            let val = match v {
+                AnyValue::String(s) => json!({"stringValue": s.as_ref()}),
+                AnyValue::Int(i)    => json!({"intValue": i}),
+                AnyValue::Double(f) => json!({"doubleValue": f}),
+                AnyValue::Boolean(b) => json!({"boolValue": b}),
+                _ => json!({"stringValue": format!("{v:?}")}),
+            };
+            json!({"key": k.as_str(), "value": val})
+        })
+        .collect();
+
+    let trace_ctx = record.trace_context.as_ref().map(|tc| json!({
+        "traceId":    format!("{:032x}", tc.trace_id),
+        "spanId":     format!("{:016x}", tc.span_id),
+        "traceFlags": tc.trace_flags.map(|f| f.to_u8()),
+    }));
+
+    json!({
+        "resourceLogs": [{
+            "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": service_name}}]},
+            "scopeLogs": [{
+                "scope": {"name": scope.name()},
+                "logRecords": [{
+                    "timeUnixNano":         timestamp_ns,
+                    "observedTimeUnixNano": observed_ns,
+                    "severityText":         severity,
+                    "body":                 body,
+                    "attributes":           attrs,
+                    "traceContext":         trace_ctx,
+                    "target":               record.target.as_deref(),
+                }]
+            }]
+        }]
+    }).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +374,6 @@ pub struct OTELGuard {
     tracer_provider: TracerProvider,
     logger_provider: LoggerProvider,
     meter_provider: SdkMeterProvider,
-    _log_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
 impl fmt::Debug for OTELGuard {
@@ -298,7 +407,15 @@ pub fn setup_otel(service_name: &str, logs_dir: &str) -> Result<OTELGuard> {
     let trace_file = open_log_file(&logs_path, &trace_prefix, &today)?;
     let trace_inner = Arc::new(Mutex::new(DailyWriterInner { file: trace_file, current_date: today }));
     let mut trace_builder = TracerProvider::builder()
-        .with_batch_exporter(FileSpanExporter { inner: trace_inner, logs_dir: logs_path.clone(), prefix: trace_prefix }, runtime::Tokio)
+        .with_batch_exporter(
+            FileSpanExporter {
+                inner: trace_inner,
+                logs_dir: logs_path.clone(),
+                prefix: trace_prefix,
+                service_name: service_name.to_owned(),
+            },
+            runtime::Tokio,
+        )
         .with_resource(resource.clone());
 
     if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
@@ -315,7 +432,7 @@ pub fn setup_otel(service_name: &str, logs_dir: &str) -> Result<OTELGuard> {
     // ---- Logs ---------------------------------------------------------------
     let log_writer = DailyFileWriter::new(logs_path.clone(), format!("{service_name}-logs"))?;
     let mut log_builder = LoggerProvider::builder()
-        .with_batch_exporter(FileLogExporter { writer: log_writer }, runtime::Tokio)
+        .with_batch_exporter(FileLogExporter { writer: log_writer, service_name: service_name.to_owned() }, runtime::Tokio)
         .with_resource(resource.clone());
 
     if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
@@ -358,33 +475,14 @@ pub fn setup_otel(service_name: &str, logs_dir: &str) -> Result<OTELGuard> {
 
     // ---- tracing subscriber -------------------------------------------------
     let otel_log_bridge = opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider);
-    let file_appender = tracing_appender::rolling::daily(logs_dir, format!("{service_name}-logs"));
-    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
-    // When running interactively (TTY attached), the console owns the terminal —
-    // suppress the stderr appender so log output doesn't flood the prompt.
-    // In daemon / Docker / systemd mode (no TTY), keep stderr so journal/Docker
-    // logs capture structured output without needing to read JSONL files.
-    #[cfg(unix)]
-    let tty = unsafe { libc::isatty(libc::STDIN_FILENO) != 0 };
-    #[cfg(not(unix))]
-    let tty = false;
-
-    let registry = tracing_subscriber::registry()
+    tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(OpenTelemetryLayer::new(tracer))
         .with(otel_log_bridge)
-        .with(tracing_subscriber::fmt::layer().json().with_writer(non_blocking));
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+        .try_init()
+        .ok();
 
-    if tty {
-        // Console mode: file-only. Terminal is for the interactive console.
-        registry.init();
-    } else {
-        // Daemon mode: also emit human-readable logs to stderr for journald/Docker.
-        registry
-            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-            .init();
-    }
-
-    Ok(OTELGuard { tracer_provider, logger_provider, meter_provider, _log_guard: log_guard })
+    Ok(OTELGuard { tracer_provider, logger_provider, meter_provider })
 }

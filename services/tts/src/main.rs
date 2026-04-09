@@ -7,7 +7,7 @@
 //! - `OPENAGENT_TTS_MODEL`     — ONNX model path (default: `data/models/kokoro-v1.0.onnx`)
 //! - `OPENAGENT_TTS_VOICES`    — Voices data path (default: `data/models/voices-v1.0.bin`)
 //! - `OPENAGENT_ARTIFACTS_DIR` — Output dir for WAV files (default: `data/artifacts/tts`)
-//! - `OPENAGENT_LOGS_DIR`      — Directory for OTLP log/trace files (default: `logs`)
+//! - `OPENAGENT_LOGS_DIR`      — Directory for OTLP log/trace files (default: `/var/log/openagent`)
 
 use mimalloc::MiMalloc;
 #[global_allocator]

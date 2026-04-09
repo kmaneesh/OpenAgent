@@ -8,7 +8,9 @@
       "WebSearch",
       "Bash(cargo build:*)",
       "Bash(find /Users/m/Sites/kmaneesh/OpenAgent/services -name \"Cargo.toml\" -exec grep -l \"profile.release\" {} \\\\;)",
-      "Bash(grep \"sdk-rust\" /Users/m/Sites/kmaneesh/OpenAgent/services/*/Cargo.toml)"
+      "Bash(grep \"sdk-rust\" /Users/m/Sites/kmaneesh/OpenAgent/services/*/Cargo.toml)",
+      "Bash(cargo check:*)",
+      "Bash(wait)"
     ]
   }
 }

@@ -10,7 +10,7 @@
 //!
 //! Environment variables (all paths relative to the process working directory = project root):
 //!   OPENAGENT_MEMORY_PATH      — LanceDB storage    (default: data/memory)
-//!   OPENAGENT_LOGS_DIR         — traces + metrics   (default: logs)
+//!   OPENAGENT_LOGS_DIR         — traces + metrics   (default: /var/log/openagent)
 //!   OPENAGENT_EMBED_CACHE_PATH — FastEmbed cache    (default: data/models)
 //!   OPENAGENT_EMBED_OFFLINE    — "1" → error if model not in cache (no download)
 //!   OPENAGENT_DOWNLOAD_ONLY    — "1" → download model, run warmup, then exit 0

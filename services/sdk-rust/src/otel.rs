@@ -202,11 +202,13 @@ struct FileSpanExporter {
     inner: Arc<Mutex<DailyWriterInner>>,
     logs_dir: PathBuf,
     prefix: String,
+    service_name: String,
 }
 
 impl SpanExporter for FileSpanExporter {
     fn export(&mut self, batch: Vec<SpanData>) -> BoxFuture<'static, ExportResult> {
-        let lines: Vec<String> = batch.iter().map(serialize_span).collect();
+        let svc = self.service_name.clone();
+        let lines: Vec<String> = batch.iter().map(|s| serialize_span(s, &svc)).collect();
         let inner = self.inner.clone();
         let logs_dir = self.logs_dir.clone();
         let prefix = self.prefix.clone();
@@ -246,13 +248,17 @@ impl SpanExporter for FileSpanExporter {
 #[derive(Debug)]
 struct FileLogExporter {
     writer: DailyFileWriter,
+    /// Actual service name for the OTLP `resource.service.name` attribute.
+    /// The OTEL SDK provides the instrumentation library name (scope), not the
+    /// service name, so we carry it explicitly.
+    service_name: String,
 }
 
 #[async_trait]
 impl LogExporter for FileLogExporter {
     async fn export(&mut self, batch: LogBatch<'_>) -> LogResult<()> {
         for (record, scope) in batch.iter() {
-            let line = serialize_log_record(record, scope);
+            let line = serialize_log_record(record, scope, &self.service_name);
             let _ = self.writer.write_line(&line);
         }
         Ok(())
@@ -306,7 +312,6 @@ pub struct OTELGuard {
     tracer_provider: TracerProvider,
     logger_provider: LoggerProvider,
     meter_provider: SdkMeterProvider,
-    _log_guard: tracing_appender::non_blocking::WorkerGuard,
 }
 
 impl OTELGuard {
@@ -384,6 +389,7 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         inner: trace_inner,
         logs_dir: logs_path.clone(),
         prefix: trace_prefix,
+        service_name: service_name.to_owned(),
     };
 
     let mut trace_builder = TracerProvider::builder()
@@ -413,7 +419,7 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
     // -----------------------------------------------------------------------
     let log_writer =
         DailyFileWriter::new(logs_path.clone(), format!("{service_name}-logs"))?;
-    let file_log_exporter = FileLogExporter { writer: log_writer };
+    let file_log_exporter = FileLogExporter { writer: log_writer, service_name: service_name.to_owned() };
 
     let mut log_builder = LoggerProvider::builder()
         .with_batch_exporter(file_log_exporter, runtime::Tokio)
@@ -459,19 +465,16 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
     //
     // Layers (in order of evaluation):
     //   1. EnvFilter          — level gating (RUST_LOG, default INFO)
-    //   2. OpenTelemetryLayer — tracing spans → TracerProvider → file + OTLP
-    //   3. OtelTracingBridge  — tracing events (info!/warn!/error!) → LoggerProvider → file + OTLP
-    //   4. fmt stderr layer   — human-readable output to stderr for debugging
-    //   5. fmt JSON file layer— structured JSON to rolling file (human-readable fmt)
+    //   2. OpenTelemetryLayer — tracing spans → TracerProvider → OTLP JSONL file
+    //   3. OtelTracingBridge  — tracing events → LoggerProvider → OTLP JSONL file
+    //   4. fmt stderr layer   — human-readable output for journald / Docker / dev
+    //
+    // The tracing-appender rolling JSON sink is intentionally absent — it
+    // produced a second, non-OTEL file (<svc>-logs.YYYY-MM-DD) with the same
+    // data. The FileLogExporter writes the canonical OTLP JSONL file instead.
     // -----------------------------------------------------------------------
     let otel_log_bridge =
         opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge::new(&logger_provider);
-
-    let file_appender = tracing_appender::rolling::daily(
-        logs_dir,
-        format!("{service_name}-logs"),
-    );
-    let (non_blocking, log_guard) = tracing_appender::non_blocking(file_appender);
 
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         EnvFilter::new(format!(
@@ -485,11 +488,6 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         .with(OpenTelemetryLayer::new(tracer))
         .with(otel_log_bridge)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .json()
-                .with_writer(non_blocking),
-        )
         .try_init()
         .ok(); // "already set" on repeated calls in tests — not an error
 
@@ -497,7 +495,6 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         tracer_provider,
         logger_provider,
         meter_provider,
-        _log_guard: log_guard,
     })
 }
 
@@ -606,15 +603,18 @@ fn span_to_value(span: &SpanData) -> Value {
     })
 }
 
-fn serialize_span(span: &SpanData) -> String {
-    let svc = span.instrumentation_scope.name();
+fn serialize_span(span: &SpanData, service_name: &str) -> String {
+    // `service_name` comes from setup_otel (the actual service, e.g. "browser").
+    // `span.instrumentation_scope.name()` is the library name — use it for the
+    // inner scope but NOT for the resource `service.name` attribute.
+    let scope_name = span.instrumentation_scope.name();
     let obj = json!({
         "resourceSpans": [{
             "resource": {
-                "attributes": [{"key": "service.name", "value": {"stringValue": svc}}]
+                "attributes": [{"key": "service.name", "value": {"stringValue": service_name}}]
             },
             "scopeSpans": [{
-                "scope": { "name": svc },
+                "scope": { "name": scope_name },
                 "spans": [span_to_value(span)],
             }]
         }]
@@ -639,6 +639,7 @@ fn otel_kv_to_json(v: &opentelemetry::Value) -> Value {
 fn serialize_log_record(
     record: &opentelemetry_sdk::logs::LogRecord,
     scope: &opentelemetry::InstrumentationScope,
+    service_name: &str,
 ) -> String {
     use std::time::UNIX_EPOCH;
 
@@ -674,7 +675,7 @@ fn serialize_log_record(
 
     let obj = json!({
         "resourceLogs": [{
-            "resource": { "attributes": [{"key": "service.name", "value": {"stringValue": scope.name()}}] },
+            "resource": { "attributes": [{"key": "service.name", "value": {"stringValue": service_name}}] },
             "scopeLogs": [{
                 "scope": { "name": scope.name() },
                 "logRecords": [{
