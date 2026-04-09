@@ -6,7 +6,7 @@
 
 - **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
 - **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors (discord, telegram, slack), compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Cortex (the growing Brain)** — Rust service that owns the full ReAct loop, tool routing, memory, and action search. `openagent` (Rust binary) wraps it with Tower middleware and exposes Axum on :8080 for external callers.
+- **Agent (the growing Brain)** — Rust service that owns the full ReAct loop, tool routing, memory, and action search. `openagent` (Rust binary) wraps it with Tower middleware and exposes Axum on :8080 for external callers.
 - **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 All services communicate via **MCP-lite wire protocol** (tagged JSON frames over TCP). Services run as persistent daemons started by `services.sh` (dev) or systemd (production); `ServiceManager` in `openagent` connects to them, registers their tools, and health-monitors them.
@@ -15,12 +15,12 @@ Primary deployment target: **Raspberry Pi / low-power hardware** (Rust compiles 
 
 ### Migration Trajectory
 
-This is an evolution, not a rewrite. Each phase is independently shippable. Python shrinks; Cortex grows.
+This is an evolution, not a rewrite. Each phase is independently shippable. Python shrinks; Agent grows.
 
 | Phase | Control plane | Python role | Tower/Axum role |
 |---|---|---|---|
-| **Phase 1** ✅ | Python `AgentLoop` calls `cortex.step` via MCP-lite. Cortex does one LLM turn. | Full control plane | None |
-| **Phase 2** ✅ | Rust `openagent` binary is the control plane. Cortex owns full ReAct loop + tool routing + memory. Tower middleware (Guard, STT, TTS) and dispatch loop live in `openagent`. Python middleware deleted. | Web UI only (optional Docker container) | Full Tower stack in `openagent` (GuardLayer → SttLayer → TtsLayer) |
+| **Phase 1** ✅ | Python `AgentLoop` calls `agent.step` via MCP-lite. Agent does one LLM turn. | Full control plane | None |
+| **Phase 2** ✅ | Rust `openagent` binary is the control plane. Agent owns full ReAct loop + tool routing + memory. Tower middleware (Guard, STT, TTS) and dispatch loop live in `openagent`. Python middleware deleted. | Web UI only (optional Docker container) | Full Tower stack in `openagent` (GuardLayer → SttLayer → TtsLayer) |
 | **Phase 3 (now)** ✅ | `openagent` Axum serves control plane API on :8080. Platform connectors (channels service) connect directly. Python web UI is a separate container. | Retired as control plane; web UI only | Axum in `openagent` is the control plane |
 
 **Permanent protocol decision:** MCP-lite JSON over TCP is the permanent internal protocol between `openagent` and all services. Axum is external-facing only — it speaks JSON to clients on :8080. Services never change their protocol because the control plane is being replaced above them.
@@ -40,7 +40,7 @@ Whenever the user sends an input where their intention needs clarification or th
 
 OpenAgent uses a **custom ReAct loop** and thin httpx-based provider layer — no framework dependency. This gives full control over tool schema format, retry logic, and iteration limits for sub-30B models. Session/memory uses a `SessionBackend` protocol (SQLite now; Go/Rust service later). See `roadmap.md` for rationale and build order.
 
-**LLM deployment note:** The primary LLM is an **external model with a 36K token context window** (served via OpenAI-compatible API). Context overhead per prompt is minimal: 3 fixed Capability schemas + top-k skill summaries (one line each). Tools are not injected — the LLM discovers them via `cortex.discover` on demand. Token pressure is not a constraint at current scale — do not add token-reduction complexity unless profiling proves otherwise.
+**LLM deployment note:** The primary LLM is an **external model with a 36K token context window** (served via OpenAI-compatible API). Context overhead per prompt is minimal: 3 fixed Capability schemas + top-k skill summaries (one line each). Tools are not injected — the LLM discovers them via `agent.discover` on demand. Token pressure is not a constraint at current scale — do not add token-reduction complexity unless profiling proves otherwise.
 
 ## Reference Implementations
 
@@ -191,21 +191,21 @@ InboundMessage (from platform extension)
   → AgentLoop.process()
     → Execute Middleware Chain (STT, whitelist — Python-side, temporary)
     → Build context (history + memory + system prompt)
-    → cortex.step via MCP-lite  ← Cortex does LLM reasoning
-    → If tool call (Phase 2+): Cortex routes tools directly
+    → agent.step via MCP-lite  ← Agent does LLM reasoning
+    → If tool call (Phase 2+): Agent routes tools directly
     → Final answer → OutboundMessage → platform extension delivers it
 ```
 
 **Middleware migration:** ✅ Complete. Python middleware (STT, whitelist/guard, TTS) has been replaced by Tower layers (`SttLayer`, `GuardLayer`, `TtsLayer`) in the `openagent` Rust binary. Do not add new Python middleware — add Tower layers in `openagent/src/` instead.
 
-**Agent registry:** Multiple named agent instances (follow Picoclaw `AgentRegistry`). Each agent has its own model, workspace, session, and tool set. A supervisor agent dispatches to workers. In Phase 3+, this registry moves into Cortex.
+**Agent registry:** Multiple named agent instances (follow Picoclaw `AgentRegistry`). Each agent has its own model, workspace, session, and tool set. A supervisor agent dispatches to workers. In Phase 3+, this registry moves into Agent.
 
 **Key constraints (Python side, until migrated):**
 - Max iterations: 40 (configurable)
 - Truncate large tool results to 500 chars (configurable)
 - Strip context tags before saving to history
 - Core loop is stateless — all state lives in `SessionManager`
-- **Zero-Copy Artifact Passing:** Services write raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload. In Phase 4, Cortex/Axum takes over this routing role.
+- **Zero-Copy Artifact Passing:** Services write raw binary to disk (`data/artifacts/`). Python routes the small JSON artifact path payload. In Phase 4, Agent/Axum takes over this routing role.
 - Python is the central router for inter-service workflows until Phase 4 — no east-west mesh between Rust/Go daemons at any phase.
 
 ### Services Layer — Rust (primary) and Go (WhatsApp only)
@@ -455,20 +455,20 @@ The action context has three distinct tiers with different injection rules:
 |---|---|---|---|
 | **Capability** | Fixed meta-tools for discovery and recall | ✅ Always, every turn | N/A — always present |
 | **Skill** | Domain knowledge, patterns, guidance | Summary only (top-k match) | `skill.read(name=...)` |
-| **Tool** | Service integrations (browser, sandbox, …) | ❌ Never injected | `cortex.discover` → read schema → call |
+| **Tool** | Service integrations (browser, sandbox, …) | ❌ Never injected | `agent.discover` → read schema → call |
 
 **The five Capabilities (always injected every turn — full schema, no discovery needed):**
 - `memory.search` — recall from long-term memory (LTM)
 - `web.search` — search the web via SearXNG (step 1 of 2-turn web workflow)
 - `web.fetch` — fetch a URL and return clean Markdown (step 2 of 2-turn web workflow)
-- `cortex.discover` — search the action catalog for tools and skill summaries
+- `agent.discover` — search the action catalog for tools and skill summaries
 - `skill.read` — load a skill's full body or deep-dive reference on demand
 
-`memory.search`, `web.search`, and `web.fetch` are sourced from the ActionCatalog (service.json). `cortex.discover` and `skill.read` are internal Cortex tools injected via hardcoded builders.
+`memory.search`, `web.search`, and `web.fetch` are sourced from the ActionCatalog (service.json). `agent.discover` and `skill.read` are internal Agent tools injected via hardcoded builders.
 
 **Skills** appear as one-line summaries in the top-k action search results. The LLM reads the summary and calls `skill.read` to get the full body. Skills never auto-inject their full content.
 
-**Tools** are never injected. The LLM calls `cortex.discover` to find a tool, reads its schema in the result, then calls it. This keeps the initial context small and forces intentional tool selection.
+**Tools** are never injected. The LLM calls `agent.discover` to find a tool, reads its schema in the result, then calls it. This keeps the initial context small and forces intentional tool selection.
 
 ### What a Skill Is
 
@@ -519,14 +519,14 @@ enforce: false
 | `description` | yes | One-line summary injected in semantic search |
 | `hint` | yes | Call-to-action appended to description in search context — tells LLM exactly how to get more |
 | `allowed-tools` | no | Tools this skill uses. Enforcement depends on `enforce` flag |
-| `enforce` | no | `true` = Cortex rejects tool calls outside `allowed-tools`. `false` (default) = soft guidance only |
+| `enforce` | no | `true` = Agent rejects tool calls outside `allowed-tools`. `false` (default) = soft guidance only |
 
 ### Progressive Disclosure
 
 Skills use three-level progressive disclosure. Full bodies are never auto-injected.
 
 **Level 1 — Semantic search (automatic, summary only)**
-Every `cortex.step`, Cortex scores the user input against all catalog entries. If a skill matches the top-k, the LLM sees one line:
+Every `agent.step`, Agent scores the user input against all catalog entries. If a skill matches the top-k, the LLM sees one line:
 ```
 skill: agent-browser
 description: Browser automation CLI for AI agents.
@@ -761,21 +761,21 @@ Use `tokio::sync::mpsc` with an explicit capacity. Never use `unbounded_channel`
 
 ### Next (in order)
 
-**Cortex evolution (see `services/cortex/TODO.md` for full phase breakdown):**
-1. ~~**Cortex Phase 1B**~~ ✅ — AutoAgents core integration, `CortexAgent`, `HybridMemoryAdapter`, static tools, `autoagents-llm`
-2. ~~**Cortex Phase 2**~~ ✅ — tool routing baseline; Cortex calls memory/browser/sandbox directly over MCP-lite
-3. ~~**Cortex Phase 3**~~ ✅ — memory retrieval + episode writes; STM eviction, diary writes
-4. ~~**Cortex Phase 4**~~ ✅ — prompt system: MiniJinja embedded templates
+**Agent evolution (see `services/agent/TODO.md` for full phase breakdown):**
+1. ~~**Agent Phase 1B**~~ ✅ — AutoAgents core integration, `AgentAgent`, `HybridMemoryAdapter`, static tools, `autoagents-llm`
+2. ~~**Agent Phase 2**~~ ✅ — tool routing baseline; Agent calls memory/browser/sandbox directly over MCP-lite
+3. ~~**Agent Phase 3**~~ ✅ — memory retrieval + episode writes; STM eviction, diary writes
+4. ~~**Agent Phase 4**~~ ✅ — prompt system: MiniJinja embedded templates
 5. ~~**Tower middleware (full)**~~ ✅ — `GuardLayer`, `SttLayer`, `TtsLayer` in `openagent`; Python middleware deleted; dispatch loop added
-6. ~~**Cortex Phase 5**~~ ✅ — action search: `ActionCatalog` keyword-ranked top-k per step; five Capabilities always pinned (`memory.search`, `web.search`, `web.fetch`, `cortex.discover`, `skill.read`); skills injected as summary-only; other tools not injected (LLM discovers via `cortex.discover`)
+6. ~~**Agent Phase 5**~~ ✅ — action search: `ActionCatalog` keyword-ranked top-k per step; five Capabilities always pinned (`memory.search`, `web.search`, `web.fetch`, `agent.discover`, `skill.read`); skills injected as summary-only; other tools not injected (LLM discovers via `agent.discover`)
 7. ~~**Provider fallback chain**~~ ✅ — `dispatch_with_fallback()` in `llm.rs`; `fallbacks: Vec<FallbackProvider>` in config
 8. ~~**Rate limiting middleware**~~ ✅ — `ConcurrencyLimitLayer` (max 50) as outermost Tower layer in `openagent`
 9. ~~**Web UI diary + chat refactor**~~ ✅ — `/diary` read-only past session browser; `/chat` simplified to live web session only
-10. ~~**Cortex Phase 7: Segmented STM**~~ ❌ CANCELLED — sliding window (40 messages) is permanent
-11. ~~**Cortex Phase 6: Research DAG + Supervisor task selection + Worker dispatch**~~ ✅ — research and cortex merged into `openagent`; research context injected into system prompt each generation turn; `cortex.step` self-call worker dispatch; `cortex.step` always pinned alongside `memory.search` and `research.status`; `user_key` param for cross-channel research ownership
-12. **Skills — `skill.read` in Cortex** — `hint` + `enforce` fields in `SkillFrontmatter`; `handle_skill_read()` in `handlers.rs`; registered in `service.json`; progressive disclosure: summary in semantic search, full body + references TOC on `skill.read(name=...)`, reference content on `skill.read(name=..., reference=...)`; existing SKILL.md files updated with `hint` + `enforce`
-13. **Cortex Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection after research tasks complete; **also triggers skill knowledge assimilation** — scans diary entries for skill-relevant learnings, writes draft files to `skills/<name>/drafts/` for human review
-14. **Cortex Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions
+10. ~~**Agent Phase 7: Segmented STM**~~ ❌ CANCELLED — sliding window (40 messages) is permanent
+11. ~~**Agent Phase 6: Research DAG + Supervisor task selection + Worker dispatch**~~ ✅ — research and agent merged into `openagent`; research context injected into system prompt each generation turn; `agent.step` self-call worker dispatch; `agent.step` always pinned alongside `memory.search` and `research.status`; `user_key` param for cross-channel research ownership
+12. **Skills — `skill.read` in Agent** — `hint` + `enforce` fields in `SkillFrontmatter`; `handle_skill_read()` in `handlers.rs`; registered in `service.json`; progressive disclosure: summary in semantic search, full body + references TOC on `skill.read(name=...)`, reference content on `skill.read(name=..., reference=...)`; existing SKILL.md files updated with `hint` + `enforce`
+13. **Agent Phase 8: Reflection** — background synthesis, hypothesis generation, contradiction detection after research tasks complete; **also triggers skill knowledge assimilation** — scans diary entries for skill-relevant learnings, writes draft files to `skills/<name>/drafts/` for human review
+14. **Agent Phase 9: Curiosity queue** — research leads surfaced as non-intrusive suggestions
 
 See `roadmap.md` for consolidated Nanobot/Picoclaw comparison and detailed gaps.
 

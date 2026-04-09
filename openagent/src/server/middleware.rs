@@ -121,7 +121,7 @@ pub async fn guard_middleware(
     // Requests without these fields (e.g. GET /health) bypass the guard.
     if let Ok(mut body_json) = serde_json::from_slice::<Value>(&bytes) {
         // Scrub credentials and detect injection in user_input before it reaches
-        // STT or Cortex.  Runs even if the guard check is skipped (no platform field).
+        // STT or Agent.  Runs even if the guard check is skipped (no platform field).
         if let Some(raw) = body_json.get("user_input").and_then(Value::as_str) {
             let ctx = format!(
                 "platform:{} channel_id:{}",

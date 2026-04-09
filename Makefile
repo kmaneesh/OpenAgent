@@ -78,7 +78,7 @@ TTS_SKIP_DARWIN := true
 
 BIN := bin
 
-.PHONY: all local clean test-go test-rust test-py download-models help openagent openagent-local \
+.PHONY: all local clean test-go test-rust test-py download-models download-tts-models help openagent openagent-local \
         $(GO_SERVICES) $(RUST_SERVICES)
 
 # Default: cross-compile everything (services + openagent control plane)
@@ -200,18 +200,50 @@ endif
 MEMORY_BIN := $(BIN)/memory-$(HOST_SUFFIX)
 EMBED_MODEL_MARKER := data/models/models--Xenova--bge-small-en-v1.5
 
-.PHONY: download-models
-download-models:
+# Kokoro TTS model URLs (Kokoro-82M — ~300 MB ONNX + ~100 MB voices)
+KOKORO_HF_REPO  := https://huggingface.co/hexgrad/Kokoro-82M/resolve/main
+KOKORO_ONNX     := data/models/kokoro-v1.0.onnx
+KOKORO_VOICES   := data/models/voices-v1.0.bin
+
+.PHONY: download-models download-tts-models
+download-models: download-tts-models
 	@echo "==> Embedding model cache check (BAAI/bge-small-en-v1.5)"
 	@if [ -d "$(EMBED_MODEL_MARKER)" ]; then \
-	  echo "   ✓ Model cached at $(EMBED_MODEL_MARKER)"; \
+	  echo "   ✓ Embedding model cached at $(EMBED_MODEL_MARKER)"; \
 	else \
-	  echo "   ✗ Model not found. To download (~70 MB), run:"; \
+	  echo "   ✗ Embedding model not found. To download (~70 MB), run:"; \
 	  echo ""; \
 	  echo "     OPENAGENT_DOWNLOAD_ONLY=1 OPENAGENT_EMBED_CACHE_PATH=data/models $(MEMORY_BIN)"; \
 	  echo ""; \
 	  echo "   (build the memory binary first if needed: make memory)"; \
 	fi
+
+# Download Kokoro TTS model files from HuggingFace.
+# Requires curl; set HF_TOKEN env var if the repo is gated.
+download-tts-models:
+	@echo "==> TTS model cache check (Kokoro-82M)"
+	@mkdir -p data/models
+	@if [ -f "$(KOKORO_ONNX)" ]; then \
+	  echo "   ✓ $(KOKORO_ONNX) already present"; \
+	else \
+	  echo "   Downloading $(KOKORO_ONNX) (~300 MB)..."; \
+	  curl -L --fail --progress-bar \
+	    $(if $(HF_TOKEN),-H "Authorization: Bearer $(HF_TOKEN)",) \
+	    -o $(KOKORO_ONNX) "$(KOKORO_HF_REPO)/kokoro-v1.0.onnx" || \
+	  { echo "   ✗ Download failed. Set HF_TOKEN if the repo is gated."; rm -f $(KOKORO_ONNX); exit 1; }; \
+	  echo "   ✓ $(KOKORO_ONNX)"; \
+	fi
+	@if [ -f "$(KOKORO_VOICES)" ]; then \
+	  echo "   ✓ $(KOKORO_VOICES) already present"; \
+	else \
+	  echo "   Downloading $(KOKORO_VOICES) (~100 MB)..."; \
+	  curl -L --fail --progress-bar \
+	    $(if $(HF_TOKEN),-H "Authorization: Bearer $(HF_TOKEN)",) \
+	    -o $(KOKORO_VOICES) "$(KOKORO_HF_REPO)/voices/voices-v1.0.bin" || \
+	  { echo "   ✗ Download failed. Set HF_TOKEN if the repo is gated."; rm -f $(KOKORO_VOICES); exit 1; }; \
+	  echo "   ✓ $(KOKORO_VOICES)"; \
+	fi
+	@echo "   Done — TTS models ready."
 
 # ---------------------------------------------------------------------------
 # OpenAgent Rust control plane binary
@@ -316,7 +348,8 @@ help:
 	@echo "  make openagent-local   Build openagent for current host (fast)"
 	@echo "  make openagent         Cross-compile openagent for all targets"
 	@echo ""
-	@echo "  make download-models  Check embedding model cache; prints download command if missing"
+	@echo "  make download-models      Download all models (TTS kokoro + prints embedding download cmd)"
+	@echo "  make download-tts-models  Download TTS models only (kokoro-v1.0.onnx + voices-v1.0.bin)"
 	@echo ""
 	@echo "  Binaries:   $(BIN)/"
 	@echo "  Models:     data/models/whisper-ggml-small.bin  kokoro-v1.0.onnx  voices-v1.0.bin"

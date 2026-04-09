@@ -29,7 +29,7 @@ def test_metrics_endpoint() -> None:
             self._cb = cb
 
         def get_client(self, name: str):
-            return self._client if name == "cortex" else None
+            return self._client if name == "openagent" else None
 
         def list_services(self):
             return []

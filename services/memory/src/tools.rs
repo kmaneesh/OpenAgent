@@ -107,7 +107,7 @@ pub fn make_tools() -> Vec<ToolDefinition> {
             name: "memory.diary_write".to_string(),
             description: concat!(
                 "Write a stub diary row (zero vector placeholder) for a completed ReAct turn. ",
-                "Called fire-and-forget by Cortex after each final answer. ",
+                "Called fire-and-forget by Agent after each final answer. ",
                 "Compaction will back-fill real embeddings, keywords, and summaries in a future pass."
             )
             .to_string(),

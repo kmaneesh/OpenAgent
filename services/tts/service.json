@@ -9,7 +9,6 @@
     "darwin/arm64": "bin/tts-darwin-arm64",
     "darwin/amd64": "bin/tts-darwin-amd64"
   },
-  "socket": "data/sockets/tts.sock",
   "health": {
     "interval_ms": 5000,
     "timeout_ms": 3000,
@@ -81,5 +80,5 @@
   ],
   "events": [],
   "runtime": "rust",
-  "enabled": false
+  "enabled": true
 }

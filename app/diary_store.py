@@ -1,6 +1,6 @@
-"""DiaryStore — reads conversation history from cortex diary markdown files.
+"""DiaryStore — reads conversation history from agent diary markdown files.
 
-Diary files are written by the Rust cortex service at:
+Diary files are written by the Rust agent service at:
   data/diary/{session_key}/{unix_timestamp}.md
 
 Markdown format:
@@ -48,7 +48,7 @@ class SessionInfo:
 
 
 class DiaryStore:
-    """Reads conversation history from cortex diary markdown files."""
+    """Reads conversation history from agent diary markdown files."""
 
     def __init__(self, diary_root: Path, db_path: Path):
         self.diary_root = diary_root

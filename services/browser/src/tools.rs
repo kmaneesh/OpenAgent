@@ -33,7 +33,7 @@ pub fn make_tools() -> Vec<ToolDefinition> {
                 "STEP 2 of 2. Fetch a URL and return its content as clean Markdown. ",
                 "Call this after web.search with the URL you chose. ",
                 "No JavaScript — if content is sparse the page requires a real browser; ",
-                "use cortex.discover to find a remote browser tool. ",
+                "use agent.discover to find a remote browser tool. ",
                 "Results cached 1 hr."
             )
             .into(),

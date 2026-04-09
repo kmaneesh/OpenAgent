@@ -47,7 +47,7 @@ fi
 # Port map — must match services/<name>/service.json "address" field
 # ---------------------------------------------------------------------------
 declare -A SVC_PORT=(
-  [browser]=9001   [channels]=9002  [cortex]=9003
+  [browser]=9001   [channels]=9002  [agent]=9003
   [guard]=9004     [memory]=9005    [research]=9006
   [sandbox]=9007   [stt]=9008       [tts]=9009
   [validator]=9010 [whatsapp]=9011
@@ -55,8 +55,8 @@ declare -A SVC_PORT=(
 
 # Service-specific EnvironmentFile or ExecStartPre notes
 declare -A SVC_AFTER=(
-  [cortex]="openagent-guard.service openagent-memory.service"
-  [channels]="openagent-cortex.service"
+  [agent]="openagent-guard.service openagent-memory.service"
+  [channels]="openagent-agent.service"
 )
 
 # ---------------------------------------------------------------------------

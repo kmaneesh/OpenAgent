@@ -44,7 +44,7 @@ use self::tts::tts_middleware;
 
 const DEFAULT_PORT: u16 = 8080;
 
-/// Per-request deadline covering the full Cortex ReAct loop + tool calls.
+/// Per-request deadline covering the full Agent ReAct loop + tool calls.
 /// Individual LLM calls and MCP-lite tool calls have their own shorter deadlines;
 /// this is the outer safety net that prevents zombie HTTP connections.
 const STEP_TIMEOUT_SECS: u64 = 130;

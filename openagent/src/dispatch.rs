@@ -266,7 +266,7 @@ async fn handle_message(
     };
 
     if response_text.trim().is_empty() {
-        debug!(session_id, "dispatch.cortex.empty_response — not sending");
+        debug!(session_id, "dispatch.agent.empty_response — not sending");
         return;
     }
 

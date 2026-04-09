@@ -5,13 +5,13 @@ from app.routes.logs import _build_log_entries
 
 def test_build_log_entries_pretty_prints_jsonl() -> None:
     entries = _build_log_entries(
-        ['{"service":"cortex","status":"ok"}\n', '{"count":2}\n'],
-        "cortex-logs-2026-03-11.jsonl",
+        ['{"service":"agent","status":"ok"}\n', '{"count":2}\n'],
+        "openagent-logs-2026-03-11.jsonl",
     )
 
     assert len(entries) == 2
     assert entries[0]["summary"].startswith("JSON record:")
-    assert '"service": "cortex"' in entries[0]["pretty"]
+    assert '"service": "openagent"' in entries[0]["pretty"]
     assert '"count": 2' in entries[1]["pretty"]
 
 
@@ -29,8 +29,8 @@ def test_build_log_entries_keeps_plain_text_logs() -> None:
 
 def test_build_log_entries_summarizes_otel_log_records() -> None:
     entries = _build_log_entries(
-        ['{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"severityText":"INFO","body":{"stringValue":"cortex.step.ok"},"attributes":[{"key":"target","value":{"stringValue":"cortex::handlers"}}]}]}]}]}\n'],
-        "cortex-logs-2026-03-11.jsonl",
+        ['{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"severityText":"INFO","body":{"stringValue":"agent.step.ok"},"attributes":[{"key":"target","value":{"stringValue":"openagent::handlers"}}]}]}]}]}\n'],
+        "openagent-logs-2026-03-11.jsonl",
     )
 
-    assert entries[0]["summary"] == "INFO cortex::handlers: cortex.step.ok"
+    assert entries[0]["summary"] == "INFO openagent::handlers: agent.step.ok"

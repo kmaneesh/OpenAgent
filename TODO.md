@@ -1,7 +1,7 @@
 # OpenAgent — Project TODO
 
 Top-level cross-service backlog. Service-specific phased roadmaps live in their own
-`TODO.md` files (e.g. `services/cortex/TODO.md`).
+`TODO.md` files (e.g. `services/agent/TODO.md`).
 
 ---
 
@@ -18,8 +18,8 @@ history. Actionable gaps below, ordered by impact.
 Hand-rolled byte scanner, no new deps.
 
 Applied in two places (Guard layer):
-- `openagent/src/middleware.rs` — scrubs `user_input` in buffered HTTP request body before STT/Cortex
-- `openagent/src/dispatch.rs` — scrubs channel message `content` before `cortex.step`
+- `openagent/src/middleware.rs` — scrubs `user_input` in buffered HTTP request body before STT/Agent
+- `openagent/src/dispatch.rs` — scrubs channel message `content` before `agent.step`
 
 Patterns: `token`, `api_key`, `password`, `secret`, `bearer`, `credential`, `auth` + variants.
 Redaction: keeps first 4 chars, replaces remainder with `[REDACTED]`. Values < 8 chars not redacted.
@@ -46,24 +46,24 @@ operationally wasteful on Pi targets. ZeroClaw uses a single unified daemon with
 **What this unlocks:**
 - Draft streaming: model streams text → channel edits message in place (Telegram/Discord)
   instead of sending a full reply at end. Significant UX improvement.
-- Typing indicators: "Bot is typing…" while Cortex step runs.
+- Typing indicators: "Bot is typing…" while Agent step runs.
 - Single binary to cross-compile and deploy on Pi vs. 4–6 individual binaries.
 
-**Dependency:** Cortex needs a streaming path through `cortex.step` to feed partial
-responses to the channel service for draft updates. Currently `cortex.step` is
+**Dependency:** Agent needs a streaming path through `agent.step` to feed partial
+responses to the channel service for draft updates. Currently `agent.step` is
 request-response only.
 
 ---
 
 ### 🟡 Medium Priority
 
-#### 3. Draft Streaming Path in Cortex
+#### 3. Draft Streaming Path in Agent
 
-**Gap:** ZeroClaw streams partial LLM output to channels mid-response. Our `cortex.step`
+**Gap:** ZeroClaw streams partial LLM output to channels mid-response. Our `agent.step`
 is fully synchronous request-response — the caller gets the final answer only.
 
 **What to build:**
-- Add a streaming variant to the MCP-lite protocol: `cortex.step_stream` returning
+- Add a streaming variant to the MCP-lite protocol: `agent.step_stream` returning
   delta frames as the LLM generates them
 - The channels omnibus service subscribes to these deltas and calls `update_draft` on
   the platform
@@ -81,7 +81,7 @@ rate limiting per user. We have a Python whitelist (allow/deny by user ID only) 
 action budgeting.
 
 **What to build:**
-- `RateLimitLayer` as a Tower middleware in Cortex (alongside the planned `WhitelistLayer`)
+- `RateLimitLayer` as a Tower middleware in Agent (alongside the planned `WhitelistLayer`)
 - Configurable budget: `max_steps_per_hour` per session_id from `openagent.yaml`
 - Returns a structured error when budget exceeded (not a panic)
 - Fits naturally in the Tower Phase 2 middleware stack
@@ -94,7 +94,7 @@ action budgeting.
 If the primary model times out or errors, the next provider in the list is tried.
 
 **What to build:**
-- `FallbackProvider` wrapper in `autoagents-llm` or in `cortex/src/llm.rs`
+- `FallbackProvider` wrapper in `autoagents-llm` or in `agent/src/llm.rs`
 - Config: `providers.fallback_chain = ["primary", "secondary"]` in `openagent.yaml`
 - Try each provider in order; return first success; log fallback activations
 
@@ -107,7 +107,7 @@ If the primary model times out or errors, the next provider in the list is tried
 **Gap:** ZeroClaw exposes a Prometheus scrape endpoint. We write JSONL only (OTLP file
 export). On Pi with Grafana, scraping is more convenient than parsing JSONL.
 
-**What to build:** Expose `/metrics` from the Cortex gateway (Phase 4 Axum endpoint).
+**What to build:** Expose `/metrics` from the Agent gateway (Phase 4 Axum endpoint).
 Implement via `opentelemetry-prometheus` exporter alongside the file exporter.
 
 ---
@@ -138,7 +138,7 @@ complex ones to a strong model. We always use the agent's single configured mode
 
 ## Channels Service — Build Order
 
-Independent of the Cortex phased plan. Can proceed in parallel.
+Independent of the Agent phased plan. Can proceed in parallel.
 
 ```
 Phase 1: Trait scaffold + Telegram
@@ -153,8 +153,8 @@ Phase 2: Discord + Slack
   - Replace services/discord/ and services/slack/
 
 Phase 3: Draft streaming wire-up
-  - cortex.step_stream protocol extension
-  - Channel service subscribes to Cortex delta frames
+  - agent.step_stream protocol extension
+  - Channel service subscribes to Agent delta frames
   - Draft update loop per active step
 
 Phase 4: Remaining platforms
@@ -170,18 +170,18 @@ WhatsApp stays in `services/whatsapp/` (Go/whatsmeow) — not part of this omnib
 
 | Item | Owner | Status |
 |---|---|---|
-| Cortex phased plan (Phases 0–5) | `services/cortex/TODO.md` | ✅ Complete |
-| Cortex Phase 6: Plan/Research DAG | `services/research/` | 🔄 Building |
+| Agent phased plan (Phases 0–5) | `services/agent/TODO.md` | ✅ Complete |
+| Agent Phase 6: Plan/Research DAG | `services/research/` | 🔄 Building |
 | Research service (`services/research/`) | New Rust service | 🔄 Building |
-| Multi-agent: Supervisor/Worker | Cortex + Research service | Follows Research service |
+| Multi-agent: Supervisor/Worker | Agent + Research service | Follows Research service |
 | Tower middleware (full stack) | `openagent/src/` | ✅ Complete |
-| Provider fallback chain | `services/cortex/src/llm.rs` | ✅ Complete |
+| Provider fallback chain | `services/agent/src/llm.rs` | ✅ Complete |
 | Rate limiting middleware | `openagent/src/server.rs` | ✅ Complete |
 | Web UI diary page | `app/routes/diary.py` | ✅ Complete |
 | Web UI research page | `app/routes/research.py` | 🔄 Building |
 | Channels omnibus | `services/channels/` | WIP |
 | Memory offline compaction | `services/memory/` | Deferred |
-| Cortex Phase 7: Segmented STM | — | ❌ CANCELLED (sliding window is permanent) |
+| Agent Phase 7: Segmented STM | — | ❌ CANCELLED (sliding window is permanent) |
 | Axum over UDS between openagent and services | — | ❌ CANCELLED (MCP-lite JSON is permanent) |
-| Cortex Phase 8: Reflection | `services/cortex/` | After Research stable |
-| Cortex Phase 9: Curiosity queue | `services/cortex/` | After Phase 8 |
+| Agent Phase 8: Reflection | `services/agent/` | After Research stable |
+| Agent Phase 9: Curiosity queue | `services/agent/` | After Phase 8 |

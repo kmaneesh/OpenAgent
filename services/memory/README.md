@@ -332,7 +332,7 @@ OPENAGENT_MEMORY_PATH=./data/memory \
 ### Phase 4 — Peer Cards
 - `peer_card.md` per user bank
 - `## Static` (human-only) + `## Learned` (Dreaming job) sections
-- Auto-injection into system prompt at session start via Cortex
+- Auto-injection into system prompt at session start via Agent
 - Bootstrap from existing LanceDB data on first access
 
 ### Phase 5 — Platform Tier + Self-Improvement Loop

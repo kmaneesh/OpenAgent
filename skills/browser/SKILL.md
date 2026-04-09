@@ -36,7 +36,7 @@ Returns the page as clean Markdown extracted by Mozilla Readability. Feed direct
 
 If `web.fetch` returns very little content, the page likely requires JavaScript rendering.
 
-Call `cortex.discover` to find a remote browser tool (e.g. `agent-browser` service) that can execute JavaScript. Do not retry `web.fetch` on the same URL.
+Call `agent.discover` to find a remote browser tool (e.g. `agent-browser` service) that can execute JavaScript. Do not retry `web.fetch` on the same URL.
 
 ## Caching
 

@@ -21,6 +21,26 @@ use tracing::info;
 const SKILL_SEARCH_LIMIT: usize = 8;
 const PINNED_SKILLS: &[&str] = &["agent-browser"];
 
+/// Tools always injected into every LLM turn.
+///
+/// Everything outside this list is discoverable via `agent.discover` — the
+/// LLM calls that to get the schema, then calls the tool. Keeping the pinned
+/// set small (≤ 8 tools) minimises context overhead on the 36K-window model.
+///
+/// Rules for membership:
+/// - Must be called on almost every turn OR the LLM needs it to bootstrap
+///   (discovery, memory recall, code execution, web access).
+/// - Channel-specific tools (whatsapp.*, tts.*, stt.*) are NOT pinned —
+///   they're available via agent.discover when needed.
+const PINNED_TOOL_NAMES: &[&str] = &[
+    "memory.search",
+    "sandbox.execute",
+    "sandbox.shell",
+    "web.search",
+    "web.fetch",
+    // agent.discover — injected separately as a built-in capability
+];
+
 #[derive(Clone, Debug)]
 pub struct AgentContext {
     tel: Arc<AgentTelemetry>,
@@ -287,13 +307,15 @@ fn build_step_context(
 
     let skill_context = if skill_lines.is_empty() { None } else { Some(skill_lines.join("\n\n")) };
 
-    // All catalog tools — no research tools (research service deleted).
+    // Only inject the pinned capability set. Everything else is discoverable
+    // via agent.discover so the LLM can find it without bloating the prompt.
     let mut tool_entries: Vec<ToolEntry> = catalog
         .entries()
         .iter()
         .filter(|e| {
             matches!(e.kind, ActionKind::Tool)
                 && !e.params.is_null()
+                && PINNED_TOOL_NAMES.contains(&e.name.as_str())
         })
         .map(|e| ToolEntry {
             name: e.name.clone(),
@@ -302,8 +324,9 @@ fn build_step_context(
         })
         .collect();
 
-    // skill.read is always available — handled in-process by ToolRouter.
+    // Built-in capabilities — always present, not in the catalog.
     tool_entries.push(skill_read_tool_entry());
+    tool_entries.push(agent_discover_tool_entry(catalog));
 
     (skill_context, tool_entries)
 }
@@ -336,6 +359,47 @@ fn skill_read_tool_entry() -> ToolEntry {
                 }
             },
             "required": ["name"]
+        }),
+    }
+}
+
+/// `agent.discover` — search the action catalog for tools and skill summaries.
+///
+/// The result tells the LLM which tools exist and how to call them, so it can
+/// then issue a targeted `tool.call` without having all schemas pre-loaded.
+fn agent_discover_tool_entry(catalog: &ActionCatalog) -> ToolEntry {
+    // Build a compact manifest of discoverable (non-pinned) tools and skills.
+    let entries: Vec<Value> = catalog
+        .entries()
+        .iter()
+        .filter(|e| {
+            !matches!(e.kind, ActionKind::Tool)
+                || !PINNED_TOOL_NAMES.contains(&e.name.as_str())
+        })
+        .map(|e| json!({"name": e.name, "kind": e.kind.as_str(), "description": e.summary}))
+        .collect();
+
+    let catalog_json = serde_json::to_string(&entries).unwrap_or_default();
+
+    ToolEntry {
+        name: "agent.discover".to_string(),
+        description: format!(
+            "Search the action catalog for tools and skills. \
+            Returns matching entries with their names and descriptions. \
+            Use the returned tool name in subsequent tool calls.\n\
+            Available catalog ({} entries):\n{}",
+            entries.len(),
+            catalog_json,
+        ),
+        params: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords describing what you want to do (e.g. 'send whatsapp message', 'transcribe audio')"
+                }
+            },
+            "required": ["query"]
         }),
     }
 }

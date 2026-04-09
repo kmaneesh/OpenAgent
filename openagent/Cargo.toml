@@ -43,7 +43,7 @@ tokio-tungstenite = "0.29.0"
 async-imap = { version = "0.11", features = ["runtime-tokio"], default-features = false }
 tokio-rustls = "0.26.4"
 
-# Agent module (moved from services/cortex/)
+# Agent module (moved from services/agent/)
 sdk-rust          = { path = "../services/sdk-rust" }
 autoagents-llm    = { version = "0.3.6", features = ["openai", "anthropic"] }
 autoagents-core   = "0.3.6"

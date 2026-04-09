@@ -1,9 +1,9 @@
 /// Input sanitization — credential scrubbing + prompt injection detection.
 ///
-/// Applied inside the Guard layer before every request reaches STT or Cortex.
+/// Applied inside the Guard layer before every request reaches STT or Agent.
 /// Fires on both paths:
 ///   - HTTP `POST /step`: `user_input` field scrubbed in the buffered request body.
-///   - Dispatch loop: `content` scrubbed before `cortex.step` is called.
+///   - Dispatch loop: `content` scrubbed before `agent.step` is called.
 ///
 /// Two passes in one call to `process()`:
 ///

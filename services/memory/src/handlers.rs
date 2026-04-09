@@ -565,12 +565,12 @@ pub fn handle_prune(
 
 /// Write a stub diary row with a zero vector — no embedding is computed.
 ///
-/// Called fire-and-forget from Cortex after each final answer.  The zero vector
+/// Called fire-and-forget from Agent after each final answer.  The zero vector
 /// is a placeholder; compaction will back-fill real embeddings in a future pass.
 ///
 /// Params:
 /// - `session_id`       — session identifier (stored in metadata JSON)
-/// - `content`          — truncated response text (up to 200 chars from Cortex)
+/// - `content`          — truncated response text (up to 200 chars from Agent)
 /// - `file_path`        — path to the diary markdown file (stored in metadata)
 /// - `keywords`         — optional keyword array; defaults to `[]`; filled at compaction
 /// - `validator_status` — optional string tag; defaults to `"pending"`

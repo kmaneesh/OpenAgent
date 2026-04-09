@@ -30,7 +30,7 @@
 debug = false
 
 # ---------------------------------------------------------------------------
-# LLM Provider (consumed by Cortex via genai)
+# LLM Provider (consumed by Agent via genai)
 # ---------------------------------------------------------------------------
 #
 # kind: openai_compat → genai OpenAI adapter with a custom endpoint
@@ -45,7 +45,7 @@ api_key    = ""              # leave blank for unauthenticated local servers
 model      = "qwen/qwen3.5-9b"
 timeout    = 300.0
 max_tokens = 2048
-debug_llm  = true           # logs outbound request and raw response from Cortex
+debug_llm  = true           # logs outbound request and raw response from Agent
 
 # Option B: Anthropic Claude
 # kind     = "anthropic"
@@ -75,14 +75,14 @@ You have access to the following capabilities:\
 - web.search → search for external or recent information\
 - web.fetch → fetch and extract content from URLs\
 - skill.read → access internal tools and structured skills\
-- cortex.discover → discover available tools and system capabilities\
+- agent.discover → discover available tools and system capabilities\
 \
 Use tools only when necessary:\
 - Use memory.search for context or prior knowledge\
 - Use web.search for unknown or up-to-date information\
 - Use web.fetch when a URL is provided or deeper extraction is needed\
 - Use skill.read for internal logic or predefined workflows\
-- Use cortex.discover if capabilities are unclear\
+- Use agent.discover if capabilities are unclear\
 \
 You may use multiple tools, but only when they add value.\
 Never guess when a tool can provide the answer.\
@@ -157,7 +157,7 @@ enabled = false
 # WhatsApp (Cloud API — Meta Business; requires approval)
 # For the Go-based whatsmeow service (QR pairing), run: ./services.sh start whatsapp
 [channels.whatsapp]
-enabled          = false
+enabled          = true
 access_token     = "${WHATSAPP_ACCESS_TOKEN}"
 phone_number_id  = "${WHATSAPP_PHONE_NUMBER_ID}"
 verify_token     = "${WHATSAPP_VERIFY_TOKEN}"
@@ -213,14 +213,14 @@ Accept-Language = "en-US,en;q=0.9"
 # When enabled, requests with an `audio_path` field have their audio
 # transcribed by the stt service; the transcript replaces `user_input`.
 # Requires the stt service to be running.
-enabled = false
+enabled = true
 
 [middleware.tts]
 # Synthesize speech after the step handler.
-# When enabled, response_text from cortex.step is synthesized to WAV by
+# When enabled, response_text from agent.step is synthesized to WAV by
 # the tts service. The response JSON gains an `audio_path` field.
 # Requires the tts service to be running.
-enabled  = false
+enabled  = true
 voice    = "af_sarah"    # af_sarah | af_nicole | af_sky | blend e.g. "af_sarah.4+af_nicole.6"
 speed    = 1.0           # speech rate multiplier
 language = "en-us"       # BCP-47 language code

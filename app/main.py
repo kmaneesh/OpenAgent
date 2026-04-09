@@ -3,7 +3,7 @@
 Thin UI shell — all agent/service logic runs in the Rust openagent binary.
 This process owns only:
   - Web chat WebSocket (calls Rust POST /step)
-  - Session history reads (diary markdown files written by Rust cortex)
+  - Session history reads (diary markdown files written by Rust agent)
   - Settings persistence (SettingsStore in SQLite)
   - Cron scheduling (fires POST /step on the Rust API)
   - Observability (OTEL logs to logs/)
@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI):
     # Connector enable/disable — in-memory map for Settings page.
     app.state.connectors_enabled = {}
 
-    # Diary store — chat history from cortex diary markdown files.
-    # No SQLite turns table needed; cortex writes diary on every turn.
+    # Diary store — chat history from agent diary markdown files.
+    # No SQLite turns table needed; agent writes diary on every turn.
     diary_root = ROOT / "data" / "diary"
     db_path = ROOT / cfg.session.db_path
     app.state.diary_store = DiaryStore(diary_root=diary_root, db_path=db_path)

@@ -15,7 +15,7 @@ version: 0.3.0
 The `browser` service wraps the `agent-browser` CLI. You call `browser.*` service tools — the service translates each call into the equivalent `agent-browser` CLI command internally.
 
 **Never run `agent-browser` CLI commands directly.** Use `browser.*` tools instead.
-If you do not have the tool schema, call `cortex.discover(query="browser")` first.
+If you do not have the tool schema, call `agent.discover(query="browser")` first.
 
 ## Core Workflow
 

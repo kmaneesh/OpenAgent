@@ -1,6 +1,6 @@
 //! In-process agent module — the ReAct reasoning loop running inside openagent.
 //!
-//! Previously `services/cortex/`; merged here so there is no separate binary
+//! Previously `services/agent/`; merged here so there is no separate binary
 //! or TCP hop between openagent and the agent logic.
 //!
 //! Public surface used by the rest of openagent:

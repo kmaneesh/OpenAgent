@@ -69,7 +69,7 @@ pub async fn tts_middleware(
         return Response::from_parts(parts, Body::from(bytes));
     };
 
-    // session_id is present in the cortex step response — use it for metrics.
+    // session_id is present in the agent step response — use it for metrics.
     let session_id = body_json
         .get("session_id")
         .and_then(Value::as_str)

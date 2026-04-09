@@ -103,7 +103,7 @@ Condense `full_text` into clean, dense knowledge using your own reasoning. No to
 
 ## Step 3: Write to Diary
 
-Include the full clean summary verbatim in your response using this format so Cortex auto-captures it:
+Include the full clean summary verbatim in your response using this format so Agent auto-captures it:
 
 ```
 ## YouTube Summary: <title or topic>

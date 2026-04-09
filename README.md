@@ -4,7 +4,7 @@ A deterministic, extension-first agent platform on a **progressive Rust migratio
 
 - **Python Control Plane (temporary shell)** — LLM interfacing, multi-agent orchestration, state management. Stateless asyncio core loop. Python is a shrinking babysitter — it owns less with each phase.
 - **Rust Services (the Hands, permanent)** — Long-lived `tokio` daemon services for all CPU/IO-intensive work: platform connectors, compute (sandbox, stt, tts), automation (browser), memory. **Rust-first** — all new services are Rust.
-- **Cortex (the Supervisor Brain)** — Rust service owning the full ReAct loop, tool routing, memory, and action search. Acts as the multi-agent supervisor: holds the Research DAG, picks runnable tasks, dispatches to worker agents.
+- **Agent (the Supervisor Brain)** — Rust service owning the full ReAct loop, tool routing, memory, and action search. Acts as the multi-agent supervisor: holds the Research DAG, picks runnable tasks, dispatches to worker agents.
 - **Go** — Only WhatsApp (`services/whatsapp/`) remains in Go (whatsmeow). No new Go services.
 
 All services communicate via **MCP-lite wire protocol** (tagged JSON frames over Unix Domain Sockets).
@@ -21,20 +21,20 @@ All services communicate via **MCP-lite wire protocol** (tagged JSON frames over
 - **MCP-lite** — Python client + Rust SDK (`openagent/platforms/mcplite.py`, `services/sdk-rust/`)
 - **Heartbeat** — periodic health/summary polling (`openagent/heartbeat/`)
 - **Platform adapters** — Discord, Telegram, WhatsApp, Slack (Python MCP-lite clients)
-- **Rust services** — `cortex` (supervisor brain, worker dispatch), `research` (Research DAG, task tracking), `channels` (omnibus), `sandbox`, `stt`, `tts`, `browser`, `memory`
+- **Rust services** — `agent` (supervisor brain, worker dispatch), `research` (Research DAG, task tracking), `channels` (omnibus), `sandbox`, `stt`, `tts`, `browser`, `memory`
 - **Go service** — `whatsapp` (only remaining Go service)
 - **Web UI** — FastAPI + HTMX (dashboard, chat, diary, research, services, settings)
-- **Multi-agent supervisor/worker** — Cortex injects active research tasks into every prompt; supervisor dispatches workers via `cortex.step` with `agent_name`; ToolRouter self-routes `cortex.*` for zero-overhead worker invocation
+- **Multi-agent supervisor/worker** — Agent injects active research tasks into every prompt; supervisor dispatches workers via `agent.step` with `agent_name`; ToolRouter self-routes `agent.*` for zero-overhead worker invocation
 
 **In progress:**
-- Cortex Phase 8: Reflection — background synthesis after research tasks complete
+- Agent Phase 8: Reflection — background synthesis after research tasks complete
 
 ## Architecture
 
 ```
-Python Control Plane (Temporary Shell)      Rust Services (Hands) + Cortex (Brain)
+Python Control Plane (Temporary Shell)      Rust Services (Hands) + Agent (Brain)
 ──────────────────────────────────────      ──────────────────────────────────────
- Orchestration + tool calls ──UDS+JSON──►   Long-lived daemons (cortex, sandbox...)
+ Orchestration + tool calls ──UDS+JSON──►   Long-lived daemons (agent, sandbox...)
  Message bus + health       ◄─UDS+JSON───   Managed by ServiceManager
 ```
 
@@ -42,7 +42,7 @@ Python Control Plane (Temporary Shell)      Rust Services (Hands) + Cortex (Brai
 
 Two clear planes, one socket each, no REST overhead:
 - **Python** — control plane, orchestration, platform adapters (shrinking)
-- **Cortex** — Rust service progressively absorbing the Python control plane
+- **Agent** — Rust service progressively absorbing the Python control plane
 - **Rust services** — compute, data, and omnibus channels (Rust-first)
 - **Go** — WhatsApp only (whatsmeow)
 - **MCP-lite** newline-delimited JSON frames over Unix Domain Sockets
@@ -125,7 +125,7 @@ OpenAgent/
 │
 ├── services/               # Rust (primary) + Go (WhatsApp only)
 │   ├── sdk-rust/           # Shared MCP-lite Rust SDK
-│   ├── cortex/             # Rust — Supervisor brain (ReAct loop, multi-agent dispatch)
+│   ├── agent/             # Rust — Supervisor brain (ReAct loop, multi-agent dispatch)
 │   ├── research/           # Rust — Research DAG (persistent task graph, markdown snapshots)
 │   ├── channels/           # Rust — Omnibus channels (Discord, Slack, Telegram, Signal, etc)
 │   ├── sandbox/            # Rust — VM-isolated code/shell execution (microsandbox)
@@ -153,7 +153,7 @@ Services run as long-lived daemons managed by `ServiceManager`. Python spawns th
 
 | Service | Language | Description |
 |---------|----------|-------------|
-| **cortex** | Rust | Supervisor agent — full ReAct loop, tool routing, action search, multi-agent dispatch |
+| **agent** | Rust | Supervisor agent — full ReAct loop, tool routing, action search, multi-agent dispatch |
 | **research** | Rust | Research DAG — persistent cross-session task graph, markdown snapshots, multi-agent task assignment |
 | **channels** | Rust | Omnibus daemon pattern for Discord, Slack, Telegram, Signal, iMessage, etc |
 | **sandbox** | Rust | VM-isolated code/shell execution (microsandbox) |

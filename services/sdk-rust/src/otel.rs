@@ -353,6 +353,26 @@ impl Drop for OTELGuard {
     }
 }
 
+/// Probe whether an OTLP collector is reachable at `endpoint`.
+/// Prevents BatchSpanProcessor.Flush.ExportError spam when the env var is set
+/// but no collector is actually running. Uses a 500 ms blocking TCP connect —
+/// called once at startup.
+fn otlp_reachable(endpoint: &str) -> bool {
+    let without_scheme = endpoint
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let addr = if host_port.contains(':') {
+        host_port.to_owned()
+    } else {
+        format!("{host_port}:4318")
+    };
+    use std::net::ToSocketAddrs;
+    let Ok(mut addrs) = addr.to_socket_addrs() else { return false };
+    let Some(sock) = addrs.next() else { return false };
+    std::net::TcpStream::connect_timeout(&sock, std::time::Duration::from_millis(500)).is_ok()
+}
+
 /// Initialise all three OTEL providers and bridge `tracing` macros into them.
 ///
 /// Returns an [`OTELGuard`] that must be held for the process lifetime.
@@ -396,7 +416,16 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         .with_batch_exporter(file_span_exporter, runtime::Tokio)
         .with_resource(resource.clone());
 
-    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+    // Probe once — skip OTLP entirely if the collector is not reachable.
+    let otlp_ep = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|ep| {
+            let ok = otlp_reachable(ep);
+            if !ok { eprintln!("OTEL: collector at {ep} unreachable — file-only export"); }
+            ok
+        });
+
+    if let Some(ref ep) = otlp_ep {
         use opentelemetry_otlp::WithExportConfig as _;
         let url = format!("{}/v1/traces", ep.trim_end_matches('/'));
         match opentelemetry_otlp::SpanExporter::builder()
@@ -407,7 +436,7 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
             Ok(otlp) => {
                 trace_builder = trace_builder.with_batch_exporter(otlp, runtime::Tokio);
             }
-            Err(e) => eprintln!("OTLP span exporter init failed (Jaeger disabled): {e}"),
+            Err(e) => eprintln!("OTLP span exporter init failed: {e}"),
         }
     }
 
@@ -425,7 +454,7 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         .with_batch_exporter(file_log_exporter, runtime::Tokio)
         .with_resource(resource.clone());
 
-    if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
+    if let Some(ref ep) = otlp_ep {
         use opentelemetry_otlp::WithExportConfig as _;
         let url = format!("{}/v1/logs", ep.trim_end_matches('/'));
         match opentelemetry_otlp::LogExporter::builder()
@@ -436,7 +465,7 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
             Ok(otlp) => {
                 log_builder = log_builder.with_batch_exporter(otlp, runtime::Tokio);
             }
-            Err(e) => eprintln!("OTLP log exporter init failed (Jaeger logs disabled): {e}"),
+            Err(e) => eprintln!("OTLP log exporter init failed: {e}"),
         }
     }
 

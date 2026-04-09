@@ -98,11 +98,11 @@ pub struct StepRequest {
     pub platform: String,
     /// Platform-specific sender/channel identifier.
     pub channel_id: String,
-    /// Session identifier — passed through to Cortex for memory continuity.
+    /// Session identifier — passed through to Agent for memory continuity.
     pub session_id: String,
     /// The user's message text.
     pub user_input: String,
-    /// Optional agent name; Cortex resolves to `default` if omitted.
+    /// Optional agent name; Agent resolves to `default` if omitted.
     pub agent_name: Option<String>,
     /// "generation" (default) or "tool_call".
     pub turn_kind: Option<String>,
