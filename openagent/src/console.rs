@@ -30,11 +30,12 @@ use std::{
     time::Duration,
 };
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::Notify;
 use tracing::info;
 
-use crate::manager::ServiceManager;
+use crate::guard::GuardDb;
+use crate::service::ServiceManager;
 
 const HELP: &str = "\
 OpenAgent console commands:
@@ -59,13 +60,17 @@ OpenAgent console commands:
 /// Spawn the interactive console.  Returns a `Notify` that fires only when
 /// the user explicitly types `quit`/`shutdown`.  stdin EOF (daemon mode)
 /// does NOT fire the notify — the process keeps running, waiting for signals.
-pub async fn run(manager: Arc<ServiceManager>, logs_dir: PathBuf) -> Arc<Notify> {
+pub async fn run(
+    manager:  Arc<ServiceManager>,
+    guard_db: GuardDb,
+    logs_dir: PathBuf,
+) -> Arc<Notify> {
     let quit = Arc::new(Notify::new());
     let quit2 = Arc::clone(&quit);
 
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
-        let wants_quit = console_loop(&rt, &manager, &logs_dir);
+        let wants_quit = console_loop(&rt, &manager, &guard_db, &logs_dir);
         if wants_quit {
             quit2.notify_one();
         }
@@ -81,6 +86,7 @@ pub async fn run(manager: Arc<ServiceManager>, logs_dir: PathBuf) -> Arc<Notify>
 fn console_loop(
     rt: &tokio::runtime::Handle,
     manager: &Arc<ServiceManager>,
+    guard_db: &GuardDb,
     logs_dir: &PathBuf,
 ) -> bool {
     let stdin = io::stdin();
@@ -175,7 +181,7 @@ fn console_loop(
 
             "guard" => {
                 let sub = parts.get(1).map(|s| s.to_lowercase()).unwrap_or_default();
-                let out = rt.block_on(cmd_guard(manager, &sub, &parts));
+                let out = cmd_guard(guard_db, &sub, &parts);
                 println!("{out}");
             }
 
@@ -240,12 +246,7 @@ async fn cmd_health(manager: &ServiceManager) -> String {
     ];
 
     for svc in &live {
-        let rss = svc.pid
-            .and_then(rss_kb)
-            .map(|kb| format!("{:.1}MB", kb as f64 / 1024.0))
-            .unwrap_or_else(|| "—".into());
-        let pid_str = svc.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
-        lines.push(format!("  {:<22} pid={:<8} rss={}", svc.name, pid_str, rss));
+        lines.push(format!("  {:<22} addr={}  connected", svc.name, svc.address));
     }
 
     lines.join("\n")
@@ -254,38 +255,25 @@ async fn cmd_health(manager: &ServiceManager) -> String {
 async fn cmd_service_list(manager: &ServiceManager) -> String {
     let live = manager.live_services().await;
     if live.is_empty() {
-        return "No services running".into();
+        return "No services connected. Start them with: systemctl start openagent-<name> (or ./services.sh)".into();
     }
-    let mut lines = vec![format!("{:<22} {:>8}  status", "name", "pid")];
+    let mut lines = vec![format!("{:<22}  status", "name")];
     lines.push("-".repeat(38));
     for s in &live {
-        let pid = s.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
-        lines.push(format!("{:<22} {:>8}  running", s.name, pid));
+        lines.push(format!("{:<22}  connected ({})", s.name, s.address));
     }
     lines.join("\n")
 }
 
-async fn cmd_service_restart(manager: &ServiceManager, name: &str) -> String {
-    let live = manager.live_services().await;
-    match live.iter().find(|s| s.name == name) {
-        None => format!("Service not found: {name}"),
-        Some(svc) => match svc.pid {
-            None => format!("{name}: no pid — may be starting"),
-            Some(pid) => {
-                let ok = std::process::Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status()
-                    .map(|s| s.success())
-                    .unwrap_or(false);
-                if ok {
-                    info!(service = name, pid, "console.service.restart");
-                    format!("Sent SIGTERM to {name} (pid {pid}) — will restart automatically")
-                } else {
-                    format!("Failed to signal {name} (pid {pid})")
-                }
-            }
-        },
-    }
+async fn cmd_service_restart(_manager: &ServiceManager, name: &str) -> String {
+    // openagent no longer manages service processes.
+    // Restart via systemd: systemctl restart openagent-<name>
+    // Or via services.sh on dev machines.
+    format!(
+        "{name}: openagent does not manage service processes.\n\
+         To restart: systemctl restart openagent-{name}\n\
+         On dev:     ./services.sh restart {name}"
+    )
 }
 
 async fn cmd_tools(manager: &ServiceManager, filter: &str) -> String {
@@ -318,9 +306,23 @@ async fn cmd_tools(manager: &ServiceManager, filter: &str) -> String {
     lines.join("\n")
 }
 
-async fn cmd_guard(manager: &ServiceManager, sub: &str, parts: &[&str]) -> String {
+/// Guard commands — direct SQLite calls, no async needed (console is a blocking thread).
+fn cmd_guard(guard_db: &GuardDb, sub: &str, parts: &[&str]) -> String {
     match sub {
-        "list" => tool_call(manager, "guard.list", json!({})).await,
+        "list" => match guard_db.list() {
+            Ok(entries) => {
+                if entries.is_empty() {
+                    return "No contacts in guard table.".into();
+                }
+                let mut lines = vec![format!("{:<12} {:<30} {:<10} {}", "platform", "channel_id", "status", "name")];
+                lines.push("-".repeat(70));
+                for e in &entries {
+                    lines.push(format!("{:<12} {:<30} {:<10} {}", e.platform, e.channel_id, e.status, e.name));
+                }
+                lines.join("\n")
+            }
+            Err(e) => format!("guard list error: {e}"),
+        },
 
         "allow" => {
             if parts.len() < 4 {
@@ -328,7 +330,11 @@ async fn cmd_guard(manager: &ServiceManager, sub: &str, parts: &[&str]) -> Strin
             }
             let (platform, channel_id) = (parts[2], parts[3]);
             let name = if parts.len() > 4 { parts[4..].join(" ") } else { String::new() };
-            tool_call(manager, "guard.allow", json!({"platform": platform, "channel_id": channel_id, "name": name})).await
+            let name_opt = if name.is_empty() { None } else { Some(name.as_str()) };
+            match guard_db.allow(platform, channel_id, name_opt, None) {
+                Ok(()) => format!("allowed: {platform}/{channel_id}"),
+                Err(e) => format!("guard allow error: {e}"),
+            }
         }
 
         "block" => {
@@ -337,7 +343,11 @@ async fn cmd_guard(manager: &ServiceManager, sub: &str, parts: &[&str]) -> Strin
             }
             let (platform, channel_id) = (parts[2], parts[3]);
             let note = if parts.len() > 4 { parts[4..].join(" ") } else { String::new() };
-            tool_call(manager, "guard.block", json!({"platform": platform, "channel_id": channel_id, "note": note})).await
+            let note_opt = if note.is_empty() { None } else { Some(note.as_str()) };
+            match guard_db.block(platform, channel_id, note_opt) {
+                Ok(()) => format!("blocked: {platform}/{channel_id}"),
+                Err(e) => format!("guard block error: {e}"),
+            }
         }
 
         "name" => {
@@ -346,7 +356,11 @@ async fn cmd_guard(manager: &ServiceManager, sub: &str, parts: &[&str]) -> Strin
             }
             let (platform, channel_id) = (parts[2], parts[3]);
             let name = parts[4..].join(" ");
-            tool_call(manager, "guard.name", json!({"platform": platform, "channel_id": channel_id, "name": name})).await
+            match guard_db.set_name(platform, channel_id, &name) {
+                Ok(true)  => format!("renamed: {platform}/{channel_id} → {name}"),
+                Ok(false) => format!("not found: {platform}/{channel_id}"),
+                Err(e)    => format!("guard name error: {e}"),
+            }
         }
 
         "remove" => {
@@ -354,7 +368,11 @@ async fn cmd_guard(manager: &ServiceManager, sub: &str, parts: &[&str]) -> Strin
                 return "Usage: guard remove <platform> <channel_id>".into();
             }
             let (platform, channel_id) = (parts[2], parts[3]);
-            tool_call(manager, "guard.remove", json!({"platform": platform, "channel_id": channel_id})).await
+            match guard_db.remove(platform, channel_id) {
+                Ok(true)  => format!("removed: {platform}/{channel_id}"),
+                Ok(false) => format!("not found: {platform}/{channel_id}"),
+                Err(e)    => format!("guard remove error: {e}"),
+            }
         }
 
         _ => "Usage: guard list | allow | block | name | remove".into(),

@@ -32,7 +32,7 @@
 # ---------------------------------------------------------------------------
 
 GO_SERVICES   := whatsapp
-RUST_SERVICES := sandbox browser memory tts stt validator cortex channels guard research
+RUST_SERVICES := sandbox browser memory tts stt validator
 # openagent is the Rust control plane binary — built separately (not a service)
 OPENAGENT_DIR := openagent
 
@@ -45,6 +45,9 @@ UNAME_M := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
   HOST_OS := darwin
+  # Pin SDKROOT so C dependencies (lz4_sys, zstd-sys, etc.) always link
+  # against the currently installed Xcode SDK — prevents clang_rt version mismatches.
+  export SDKROOT := $(shell xcrun --sdk macosx --show-sdk-path 2>/dev/null)
 else
   HOST_OS := linux
 endif

@@ -1,4 +1,4 @@
-/// Dispatch loop — bridges inbound channel events to Cortex and back.
+/// Dispatch loop — bridges inbound channel events to the in-process agent and back.
 ///
 /// Subscribes to the `ServiceManager` event bus.  For each `message.received`
 /// event it:
@@ -6,7 +6,7 @@
 ///   2. Derives a stable `session_id = "{channel}:{sender}"`.
 ///   3. Calls `guard.check` — blocked messages are dropped silently; guard down → fail open.
 ///   4. Fires `channel.typing_start` (best-effort, no await on result).
-///   5. Calls `cortex.step` with the message and session id.
+///   5. Calls `agent::handlers::handle_step` in-process (no TCP hop).
 ///   6. Sends the response text back via `channel.send`.
 ///
 /// A semaphore caps concurrent in-flight steps at `MAX_CONCURRENT` to keep
@@ -16,20 +16,24 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
-use crate::manager::ServiceManager;
-use crate::scrub;
+use crate::agent::handlers::{handle_step, AgentContext};
+use crate::channels::ChannelHandle;
+use crate::guard::GuardDb;
+use crate::service::ServiceManager;
+use crate::guard::scrub;
 
-/// Max concurrent cortex.step calls — keeps the Pi from thrashing.
+/// Max concurrent agent.step calls — keeps the Pi from thrashing.
 const MAX_CONCURRENT: usize = 4;
-
-/// Cortex tool call timeout (ms).  Cortex itself has a 300 s LLM timeout;
-/// we give an extra 30 s of headroom on top.
-const STEP_TIMEOUT_MS: u64 = 330_000;
 
 /// channel.send / typing_start timeouts (ms).
 const SEND_TIMEOUT_MS: u64 = 10_000;
 
-pub async fn run(manager: Arc<ServiceManager>) {
+pub async fn run(
+    manager: Arc<ServiceManager>,
+    guard_db: GuardDb,
+    agent_ctx: Arc<AgentContext>,
+    channel_handle: ChannelHandle,
+) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
     let mut event_rx = manager.subscribe_events();
 
@@ -115,9 +119,12 @@ pub async fn run(manager: Arc<ServiceManager>) {
 
         let mgr = Arc::clone(&manager);
         let sem = Arc::clone(&semaphore);
+        let gdb = guard_db.clone();
+        let ctx = Arc::clone(&agent_ctx);
+        let ch = channel_handle.clone();
 
         tokio::spawn(async move {
-            handle_message(mgr, sem, session_id, channel, sender, content_raw, artifact_path).await;
+            handle_message(mgr, sem, gdb, ctx, ch, session_id, channel, sender, content_raw, artifact_path).await;
         });
     }
 }
@@ -132,6 +139,9 @@ fn platform_from_channel(channel: &str) -> &str {
 async fn handle_message(
     manager: Arc<ServiceManager>,
     semaphore: Arc<Semaphore>,
+    guard_db: GuardDb,
+    agent_ctx: Arc<AgentContext>,
+    channel_handle: ChannelHandle,
     session_id: String,
     channel: String,
     sender: String,
@@ -178,33 +188,29 @@ async fn handle_message(
     };
 
     // ---- Guard check --------------------------------------------------------
-    // Mirrors the GuardLayer in the HTTP stack — same guard.check call,
-    // same fail-open behaviour when the guard service is unavailable.
+    // Inline GuardDb lookup (direct SQLite, no TCP).
+    // Same fail-open policy as GuardLayer: a DB error logs a warning but
+    // does not drop the message.
     let platform = platform_from_channel(&channel);
-    match manager
-        .call_tool(
-            "guard.check",
-            json!({"platform": platform, "channel_id": sender}),
-            2_000,
-        )
-        .await
     {
-        Ok(payload) => {
-            let v: Value = serde_json::from_str(&payload).unwrap_or_default();
-            let allowed = v.get("allowed").and_then(Value::as_bool).unwrap_or(false);
-            let reason = v
-                .get("reason")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            if allowed {
-                info!(session_id, platform, sender, reason, "dispatch.guard.allowed");
-            } else {
-                info!(session_id, platform, sender, reason, "dispatch.guard.blocked — dropping");
-                return;
+        let gdb      = guard_db.clone();
+        let plat_s   = platform.to_string();
+        let sender_s = sender.clone();
+        match tokio::task::spawn_blocking(move || gdb.check(&plat_s, &sender_s)).await {
+            Ok(Ok((allowed, reason))) => {
+                if allowed {
+                    info!(session_id, platform, sender, reason, "dispatch.guard.allowed");
+                } else {
+                    info!(session_id, platform, sender, reason, "dispatch.guard.blocked — dropping");
+                    return;
+                }
             }
-        }
-        Err(e) => {
-            warn!(session_id, error = %e, "dispatch.guard.unavailable — failing open");
+            Ok(Err(e)) => {
+                warn!(session_id, error = %e, "dispatch.guard.db_error — failing open");
+            }
+            Err(e) => {
+                warn!(session_id, error = %e, "dispatch.guard.spawn_error — failing open");
+            }
         }
     }
 
@@ -213,40 +219,48 @@ async fn handle_message(
     let content = scrub::process(&content, &ctx);
 
     // Fire typing_start best-effort (don't block on it).
+    // WhatsApp uses the Go service tool; all other platforms use the in-process ChannelHandle.
     {
-        let mgr = Arc::clone(&manager);
-        let addr = channel.clone();
-        tokio::spawn(async move {
-            let _ = mgr
-                .call_tool(
-                    "channel.typing_start",
-                    json!({"address": addr}),
-                    SEND_TIMEOUT_MS,
-                )
-                .await;
-        });
+        let platform = platform_from_channel(&channel);
+        if platform == "whatsapp" {
+            let mgr = Arc::clone(&manager);
+            let chat_id = channel.trim_start_matches("whatsapp://").to_string();
+            tokio::spawn(async move {
+                let _ = mgr
+                    .call_tool("whatsapp.typing_start", json!({"chat_id": chat_id}), SEND_TIMEOUT_MS)
+                    .await;
+            });
+        } else {
+            let ch = channel_handle.clone();
+            let addr = channel.clone();
+            tokio::spawn(async move {
+                let _ = ch.typing_start(&addr).await;
+            });
+        }
     }
 
-    // Call cortex.step.
+    // Call handle_step in-process (no TCP hop — agent logic lives here now).
     let step_params = json!({
         "session_id": session_id,
         "user_input": content,
     });
 
-    let response_text = match manager
-        .call_tool("cortex.step", step_params, STEP_TIMEOUT_MS)
-        .await
-    {
-        Ok(raw) => {
-            // cortex.step returns a JSON string with a `response_text` field.
+    let ctx_clone = Arc::clone(&agent_ctx);
+    let params_clone = step_params.clone();
+    let response_text = match tokio::task::spawn_blocking(move || handle_step(params_clone, ctx_clone)).await {
+        Ok(Ok(raw)) => {
             let v: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
             v.get("response_text")
                 .and_then(Value::as_str)
                 .unwrap_or(&raw)
                 .to_string()
         }
+        Ok(Err(e)) => {
+            error!(session_id, error = %e, "dispatch.agent.step.error");
+            return;
+        }
         Err(e) => {
-            error!(session_id, error = %e, "dispatch.cortex.step.error");
+            error!(session_id, error = %e, "dispatch.agent.step.panic");
             return;
         }
     };
@@ -263,10 +277,10 @@ async fn handle_message(
         "dispatch.sending"
     );
 
-    // Route the reply to the appropriate send tool based on platform.
+    // Route the reply to the appropriate platform.
     let platform = platform_from_channel(&channel);
     let send_result = if platform == "whatsapp" {
-        // WhatsApp uses its own send tool with chat_id extracted from the URI.
+        // WhatsApp uses its own MCP-lite tool (Go service) — chat_id extracted from URI.
         let chat_id = channel.trim_start_matches("whatsapp://");
         manager
             .call_tool(
@@ -275,15 +289,10 @@ async fn handle_message(
                 SEND_TIMEOUT_MS,
             )
             .await
+            .map(|_| ())
     } else {
-        // All other platforms go through the channels service.
-        manager
-            .call_tool(
-                "channel.send",
-                json!({"address": channel, "content": response_text}),
-                SEND_TIMEOUT_MS,
-            )
-            .await
+        // All other platforms go through the in-process ChannelHandle (no TCP hop).
+        channel_handle.send(&channel, &response_text).await
     };
 
     if let Err(e) = send_result {
