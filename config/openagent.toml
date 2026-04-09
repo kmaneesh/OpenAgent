@@ -101,28 +101,62 @@ backend         = "sqlite"
 db_path         = "data/openagent.db"
 
 # ---------------------------------------------------------------------------
-# Platforms — credentials injected as env vars into the service binary
+# Channels — all platform connectors in one section.
+# Credentials use ${VAR} syntax resolved from environment variables.
+# Set them in a .env file at the project root or export them in the shell.
 # ---------------------------------------------------------------------------
 
-[platforms.discord]
-enabled = true
-token   = "${DISCORD_TOKEN}"
+[channels.telegram]
+enabled      = false
+token        = "${TELEGRAM_BOT_TOKEN}"
+allowed_users = []
+mention_only = false
 
-[platforms.telegram]
-enabled   = false
-app_id    = "${TELEGRAM_APP_ID}"
-app_hash  = "${TELEGRAM_APP_HASH}"
-bot_token = "${TELEGRAM_BOT_TOKEN}"
+[channels.discord]
+enabled      = false
+token        = "${DISCORD_BOT_TOKEN}"
+guild_id     = ""
+allowed_users = []
+listen_to_bots = false
+mention_only = true
 
-[platforms.slack]
+[channels.slack]
 enabled   = true
 bot_token = "${SLACK_BOT_TOKEN}"
 app_token = "${SLACK_APP_TOKEN}"
+channel_id = ""
+allowed_users = []
 
-[platforms.whatsapp]
-enabled      = false
-phone_number = "${WHATSAPP_PHONE}"
-data_dir     = "data"          # whatsapp.db stored at data/whatsapp.db
+[channels.signal]
+enabled   = false
+cli_url   = "${SIGNAL_CLI_URL}"
+number    = "${SIGNAL_NUMBER}"
+
+[channels.irc]
+enabled   = false
+server    = "${IRC_SERVER}"
+port      = 6667
+nickname  = "${IRC_NICKNAME}"
+channel   = "${IRC_CHANNEL}"
+password  = ""
+
+[channels.mattermost]
+enabled = false
+url     = "${MATTERMOST_URL}"
+token   = "${MATTERMOST_TOKEN}"
+
+[channels.imessage]
+# macOS only — no credentials required. Needs Full Disk Access for the terminal.
+enabled = false
+
+# WhatsApp (Cloud API — Meta Business; requires approval)
+# For the Go-based whatsmeow service (QR pairing), run: ./services.sh start whatsapp
+[channels.whatsapp]
+enabled          = false
+access_token     = "${WHATSAPP_ACCESS_TOKEN}"
+phone_number_id  = "${WHATSAPP_PHONE_NUMBER_ID}"
+verify_token     = "${WHATSAPP_VERIFY_TOKEN}"
+allowed_numbers  = []
 
 # ---------------------------------------------------------------------------
 # Guard (whitelist / security middleware)

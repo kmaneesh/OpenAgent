@@ -40,8 +40,8 @@ pub struct ServiceManifest {
     pub version: Option<String>,
     pub binary: BinaryMap,
     /// TCP bind address for this service (e.g. `"0.0.0.0:9001"`).
-    /// Required for TCP transport. The service binary is spawned with
-    /// `OPENAGENT_TCP_ADDRESS=<address>` so it knows which port to bind.
+    /// The service must already be listening on this port — openagent does not spawn services.
+    #[serde(default)]
     pub address: String,
     /// Legacy UDS socket path — kept for parsing compatibility but not used.
     #[serde(default)]
@@ -124,11 +124,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         write_manifest(
             tmp.path(),
-            "guard",
+            "sandbox",
             r#"{
-                "name": "guard",
-                "binary": {"darwin/arm64": "bin/guard-darwin-arm64"},
-                "socket": "data/sockets/guard.sock",
+                "name": "sandbox",
+                "address": "0.0.0.0:9002",
+                "binary": {"darwin/arm64": "bin/sandbox-darwin-arm64"},
                 "health": {"interval_ms": 5000, "timeout_ms": 1000, "restart_backoff_ms": [1000]}
             }"#,
         );
@@ -136,16 +136,18 @@ mod tests {
         let root = PathBuf::from("/project");
         let manifests = discover(tmp.path(), &root).unwrap();
         assert_eq!(manifests.len(), 1);
-        assert_eq!(manifests[0].name, "guard");
+        assert_eq!(manifests[0].name, "sandbox");
+        assert_eq!(manifests[0].address, "0.0.0.0:9002");
     }
 
     #[test]
     fn binary_path_resolves_relative_to_root() {
         let manifest = ServiceManifest {
-            name: "guard".into(),
+            name: "sandbox".into(),
             version: None,
-            binary: HashMap::from([("darwin/arm64".to_string(), "bin/guard-darwin-arm64".to_string())]),
-            socket: "data/sockets/guard.sock".to_string(),
+            address: "0.0.0.0:9002".into(),
+            binary: HashMap::from([("darwin/arm64".to_string(), "bin/sandbox-darwin-arm64".to_string())]),
+            socket: String::new(),
             enabled: true,
             env: HashMap::new(),
             health: HealthConfig::default(),
@@ -153,17 +155,18 @@ mod tests {
         };
         assert_eq!(
             manifest.binary_path("darwin/arm64").unwrap(),
-            PathBuf::from("/project/bin/guard-darwin-arm64")
+            PathBuf::from("/project/bin/sandbox-darwin-arm64")
         );
     }
 
     #[test]
     fn binary_path_returns_none_for_missing_platform() {
         let manifest = ServiceManifest {
-            name: "guard".into(),
+            name: "sandbox".into(),
             version: None,
+            address: "0.0.0.0:9002".into(),
             binary: HashMap::new(),
-            socket: "data/sockets/guard.sock".to_string(),
+            socket: String::new(),
             enabled: true,
             env: HashMap::new(),
             health: HealthConfig::default(),
@@ -173,20 +176,18 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_resolves_relative_to_root() {
+    fn connect_addr_replaces_wildcard() {
         let manifest = ServiceManifest {
-            name: "guard".into(),
+            name: "sandbox".into(),
             version: None,
+            address: "0.0.0.0:9002".into(),
             binary: HashMap::new(),
-            socket: "data/sockets/guard.sock".to_string(),
+            socket: String::new(),
             enabled: true,
             env: HashMap::new(),
             health: HealthConfig::default(),
             root: PathBuf::from("/project"),
         };
-        assert_eq!(
-            manifest.socket_path(),
-            PathBuf::from("/project/data/sockets/guard.sock")
-        );
+        assert_eq!(manifest.connect_addr(), "127.0.0.1:9002");
     }
 }

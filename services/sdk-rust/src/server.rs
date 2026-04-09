@@ -2,13 +2,7 @@ use crate::codec::{Decoder, Encoder};
 use crate::error::{Error, Result};
 use crate::types::{Frame, OutboundEvent, ToolDefinition};
 use std::collections::HashMap;
-<<<<<<< HEAD
-use std::fs;
 use std::future::Future;
-use std::path::Path;
-=======
-use std::future::Future;
->>>>>>> a3322d4925affab27aa05cd36e361c4b36a5a5e8
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,19 +12,9 @@ use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-<<<<<<< HEAD
 /// Async handler return type — a pinned boxed future so handlers can be stored
 /// as trait objects without knowing the concrete future type.
 type BoxFuture = Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>>;
-
-/// Handler closures are application code and may use `anyhow::Result<String>`.
-/// The server converts any error to a `tool.result` error frame — handler
-/// errors never propagate as [`Error`] variants.
-type ToolHandler = Box<dyn Fn(serde_json::Value) -> BoxFuture + Send + Sync>;
-=======
-/// Async handler return type.
-type BoxFuture = Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>>;
->>>>>>> a3322d4925affab27aa05cd36e361c4b36a5a5e8
 
 /// Handler closures stored as trait objects.
 type ToolHandler = Box<dyn Fn(serde_json::Value) -> BoxFuture + Send + Sync>;
@@ -78,13 +62,10 @@ impl McpLiteServer {
     }
 
     /// Register an async handler for a named tool.
-<<<<<<< HEAD
     ///
     /// The handler receives the raw JSON params and returns a JSON result
     /// string.  Returning `Err` sends a `tool.result` error frame to the
     /// caller — it does not terminate the connection.
-=======
->>>>>>> a3322d4925affab27aa05cd36e361c4b36a5a5e8
     pub fn register_tool<F, Fut>(&mut self, name: &str, handler: F)
     where
         F: Fn(serde_json::Value) -> Fut + Send + Sync + 'static,

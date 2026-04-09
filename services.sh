@@ -11,7 +11,7 @@
 #   ./services.sh stop              # stop all services
 #   ./services.sh stop sandbox      # stop one service
 #   ./services.sh restart           # restart all
-#   ./services.sh restart cortex    # restart one
+#   ./services.sh restart whatsapp  # restart one
 #   ./services.sh status            # show status of all services
 
 set -euo pipefail
@@ -52,7 +52,7 @@ svc_port() {
 }
 
 # Services whose absence is expected (binary may not be built yet)
-OPTIONAL_SERVICES="tts stt channels whatsapp"
+OPTIONAL_SERVICES="tts stt whatsapp"
 
 is_optional() { echo "$OPTIONAL_SERVICES" | grep -qw "$1"; }
 
@@ -88,11 +88,6 @@ svc_env_vars() {
   echo "OPENAGENT_TCP_ADDRESS=0.0.0.0:$port"
   echo "OPENAGENT_LOGS_DIR=$LOG_DIR"
   case "$name" in
-    cortex)
-      [ -n "${OPENAGENT_LLM_BASE_URL:-}" ] && echo "OPENAGENT_LLM_BASE_URL=$OPENAGENT_LLM_BASE_URL"
-      [ -n "${OPENAGENT_API_KEY:-}"       ] && echo "OPENAGENT_API_KEY=$OPENAGENT_API_KEY"
-      [ -n "${OPENAGENT_MODEL:-}"         ] && echo "OPENAGENT_MODEL=$OPENAGENT_MODEL"
-      ;;
     browser)
       [ -n "${SEARXNG_URL:-}"             ] && echo "SEARXNG_URL=$SEARXNG_URL"
       ;;
@@ -100,11 +95,6 @@ svc_env_vars() {
       [ -n "${MSB_SERVER_URL:-}"          ] && echo "MSB_SERVER_URL=$MSB_SERVER_URL"
       [ -n "${MSB_API_KEY:-}"             ] && echo "MSB_API_KEY=$MSB_API_KEY"
       [ -n "${MSB_MEMORY_MB:-}"           ] && echo "MSB_MEMORY_MB=$MSB_MEMORY_MB"
-      ;;
-    channels)
-      [ -n "${DISCORD_TOKEN:-}"           ] && echo "DISCORD_TOKEN=$DISCORD_TOKEN"
-      [ -n "${SLACK_BOT_TOKEN:-}"         ] && echo "SLACK_BOT_TOKEN=$SLACK_BOT_TOKEN"
-      [ -n "${SLACK_APP_TOKEN:-}"         ] && echo "SLACK_APP_TOKEN=$SLACK_APP_TOKEN"
       ;;
     whatsapp)
       [ -n "${WHATSAPP_PHONE:-}"          ] && echo "WHATSAPP_PHONE=$WHATSAPP_PHONE"
