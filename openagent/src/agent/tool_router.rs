@@ -24,7 +24,7 @@ use crate::agent::handlers::handle_skill_read;
 const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Routes tool calls to the correct service over TCP, with in-process handling
-/// for built-in capabilities (`skill.read`).
+/// for built-in capabilities (`skill.read`, `cron.*`).
 ///
 /// Created once at startup from the ActionCatalog's tool→address map.
 #[derive(Debug, Clone)]
@@ -33,11 +33,20 @@ pub struct ToolRouter {
     tool_addresses: HashMap<String, String>,
     /// Project root for in-process `skill.read` calls.
     project_root: PathBuf,
+    /// SQLite db path for in-process `cron.*` calls.  Empty = cron disabled.
+    cron_db_path: String,
 }
 
 impl ToolRouter {
     pub fn new(tool_addresses: HashMap<String, String>, project_root: PathBuf) -> Self {
-        Self { tool_addresses, project_root }
+        Self { tool_addresses, project_root, cron_db_path: String::new() }
+    }
+
+    /// Enable in-process cron tool handling.
+    #[must_use]
+    pub fn with_cron_db(mut self, db_path: impl Into<String>) -> Self {
+        self.cron_db_path = db_path.into();
+        self
     }
 
     /// Dispatch `tool` with `arguments` to the owning service (or handle in-process).
@@ -45,6 +54,14 @@ impl ToolRouter {
         // skill.read is handled in-process — no TCP needed.
         if tool == "skill.read" {
             return Ok(handle_skill_read(arguments, &self.project_root));
+        }
+
+        // cron.* tools are handled in-process via the cron module.
+        if tool.starts_with("cron.") {
+            if self.cron_db_path.is_empty() {
+                anyhow::bail!("cron is disabled (no db path configured)");
+            }
+            return crate::cron::tools::handle(&self.cron_db_path, tool, arguments).await;
         }
 
         let addr = self.resolve_address(tool)?;
@@ -61,7 +78,9 @@ impl ToolRouter {
 
     /// Returns true if the named tool has a registered address or is a built-in.
     pub fn tool_registered(&self, tool: &str) -> bool {
-        tool == "skill.read" || self.tool_addresses.contains_key(tool)
+        tool == "skill.read"
+            || tool.starts_with("cron.")
+            || self.tool_addresses.contains_key(tool)
     }
 }
 

@@ -97,6 +97,14 @@ impl ActionCatalog {
         Self { entries: vec![] }
     }
 
+    /// Append in-process built-in tool entries (e.g. cron.*) to the catalog.
+    /// Built-in entries have an empty `address` — `ToolRouter` handles them
+    /// without a TCP hop.  Call this after `discover_from_root`.
+    pub fn extend_with_builtins(&mut self, entries: Vec<ActionEntry>) {
+        self.entries.extend(entries);
+        self.entries.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+
     #[must_use]
     pub fn entries(&self) -> &[ActionEntry] {
         &self.entries
