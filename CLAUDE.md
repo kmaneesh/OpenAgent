@@ -33,6 +33,10 @@ Use `.claude/settings.local.json` only for machine-local permission overrides or
 
 Keep `~/.claude/settings.json` generic or empty. Do not place OpenAgent-specific architecture rules, coding conventions, or workflow policy in home-level Claude settings; those belong in this repository so they version with the codebase.
 
+## Git Commit Rules
+- Do **not** add `Co-Authored-By` trailers to commit messages.
+- Commit messages: `<type>: <short summary>` — no trailing metadata lines.
+
 ## Communication Protocol (Rule #1)
 Whenever the user sends an input where their intention needs clarification or the context needs expansion, **do not assume the correct path.** Ask clarifying questions **one by one** (1-by-1) and provide possible **options/paths** for the user to choose from. Apply this explicitly in every conversation.
 
