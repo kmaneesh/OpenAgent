@@ -1,9 +1,10 @@
 /// Axum route handlers for the openagent control plane.
 ///
-/// POST /step   — reads AgentResult set by AgentLayer (guard-checked + agent ran in middleware)
-/// GET  /health — liveness + registered service names
-/// GET  /tools  — all tools registered from all running services
-/// POST /tool/:name — raw tool call (internal / debug use)
+/// POST /step         — reads AgentResult set by AgentLayer (guard-checked + agent ran in middleware)
+/// GET  /health       — liveness + registered service names + component health snapshot
+/// GET  /api/diagnose — structured diagnostic report (doctor module)
+/// GET  /tools        — all tools registered from all running services
+/// POST /tool/:name   — raw tool call (internal / debug use)
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -61,6 +62,40 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
             "rss_mb": self_rss.map(|v| (v * 10.0).round() / 10.0),
         },
         "services": services,
+        "components": crate::health::snapshot_json()["components"],
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/diagnose
+// ---------------------------------------------------------------------------
+
+/// Run the doctor diagnostic suite and return structured JSON results.
+///
+/// Response shape:
+/// ```json
+/// {
+///   "results": [
+///     { "severity": "ok"|"warn"|"error", "category": "config", "message": "..." },
+///     ...
+///   ],
+///   "summary": { "ok": 5, "warn": 2, "error": 0 }
+/// }
+/// ```
+pub async fn diagnose(State(state): State<AppState>) -> impl IntoResponse {
+    let results = crate::doctor::diagnose(
+        &state.full_config,
+        &state.project_root,
+        &state.manifests,
+    );
+
+    let ok    = results.iter().filter(|r| r.severity == crate::doctor::Severity::Ok).count();
+    let warn  = results.iter().filter(|r| r.severity == crate::doctor::Severity::Warn).count();
+    let error = results.iter().filter(|r| r.severity == crate::doctor::Severity::Error).count();
+
+    Json(json!({
+        "results": results,
+        "summary": { "ok": ok, "warn": warn, "error": error },
     }))
 }
 

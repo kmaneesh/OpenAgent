@@ -18,6 +18,8 @@ use tokio::sync::broadcast;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
 
+const HEALTH_COMPONENT: &str = "cron";
+
 const MIN_POLL_SECS: u64 = 10;
 const SHELL_TIMEOUT_SECS: u64 = 120;
 
@@ -35,6 +37,7 @@ pub async fn run(
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
 
     info!(poll_secs, "cron.scheduler.start");
+    crate::health::mark_component_ok(HEALTH_COMPONENT);
 
     loop {
         interval.tick().await;
@@ -44,9 +47,12 @@ pub async fn run(
             Ok(j) => j,
             Err(e) => {
                 warn!(error = %e, "cron.scheduler.query_failed");
+                crate::health::mark_component_error(HEALTH_COMPONENT, &e);
                 continue;
             }
         };
+
+        crate::health::mark_component_ok(HEALTH_COMPONENT);
 
         if jobs.is_empty() {
             continue;

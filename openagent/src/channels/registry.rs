@@ -106,11 +106,17 @@ impl ChannelRegistry {
                 loop {
                     let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMessage>(64);
 
+                    crate::health::mark_component_ok(&format!("channel:{platform}"));
+
                     let listen_ch = Arc::clone(&channel);
                     let platform_inner = platform.clone();
                     let listen_handle = tokio::spawn(async move {
                         if let Err(e) = listen_ch.listen(tx).await {
                             warn!(platform = %platform_inner, error = %e, "channel.listen.error");
+                            crate::health::mark_component_error(
+                                &format!("channel:{platform_inner}"),
+                                &e,
+                            );
                         }
                     });
 
@@ -133,6 +139,8 @@ impl ChannelRegistry {
 
                     listen_handle.abort();
                     error!(platform = %platform, "channel.listener.restart");
+                    crate::health::mark_component_error(&format!("channel:{platform}"), "listener restarting");
+                    crate::health::bump_component_restart(&format!("channel:{platform}"));
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             });

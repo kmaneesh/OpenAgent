@@ -4,9 +4,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 pub mod agent;
 pub mod cron;
+pub mod health;
 mod config;
 mod console;
 mod dispatch;
+mod doctor;
 mod guard;
 mod observability;
 mod platform;
@@ -71,6 +73,9 @@ async fn main() -> Result<()> {
     // ---- discover + start services ------------------------------------------
     let services_dir = project_root.join("services");
     let manifests = service::manifest::discover(&services_dir, &project_root)?;
+
+    // Keep a clone for the doctor module (start_all moves manifests into connection loops).
+    let manifests_for_doctor = manifests.clone();
 
     info!(count = manifests.len(), "openagent.manifests.loaded");
     for m in &manifests {
@@ -195,14 +200,20 @@ async fn main() -> Result<()> {
 
     // ---- Axum control plane (TCP :8080) -------------------------------------
     // Spawn server in background — shutdown is handled by Ctrl-C below.
-    let server_manager = Arc::clone(&manager);
-    let server_metrics = metrics.clone();
-    let server_cfg     = cfg.middleware.clone();
-    let server_guard   = guard_db.clone();
-    let server_ctx     = Arc::clone(&agent_ctx);
-    let server_ch      = channel_handle.clone();
+    let server_manager   = Arc::clone(&manager);
+    let server_metrics   = metrics.clone();
+    let server_cfg       = cfg.middleware.clone();
+    let server_guard     = guard_db.clone();
+    let server_ctx       = Arc::clone(&agent_ctx);
+    let server_ch        = channel_handle.clone();
+    let server_root      = project_root.clone();
+    let server_full_cfg  = cfg.clone();
+    let server_manifests = manifests_for_doctor.clone();
     tokio::spawn(async move {
-        if let Err(e) = server::start_default(server_manager, server_metrics, server_cfg, server_guard, server_ctx, server_ch).await {
+        if let Err(e) = server::start_default(
+            server_manager, server_metrics, server_cfg, server_guard, server_ctx, server_ch,
+            server_root, server_full_cfg, server_manifests,
+        ).await {
             tracing::error!(error = %e, "openagent.server.error");
         }
     });

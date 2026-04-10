@@ -192,6 +192,7 @@ async fn connection_loop(
             Ok(c) => Arc::new(c),
             Err(e) => {
                 error!(service = %name, addr = %addr, error = %e, "service.connect.failed");
+                crate::health::mark_component_error(&format!("service:{name}"), &e);
                 sleep(Duration::from_secs(2)).await;
                 continue;
             }
@@ -208,10 +209,12 @@ async fn connection_loop(
                         definition: def.clone(),
                     });
                 }
+                crate::health::mark_component_ok(&format!("service:{name}"));
                 info!(service = %name, addr = %addr, count = tool_defs.len(), "service.connected");
             }
             Err(e) => {
                 warn!(service = %name, error = %e, "service.tools_list.failed");
+                crate::health::mark_component_error(&format!("service:{name}"), &e);
             }
         }
 
@@ -238,14 +241,17 @@ async fn connection_loop(
 
             if !client.ping(timeout_ms).await {
                 error!(service = %name, addr = %addr, "service.ping.timeout — reconnecting");
+                crate::health::mark_component_error(&format!("service:{name}"), "ping timeout");
                 break;
             }
+            crate::health::mark_component_ok(&format!("service:{name}"));
             debug!(service = %name, "service.health.ok");
         }
 
         // Remove from live state; tools remain stale until we reconnect.
         services.write().await.remove(&name);
         tools.write().await.retain(|rt| rt.service != name);
+        crate::health::bump_component_restart(&format!("service:{name}"));
 
         info!(service = %name, addr = %addr, "service.disconnected — reconnecting in 2s");
         sleep(Duration::from_secs(2)).await;

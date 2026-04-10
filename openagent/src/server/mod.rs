@@ -21,6 +21,7 @@ use axum::middleware as axum_middleware;
 use axum::routing::{get, post};
 use axum::Router;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tower::limit::ConcurrencyLimitLayer;
@@ -33,8 +34,9 @@ use tracing::info;
 
 use crate::agent::handlers::AgentContext;
 use crate::channels::ChannelHandle;
-use crate::config::MiddlewareConfig;
+use crate::config::{MiddlewareConfig, OpenAgentConfig};
 use crate::guard::GuardDb;
+use crate::service::manifest::ServiceManifest;
 use crate::service::ServiceManager;
 use crate::observability::telemetry::MetricsWriter;
 use self::middleware::{agent_middleware, guard_middleware};
@@ -64,12 +66,19 @@ pub fn build_router(
     guard_db:       GuardDb,
     agent_ctx:      Arc<AgentContext>,
     channel_handle: ChannelHandle,
+    project_root:   PathBuf,
+    full_config:    OpenAgentConfig,
+    manifests:      Vec<ServiceManifest>,
 ) -> Router {
     let max_concurrent = config.rate_limit.max_concurrent;
-    let state = AppState::new(manager, metrics, config, guard_db, agent_ctx, channel_handle);
+    let state = AppState::new(
+        manager, metrics, config, guard_db, agent_ctx, channel_handle,
+        project_root, full_config, manifests,
+    );
 
     Router::new()
         .route("/health", get(routes::health))
+        .route("/api/diagnose", get(routes::diagnose))
         .route("/tools", get(routes::list_tools))
         .route("/step", post(routes::step))
         .route("/tool/:name", post(routes::call_tool))
@@ -135,9 +144,15 @@ pub async fn start(
     guard_db:       GuardDb,
     agent_ctx:      Arc<AgentContext>,
     channel_handle: ChannelHandle,
+    project_root:   PathBuf,
+    full_config:    OpenAgentConfig,
+    manifests:      Vec<ServiceManifest>,
     port:           u16,
 ) -> Result<()> {
-    let app = build_router(manager, metrics, config, guard_db, agent_ctx, channel_handle);
+    let app = build_router(
+        manager, metrics, config, guard_db, agent_ctx, channel_handle,
+        project_root, full_config, manifests,
+    );
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!(addr = %addr, "openagent.server.start");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -153,10 +168,16 @@ pub async fn start_default(
     guard_db:       GuardDb,
     agent_ctx:      Arc<AgentContext>,
     channel_handle: ChannelHandle,
+    project_root:   PathBuf,
+    full_config:    OpenAgentConfig,
+    manifests:      Vec<ServiceManifest>,
 ) -> Result<()> {
     let port = std::env::var("OPENAGENT_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    start(manager, metrics, config, guard_db, agent_ctx, channel_handle, port).await
+    start(
+        manager, metrics, config, guard_db, agent_ctx, channel_handle,
+        project_root, full_config, manifests, port,
+    ).await
 }
