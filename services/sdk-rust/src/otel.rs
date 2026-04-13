@@ -40,14 +40,16 @@ use opentelemetry_sdk::{
         logs::{LogBatch, LogExporter},
         trace::{ExportResult, SpanData, SpanExporter},
     },
-    logs::{LogResult, LoggerProvider},
+    logs::{
+        BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, LogResult, LoggerProvider,
+    },
     metrics::{
         data::{Gauge, Histogram, ResourceMetrics, Sum},
         exporter::PushMetricExporter,
         MetricResult, PeriodicReader, SdkMeterProvider, Temporality,
     },
     runtime,
-    trace::TracerProvider,
+    trace::{BatchConfigBuilder as TraceBatchConfigBuilder, BatchSpanProcessor, TracerProvider},
     Resource,
 };
 use opentelemetry::KeyValue;
@@ -412,8 +414,16 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         service_name: service_name.to_owned(),
     };
 
+    let file_span_processor = BatchSpanProcessor::builder(file_span_exporter, runtime::Tokio)
+        .with_batch_config(
+            TraceBatchConfigBuilder::default()
+                .with_max_queue_size(8_192)
+                .build(),
+        )
+        .build();
+
     let mut trace_builder = TracerProvider::builder()
-        .with_batch_exporter(file_span_exporter, runtime::Tokio)
+        .with_span_processor(file_span_processor)
         .with_resource(resource.clone());
 
     // Probe once — skip OTLP entirely if the collector is not reachable.
@@ -434,7 +444,15 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
             .build()
         {
             Ok(otlp) => {
-                trace_builder = trace_builder.with_batch_exporter(otlp, runtime::Tokio);
+                let otlp_span_processor =
+                    BatchSpanProcessor::builder(otlp, runtime::Tokio)
+                        .with_batch_config(
+                            TraceBatchConfigBuilder::default()
+                                .with_max_queue_size(8_192)
+                                .build(),
+                        )
+                        .build();
+                trace_builder = trace_builder.with_span_processor(otlp_span_processor);
             }
             Err(e) => eprintln!("OTLP span exporter init failed: {e}"),
         }
@@ -450,8 +468,16 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
         DailyFileWriter::new(logs_path.clone(), format!("{service_name}-logs"))?;
     let file_log_exporter = FileLogExporter { writer: log_writer, service_name: service_name.to_owned() };
 
+    let file_log_processor = BatchLogProcessor::builder(file_log_exporter, runtime::Tokio)
+        .with_batch_config(
+            LogBatchConfigBuilder::default()
+                .with_max_queue_size(8_192)
+                .build(),
+        )
+        .build();
+
     let mut log_builder = LoggerProvider::builder()
-        .with_batch_exporter(file_log_exporter, runtime::Tokio)
+        .with_log_processor(file_log_processor)
         .with_resource(resource.clone());
 
     if let Some(ref ep) = otlp_ep {
@@ -463,7 +489,15 @@ fn setup_otel_inner(service_name: &str, logs_dir: &str) -> anyhow::Result<OTELGu
             .build()
         {
             Ok(otlp) => {
-                log_builder = log_builder.with_batch_exporter(otlp, runtime::Tokio);
+                let otlp_log_processor =
+                    BatchLogProcessor::builder(otlp, runtime::Tokio)
+                        .with_batch_config(
+                            LogBatchConfigBuilder::default()
+                                .with_max_queue_size(8_192)
+                                .build(),
+                        )
+                        .build();
+                log_builder = log_builder.with_log_processor(otlp_log_processor);
             }
             Err(e) => eprintln!("OTLP log exporter init failed: {e}"),
         }
