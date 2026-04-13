@@ -26,8 +26,8 @@ impl MsbClient {
     pub fn from_env() -> Result<Self> {
         let base_url =
             env::var("MSB_SERVER_URL").unwrap_or_else(|_| DEFAULT_MSB_URL.to_string());
-        let api_key =
-            env::var("MSB_API_KEY").context("MSB_API_KEY required — run: msb server keygen")?;
+        // Optional in dev mode (`msb server start --dev` skips auth).
+        let api_key = env::var("MSB_API_KEY").unwrap_or_default();
         let memory_mb = env::var("MSB_MEMORY_MB")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -42,10 +42,15 @@ impl MsbClient {
     /// POST a JSON-RPC request and return the parsed response.
     fn post(&self, body: &Value) -> Result<Value> {
         let body_str = serde_json::to_string(body).context("Serialize request")?;
-        let resp = minreq::post(&self.rpc_url)
+        let req = minreq::post(&self.rpc_url)
             .with_header("Content-Type", "application/json")
-            .with_header("Authorization", format!("Bearer {}", self.api_key))
-            .with_body(body_str)
+            .with_body(body_str);
+        let req = if self.api_key.is_empty() {
+            req
+        } else {
+            req.with_header("Authorization", format!("Bearer {}", self.api_key))
+        };
+        let resp = req
             .send()
             .context("HTTP request to microsandbox server failed")?;
         if resp.status_code != 200 {

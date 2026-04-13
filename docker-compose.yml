@@ -132,6 +132,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
       OPENAGENT_ROOT: "/app"
       OPENAGENT_LOGS_DIR: "/app/logs"
+      # microsandbox server runs on the host; container reaches it via host-gateway
+      MSB_SERVER_URL: "http://host.docker.internal:5555"
     networks:
       - openagent
     depends_on:
