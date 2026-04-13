@@ -23,6 +23,7 @@
   "tools": [
     {
       "name": "validator.repair_json",
+      "internal": true,
       "description": "Repair malformed JSON and return compact canonical JSON. Use mode json_object or json_array to enforce the expected top-level shape, or auto to accept any valid JSON value.",
       "params": {
         "type": "object",

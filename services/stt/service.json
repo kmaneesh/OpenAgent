@@ -22,6 +22,7 @@
   "tools": [
     {
       "name": "stt.transcribe",
+      "internal": true,
       "description": "Transcribe an audio file to text using Whisper. Accepts any format ffmpeg can decode (WAV, OGG/Opus, MP3, M4A, WebM, FLAC). Returns the transcript text.",
       "params": {
         "type": "object",

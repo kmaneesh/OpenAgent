@@ -92,6 +92,7 @@ pub fn catalog_entries() -> Vec<ActionEntry> {
                 allowed_tools: vec![],
                 enforce: false,
                 enabled: true,
+                internal: false,
                 steps: vec![],
                 constraints: vec![],
                 completion_criteria: vec![],

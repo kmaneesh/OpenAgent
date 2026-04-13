@@ -368,13 +368,17 @@ fn skill_read_tool_entry() -> ToolEntry {
 /// The result tells the LLM which tools exist and how to call them, so it can
 /// then issue a targeted `tool.call` without having all schemas pre-loaded.
 fn agent_discover_tool_entry(catalog: &ActionCatalog) -> ToolEntry {
-    // Build a compact manifest of discoverable (non-pinned) tools and skills.
+    // Build a compact manifest of discoverable tools and skills:
+    //   - Tools: not pinned (already injected) and not internal (platform plumbing)
+    //   - Skills: always discoverable
     let entries: Vec<Value> = catalog
         .entries()
         .iter()
-        .filter(|e| {
-            !matches!(e.kind, ActionKind::Tool)
-                || !PINNED_TOOL_NAMES.contains(&e.name.as_str())
+        .filter(|e| match e.kind {
+            ActionKind::Tool => {
+                !PINNED_TOOL_NAMES.contains(&e.name.as_str()) && !e.internal
+            }
+            ActionKind::SkillGuidance => true,
         })
         .map(|e| json!({"name": e.name, "kind": e.kind.as_str(), "description": e.summary}))
         .collect();

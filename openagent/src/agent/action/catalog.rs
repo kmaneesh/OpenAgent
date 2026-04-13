@@ -141,6 +141,9 @@ pub struct ActionEntry {
     pub enforce: bool,
     /// When false (default), this skill is not loaded into the catalog.
     pub enabled: bool,
+    /// Infrastructure tools (dispatch, maintenance, channel plumbing) that the
+    /// agent must never call directly. Excluded from agent.discover results.
+    pub internal: bool,
     pub steps: Vec<String>,
     pub constraints: Vec<String>,
     pub completion_criteria: Vec<String>,
@@ -208,6 +211,7 @@ impl ActionEntry {
             allowed_tools: Vec::new(),
             enforce: false,
             enabled: true,
+            internal: tool.internal,
             steps: Vec::new(),
             constraints: Vec::new(),
             completion_criteria: Vec::new(),
@@ -271,6 +275,7 @@ impl ActionEntry {
             allowed_tools: parsed.allowed_tools,
             enforce,
             enabled,
+            internal: false,
             steps: parsed.steps,
             constraints: parsed.constraints,
             completion_criteria: parsed.completion_criteria,
@@ -327,6 +332,10 @@ struct ManifestTool {
     description: String,
     #[serde(default)]
     params: Value,
+    /// When true, this tool is internal plumbing (dispatch, maintenance,
+    /// infrastructure) and must not appear in agent.discover results.
+    #[serde(default)]
+    internal: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -23,6 +23,7 @@
   "tools": [
     {
       "name": "tts.synthesize",
+      "internal": true,
       "description": "Synthesize speech from text. Writes WAV to data/artifacts/tts. Returns path and sample_rate.",
       "params": {
         "type": "object",
@@ -51,6 +52,7 @@
     },
     {
       "name": "tts.synthesize_bytes",
+      "internal": true,
       "description": "Synthesize to base64 f32 PCM. For streaming playback without writing to file.",
       "params": {
         "type": "object",

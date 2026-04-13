@@ -23,6 +23,7 @@
   "tools": [
     {
       "name": "whatsapp.qr",
+      "internal": true,
       "description": "Return the current WhatsApp QR code (qr_text) and connection state (connected). qr_text is empty when already connected or no QR is pending.",
       "params": {
         "type": "object",
@@ -31,6 +32,7 @@
     },
     {
       "name": "whatsapp.status",
+      "internal": true,
       "description": "Return current WhatsApp service status (running, connected, last_error).",
       "params": {
         "type": "object",
@@ -39,6 +41,7 @@
     },
     {
       "name": "whatsapp.link_state",
+      "internal": true,
       "description": "Return current WhatsApp link state and session metadata.",
       "params": {
         "type": "object",
@@ -47,6 +50,7 @@
     },
     {
       "name": "whatsapp.send_text",
+      "internal": true,
       "description": "Send a text message to a WhatsApp chat.",
       "params": {
         "type": "object",
@@ -68,6 +72,7 @@
     },
     {
       "name": "whatsapp.typing_start",
+      "internal": true,
       "description": "Send a composing (typing) presence indicator. Clears automatically after ~10 s.",
       "params": {
         "type": "object",
@@ -84,6 +89,7 @@
     },
     {
       "name": "whatsapp.send_media",
+      "internal": true,
       "description": "Upload and send a local file (image, video, audio, or document) to a WhatsApp chat.",
       "params": {
         "type": "object",
