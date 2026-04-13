@@ -7,7 +7,7 @@
 #   make test-go            # run Go tests for all Go services + sdk-go
 #   make test-rust          # run Rust tests for sdk-rust + all Rust services
 #   make test-py            # run Python tests (openagent/ + app/)
-#   make clean              # remove all compiled binaries from bin/
+#   make clean              # remove bin/* and all Rust target/ dirs
 #
 # All binaries land in <project-root>/bin/ — one clean directory, gitignored.
 # service.json binary paths are relative to the project root (e.g. bin/stt-darwin-arm64).
@@ -345,9 +345,13 @@ test-py:
 # Clean
 # ---------------------------------------------------------------------------
 
+RUST_CRATES := openagent services/sdk-rust $(foreach svc,$(RUST_SERVICES),services/$(svc))
+
 clean:
 	rm -f $(BIN)/*
 	@echo "  cleaned $(BIN)/"
+	$(foreach crate,$(RUST_CRATES),cargo clean --manifest-path $(crate)/Cargo.toml 2>/dev/null;)
+	@echo "  cleaned Rust target/ dirs"
 
 # ---------------------------------------------------------------------------
 # Help
@@ -370,7 +374,7 @@ help:
 	@echo "  make test-go      Run Go unit tests"
 	@echo "  make test-rust    Run Rust unit tests"
 	@echo "  make test-py      Run Python tests"
-	@echo "  make clean        Remove all binaries from $(BIN)/"
+	@echo "  make clean        Remove bin/* and all Rust target/ dirs"
 	@echo ""
 	@echo "  Control plane:"
 	@echo "  make openagent-local   Build openagent for current host (fast)"

@@ -219,10 +219,12 @@ def _apply_env_overrides(data: dict) -> dict:
         value = next((os.environ[v] for v in env_vars if v in os.environ), None)
         if value is None:
             continue
-        # Ensure intermediate dicts exist
+        # Ensure intermediate dicts exist; replace null YAML nodes with {}
         node = data
         for key in path[:-1]:
-            node = node.setdefault(key, {})
+            if not isinstance(node.get(key), dict):
+                node[key] = {}
+            node = node[key]
         node[path[-1]] = value
     return data
 
